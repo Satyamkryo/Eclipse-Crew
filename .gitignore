@@ -1,0 +1,13 @@
+# Private project planning and implementation prompts
+/docs/PRD.md
+/prompts/
+
+# Secrets, runtime data, and backups
+.env
+.env.*
+!.env.example
+/data/
+/backups/
+
+# Installed dependencies
+node_modules/
