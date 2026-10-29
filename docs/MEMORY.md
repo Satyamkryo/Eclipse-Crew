@@ -26,17 +26,17 @@ Planning and docs done; docs moved into `docs/`, README into `.github/`. ADR-023
 
 ## Current Task
 
-TASK-002 — Git setup and first commit (see `docs/TASKS.md`); owner-supplied repository: `https://github.com/Satyamkryo/Eclipse-Crew.git`.
+TASK-002 — Git setup and first push complete; public repository requirement remains open. Repository: `https://github.com/Satyamkryo/Eclipse-Crew.git`.
 
 ## Known Issues
 
-- Local Git initialized; first commit and push pending. The supplied GitHub repository is empty and private.
+- Supplied GitHub repository is private; TASK-002 calls for a public repository. Owner must decide visibility.
 - README references `.env.example` and `docker-compose.yml`, which don't exist yet.
 - Open questions: judging rubric, Apache-2.0 confirmation, Astra Mode name.
 
 ## Next Step
 
-1. Complete TASK-002 by committing and pushing to the supplied repository.
+1. Resolve TASK-002 repository visibility with the owner.
 2. Follow Phase 1 in `docs/TASKS.md` through the stack skeleton and Day-1 spike.
 
 ## Deadline
