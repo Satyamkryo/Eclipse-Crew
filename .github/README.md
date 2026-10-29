@@ -27,9 +27,7 @@ Eclipse Crew gives you a crew of named AI agents that share one Linux desktop wi
 - [CLI reference](#cli-reference)
 - [Troubleshooting](#troubleshooting)
 - [Project status](#project-status)
-- [Roadmap](#roadmap)
 - [Built during the hackathon](#built-during-the-hackathon)
-- [Inspired by](#inspired-by)
 - [Contributing, security and license](#contributing-security-and-license)
 
 ---
@@ -722,26 +720,9 @@ docker compose exec app eclipse-crew <command>
 
 ---
 
-## Roadmap
-
-Desktop app · native mobile apps · Telegram/WhatsApp channels · live two-way voice conversation (under consideration) · system-wide dictation · Eclipse Crew Node (remote GPU helper) · browser choice (Brave, Edge, Firefox) · sub-agents with their own screens · projects · routine regression tests when you swap models · app-event triggers · flight-booking API · paper-trading integration · Google Drive backups · optional ClamAV · skill marketplace · multi-user team mode.
-
----
-
 ## Built during the hackathon
 
 Eclipse Crew was built from scratch during the **Meta Global AI Developer Hackathon** (Oct 27 – Nov 4, 2026), track **Push the Frontier**. It uses Meta models throughout: Muse Spark and Muse Wonder for reasoning and computer use, SAM 3.1 for screen grounding and verification, Muse Voice Transcribe for voice, Muse Image for avatars, Muse Spark Open via Baseten as a second provider, and Muse Code for the Dev agent.
-
----
-
-## Inspired by
-
-These projects inspired ideas only; no code was copied.
-
-- **[Hermes Agent](https://github.com/NousResearch/hermes-agent)** (Nous Research): bounded memory files, self-improving skills, session search
-- **OpenClaw:** portable `SKILL.md` skills, periodic check-ins, Markdown memory
-- **Agent Zero:** Dockerised Linux desktop, sub-agents, DOM annotation
-- **[Playwright MCP](https://github.com/microsoft/playwright-mcp)**, **[Set-of-Mark prompting](https://arxiv.org/abs/2310.11441)** and **[OmniParser](https://github.com/microsoft/OmniParser)**: prior art for the perception layer
 
 ---
 
