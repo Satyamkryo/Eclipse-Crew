@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "owner_singleton_idx" ON "owner" USING btree ((true));

@@ -1,0 +1,127 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-}
+      APP_ORIGIN: ${APP_ORIGIN:-http://127.0.0.1:3000}
+      DESKTOP_CONTROL_SECRET: ${DESKTOP_CONTROL_SECRET:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - artifacts:/var/eclipse/artifacts
+    networks:
+      - database
+      - desktop
+      - ingress_app
+
+  postgres:
+    image: postgres:17-alpine@sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: eclipse_bootstrap
+      POSTGRES_DB: eclipse
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_bootstrap_password
+    secrets:
+      - postgres_bootstrap_password
+      - postgres_app_password
+      - postgres_migrator_password
+    volumes:
+      - postgres:/var/lib/postgresql/data
+      - ./db/provision.sql:/opt/eclipse/provision.sql:ro
+    networks:
+      - database
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U eclipse_bootstrap -d eclipse"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  # Toolchain only; per-agent sessions/controller are implemented in later tasks.
+  desktop:
+    build:
+      context: ./docker/desktop
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    user: "0:0"
+    read_only: true
+    cap_drop: ["ALL"]
+    cap_add: ["CHOWN", "DAC_OVERRIDE", "SETUID", "SETGID", "SETPCAP", "SYS_ADMIN"]
+    security_opt: ["no-new-privileges:true", "seccomp=./docker/desktop/seccomp_profile.json"]
+    # bootstrap.py is PID 1 and drops SYS_ADMIN before supervising/reaping children.
+    init: false
+    shm_size: 128m
+    tmpfs:
+      - /tmp:uid=65534,gid=65534,mode=1777,size=536870912
+      - /run:uid=0,gid=0,mode=755,size=16777216
+    command: ["python3", "/opt/eclipse/desktop/bootstrap.py"]
+    volumes:
+      - workspace:/workspace
+    networks:
+      - desktop
+    healthcheck:
+      test: ["CMD", "python3", "/opt/eclipse/desktop/bootstrap.py", "--admin", "health"]
+      interval: 30s
+      timeout: 15s
+      retries: 3
+      start_period: 10s
+    environment:
+      DESKTOP_CONTROL_SECRET: ${DESKTOP_CONTROL_SECRET:-}
+
+  egress-proxy:
+    image: alpine:3.22@sha256:2e0b81d60597f449baa56dc25d355367869d2dca4cd57e866f1e2b52af3eb55f
+    restart: unless-stopped
+    user: "65534:65534"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    command: ["sleep", "infinity"]
+    networks:
+      - desktop
+
+  # Localhost-only ingress; it forwards to the app and is not an outbound proxy.
+  ingress:
+    image: nginxinc/nginx-unprivileged:1.28-alpine@sha256:7377697a821c131a924a7105fafbe7414db4e9fcc77a6f08f776f33f141ec3f8
+    restart: unless-stopped
+    user: "101:101"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs:
+      - /tmp:uid=101,gid=101,mode=1770
+    entrypoint: ["nginx", "-g", "daemon off;"]
+    ports:
+      - "127.0.0.1:3000:8080"
+    depends_on:
+      - app
+    volumes:
+      - ./docker/ingress.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      - ingress_app
+      - frontend
+
+networks:
+  database:
+    internal: true
+  desktop:
+    internal: true
+  ingress_app:
+    internal: true
+  frontend:
+
+volumes:
+  workspace:
+  artifacts:
+  postgres:
+
+secrets:
+  postgres_bootstrap_password:
+    environment: POSTGRES_BOOTSTRAP_PASSWORD
+  postgres_app_password:
+    environment: POSTGRES_APP_PASSWORD
+  postgres_migrator_password:
+    environment: POSTGRES_MIGRATOR_PASSWORD
