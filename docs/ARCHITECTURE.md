@@ -78,10 +78,16 @@ flowchart LR
 
 ## 3. Deployment topology
 
-One `docker compose up` starts the full stack. The same compose file runs on Windows (Docker Desktop / WSL 2), macOS and a Linux VPS. All services use `restart: unless-stopped`.
+The target is one `docker compose up` on Windows (Docker Desktop / WSL 2), macOS and a Linux VPS. All services use `restart: unless-stopped`. ADR-024 adds a fixed-purpose localhost ingress to the four core services.
+
+**Current build:** five services start after supplying database and controller credentials. `app` serves owner setup/login and an authenticated temporary desktop shell; `desktop` provides isolated persistent graphical sessions, authenticated controller operations and view-only RFB streaming; `egress-proxy` is inert. Separate internal database, desktop and ingress-to-app networks isolate the app, database and desktop; the ingress alone also has a frontend network for localhost publication. It accepts only the fixed app upstream. Disposable Docker Desktop tests verify the current auth/desktop stack on this machine; the full agent runtime and other platforms remain unverified.
+
+Database provisioning is explicit and rejects unexpected existing roles, schemas, objects and migration history before changes. `eclipse_app` has only SELECT, INSERT and UPDATE on the current owner table; it cannot create schemas or temporary tables, escalate roles or access migration metadata. `eclipse_migrator` owns the project schema objects and has the database CREATE permission Drizzle requires. Future migrations must grant table privileges explicitly; no blanket mutation grants exist. The app receives only its runtime URL, while a short-lived helper runs migrations on the private database network with only its migration URL. Owner-scoped queries are a separate, unfinished data-access-layer responsibility.
 
 ```
 ┌──────────────────────────── Host (PC or VPS) ─────────────────────────────┐
+│                                                                           │
+│  ingress (localhost-only fixed reverse proxy → app)                       │
 │                                                                           │
 │  app (Next.js UI + API + agent runtime + pg-boss job workers)             │
 │    ├─ talks to: postgres, desktop-controller, egress-proxy                │
@@ -130,7 +136,7 @@ One `docker compose up` starts the full stack. The same compose file runs on Win
 
 ### 4.1 `app`
 
-A single Next.js deployment plus TypeScript worker processes.
+A single Next.js deployment plus TypeScript worker processes. `scripts/app-server.mjs` owns the Node HTTP listener and the protected desktop WebSocket upgrade. It forwards normal HTTP requests into Next.js; it does not run a separate backend service. `APP_ORIGIN` is the exact public scheme, host and port (default `http://127.0.0.1:3000`).
 
 | Module | Responsibility |
 |---|---|
@@ -149,24 +155,32 @@ Source of truth for all structured state: agents, policies, chats, memory, skill
 
 ### 4.3 `desktop`
 
-An Ubuntu sandbox on the internal network only. It contains Xvfb, a lightweight window manager, Chromium (Google Chrome optional, downloaded on the user's machine at build time), `playwright-core`, xdotool, ffmpeg, x11vnc and noVNC/websockify. It also has a text editor, PDF viewer and image viewer; LibreOffice is an optional layer **[S]**.
+An Ubuntu sandbox on the internal network only. TASK-010 builds from the approved exact-package/SHA256 lock (379 archives / 218769418 bytes), installs packages offline with networking disabled, and verifies pinned Node/Chromium archives plus image-local Playwright integrity. All required tool versions execute. ADR-026 now runs a trusted root bootstrap with six explicit capabilities for Downloads and account-view mounts, then permanently drops SYS_ADMIN and installs an inherited privileged-syscall filter before starting the supervisor. Its five retained capabilities support local provisioning and UID switching; agent processes have distinct UID/GID and zero capability sets. No-new-privileges, read-only root, bounded tmpfs, isolated networks and unpublished ports remain enforced. Run c66f0dda-e890-428b-8f58-a1df20c978fa verifies authenticated Xvfb/Openbox, VNC/WebSocket transport, PNG/video, and genuine Playwright/xdotool input in graphical Chromium. Chromium’s own status page confirms namespace/PID/network and Seccomp-BPF sandboxes active. ADR-025 applies a pinned Playwright-derived seccomp profile only to desktop, with the required namespace-local chroot adaptation; the kernel still denies ordinary outer-process chroot. TASK-010 is complete. The earlier snapshot-service outage is resolved by the owner-approved package lock.
+
+The target toolchain contains Xvfb, a lightweight window manager, Chromium (Google Chrome optional, downloaded on the user's machine at build time), `playwright-core`, xdotool, ffmpeg, x11vnc and noVNC/websockify. It also has a text editor, PDF viewer and image viewer; LibreOffice is an optional layer **[S]**.
 
 | Per agent | |
 |---|---|
 | Linux user | Unique, no sudo, home mode `700` |
-| Screen | Xvfb display `:N` |
-| Browser | Chromium profile at `/home/<agent>/.config/chromium` |
-| Stream | x11vnc → noVNC → web app |
+| Screen | Xvfb display `:(uid - 20000 + 100)`, authenticated and TCP-disabled |
+| Browser | Persistent Chromium profile at `/workspace/homes/<agent-uuid>/.config/chromium`; graphical session under its own UID |
+| Stream | Private view-only x11vnc → authenticated controller RFB bridge → authenticated app WebSocket → noVNC canvas |
 
-**desktop-controller** is the only programmatic entry point into the sandbox. It exposes an internal API for:
+**Current TASK-011 administration:** `npm run desktop:agent -- <create|inspect|exec> --owner UUID --agent UUID [--project NAME] [-- COMMAND ARGS]` verifies the Compose desktop and named volume before invoking fixed local commands. A root-only infrastructure registry at `/workspace/.system/agents.json` assigns stable UIDs/GIDs 20000–59999, without replacing future Postgres product records. An exclusive lock serializes creation; pending assignments keep their UID during safe recovery, while conflicting state/stale locks fail closed. Runtime passwd/group files under root-only `/run/eclipse` are mounted read-only over `/etc/passwd` and `/etc/group`; new accounts append only through trusted administration. No password/sudo is enabled. Reduced Python PID 1 reaps children; no privileged init retains SYS_ADMIN.
 
-- screenshots (full screen and region crops)
-- input via xdotool (click, type, scroll, drag)
-- browser control via Playwright/CDP (element refs, accessibility snapshots)
-- ffmpeg screen recording (teach mode)
-- teach capture (input events plus before/after screenshots)
-- content-addressed file checkpoints and restores
-- secret entry from opaque handles (the value never passes through the model)
+**TASK-012 session lifecycle:** the reduced supervisor owns a local root-only Unix socket `/run/eclipse/sessions.sock` (parent mode 700, socket mode 600). Closed `session-start`, `session-status` and `session-stop` owner commands resolve existing identities, serialize per agent and launch a capability-free worker through `setpriv`. Each worker owns authenticated Xvfb, Openbox and a graphical Playwright persistent context. CDP uses inherited anonymous pipes; no debugging port or WebSocket endpoint is opened. Display cookies and browser handles never leave private worker memory/runtime files.
+
+Readiness requires the display, window manager, browser and authenticated VNC readiness. Component failure stops its session; other agents continue. Shutdown first closes the browser to flush profile state, then stops only tracked session processes; fallback uses the same UID and verified process birth identities, without CAP_KILL. Ambiguous profile/display locks are refused; proven-stale owned artifacts can be removed without following links. Container recreation retains profiles, while runtime directories and the socket are temporary; explicit start reopens an agent after recreation. Synthetic local tests cover these layers, not real credential workflows.
+
+**Current desktop-controller (TASK-013–015):** HTTP and WebSocket require the service secret and the exact current `app` DNS peer address. DNS failure denies access. Owner IDs come from validated app sessions and are checked against the protected agent registry. Closed operation schemas cover full 1024×768 X-display screenshots/crops, xdotool click/type/key/scroll, and bounded Playwright page/locator operations. DOM results carry `source_tag: tool` and `untrusted: true`; actual password/OTP targets refuse text/fill operations. The worker has no arbitrary shell/evaluate/URL endpoint.
+
+Lifecycle, control transitions and primitive dispatch share a bounded per-agent queue. Every dispatch rechecks owner, running state, UUID generation and takeover. A lease binds the owner session reference, viewer connection ID and generation. Disconnect releases only that viewer's lease; stop/restart closes viewers and invalidates old work. Timed-out/uncertain worker execution quarantines the session for explicit restart; it is never replayed automatically.
+
+**Product agent lifecycle (TASK-019):** owner-scoped CRUD stores agents and default-deny policies in Postgres. Creation saves a paused row, provisions/starts the controller identity and then marks the agent active; desktop failure leaves a visible paused agent for retry. Pause stops the desktop but preserves its profile and files. Selecting an agent only reads controller status; starting a stopped desktop is an authenticated POST. Deletion first writes a root-only `deleting` registry tombstone so restart recovery skips a partially removed identity, then removes the exact UUID home/downloads, NSS account entries and registry record before deleting the owner-scoped database rows. All desktop page/stream/takeover/input/handback routes require the owner-scoped database agent as well as the controller identity; registry-only identities are never adopted.
+
+The app authenticates each upgrade through a fixed loopback session-validated route and revalidates within five seconds. The controller authenticates upstream VNC privately; noVNC receives RFB pixels with a separate None-security negotiation only after owner authentication. The view-only protocol accepts bounded format/encoding/framebuffer requests and rejects keyboard, pointer and clipboard events. Owner input uses separate session/Origin/CSRF-checked HTTP routes. Per-session VNC passwords never enter browser responses or public session status.
+
+Teach recording, checkpoints/restores, opaque credential entry and the model grounding/receipt loop remain later tasks.
 
 The desktop container mounts **only** the `workspace` volume. It never sees the database, `.env` or secrets.
 
@@ -241,6 +255,7 @@ Per-step checkpoints are also needed because stateless computer-use replay is re
 ### 6.3 Takeover and hand-off
 
 - The owner can take over any screen (mouse + keyboard). The agent pauses and resumes on **Hand back**.
+- Current transport leases stop agent input and screenshot dispatch after takeover acknowledgment. Route leave/disconnect releases the bound lease; the later agent runtime must use the same guarded primitives.
 - Agents pause at login walls, CAPTCHAs, OTPs and payment verification and hand off to the owner.
 - Nothing is screenshotted or recorded during takeover, except when the owner explicitly presses **Record** in teach mode. Logins, CAPTCHAs and OTP entry are never recorded.
 
@@ -320,13 +335,19 @@ SAM 3.1 is optional, an enhancer and never a requirement.
 
 | Option | Needs | Cost | Priority |
 |---|---|---|---|
-| Meta API (`sam-3-1`) | Meta key | $2.50 / 1k images | [M] |
+| Meta API (`sam-3.1`) | Meta key | $2.50 / 1k images | [M] |
 | Local (`local-vision` profile) | NVIDIA GPU, CUDA 12.6+, Python 3.12+, PyTorch 2.7+; gated Hugging Face weights (3.50 GB FP32) | Free, offline | [S] |
 | Off | — | Free | Default with no Meta key or GPU |
 
 Only single images are used for verification. CPU-only SAM is not offered for per-step use (too slow).
 
+TASK-008 adds a server-only developer CLI, `spike:sam-screenshot`, separate from the future perception adapter. With explicit `--live` consent it makes one non-streaming `sam-3.1` request to the fixed Meta Responses endpoint using the existing private host key, the fixed concept `button` and a validated owner-selected PNG. It uses `store:false`, compact one-bit masks and confidence metadata. It has a 30-second request/read deadline, an 8 MiB response cap and no retries; billing is for one image, not Muse reasoning tokens. Specialized SAM input contains only the concept and image, with UTC evidence time generated by code. No computer tool, replay state or input execution is involved. The direct endpoint exception is development-only; product SAM remains off by default.
+
+Before the official pinned parser can allocate masks, complete wire preflight enforces frame 0, paired box/mask records, unique IDs, exact source dimensions, inclusive in-bounds geometry, confidence, at most 64 objects and 16 million decoded pixels total. Masks must be nonempty and decode canonically; source-aligned monochrome PNGs and sanitized metadata are written exclusively under ignored `data/spikes/task-008/<uuid>/`. Zero matches is a normal incomplete-target outcome. Raw responses, encoded payloads, provider IDs, credentials and source-image copies are excluded. Precise safe stage/reason/schema/parser codes distinguish failures without logging arbitrary provider text. Live run b91a98d6-8c75-408b-9b01-bfbba38c92b0 validated one mask in 2122 ms; agent visual comparison confirmed View project status. This completes the developer spike, not production grounding/verification. Original request-time evidence remains unchanged.
+
 ### 7.8 Model check [S]
+
+The owner-approved spike:meta-live-click developer test uses fresh credential-free Firefox on the verified local placeholder only. It keeps model coordinates as internal grounding data for a fixed click intent, independently validates the point/scene, executes at most once and verifies details closed→open plus visible status. Screenshots explicitly use original detail in all newly constructed image items. Validated PNG dimensions must equal viewport CSS dimensions at DPR1; viewport capture uses no crop or full-page expansion. The request states actual image dimensions and pixel coordinates without target hints. Geometry mismatches fail closed. Limits: low reasoning, 1024 output tokens/request, 3072 total, at most three requests, 30 seconds/request and 90 seconds active model time; no retries. Generic computer_action_requires_confirmation may pause for specific owner approval only after target validation; a run/action-scoped single-use stdin token binds that reply. Review is capped at five minutes, excluded from model time, and never auto-approved. Raw checks/call IDs/receipts stay in memory. After approval and rechecking, execute once and replay genuine history with exact reviewed checks and real after-image for acknowledgement. Unknown genuine metadata and documented assistant phases are preserved; action schemas remain strict. Further returned actions never execute. Execution/postcondition/acknowledgement states remain separate. Private local-page before/after and safe metadata live under ignored data/spikes/task-007-live-click/. This does not implement production desktop/egress services. Earlier calls/unknown discarded fields remain historical. Earlier reviewed-flow run d1395501-fc64-4938-bb4e-676bd3e3fef0 successfully completed observation/replay, then failed the independent target gate at (359,483), below the button. No review was requested and no input/acknowledgement occurred. Two calls used 191/176 output tokens; larger caps did not resolve grounding. TASK-007 remains open; production page-structure/SAM grounding is still future work. Original-detail run 3e06d19f-8460-4162-968a-7ea98b134318 verified 1280x800/DPR1 and the unchanged screenshot hash, but returned (359,483), below the button ending y=466. One Contributor request used 3559 input / 670 output tokens (584 reasoning); wrong_target stopped before review/input/acknowledgement. Original detail did not resolve the miss; no token cap was reached.
 
 When a model is added, it runs about 10 standard tasks on the built-in mock vendor portal. The result is shown as a score and expected behaviour, e.g. "8/10, purchases will ask for approval".
 
@@ -339,6 +360,12 @@ When a model is added, it runs about 10 standard tasks on the built-in mock vend
 - **OpenAI-compatible adapter:** OpenAI, OpenRouter, Baseten, other compatible providers, and local servers (Ollama, LM Studio, llama.cpp, vLLM). Base URL + key.
 - **Anthropic-compatible adapter [S]:** Anthropic's Messages API and any endpoint that speaks the same format. Base URL + key. Handles tool calling, image input, prompt-cache markers, and Claude's computer-use tool (translated through the intent schema, §7.1). See ADR-023.
 - **Native Meta adapter:** Muse models, including the Responses API computer tool (`tools: [{type: "computer"}]`) on `muse-wonder-1.0` / `muse-spark-1.3`, batched actions in screenshot pixel coordinates, and acknowledgement of `pending_safety_checks`.
+
+TASK-007 provides a standalone, server-only developer probe with a bounded read-only observation loop. The owner-selected muse-spark-1.3-contributor model receives a text-only observation request, then the validated static PNG as computer_call_output only after a single valid screenshot call with empty safety checks. At most two requests use minimal reasoning, 512 output tokens each (1024 total), a 30-second per-request deadline and 45-second total deadline. No retries or desktop input occur. A click before the image is supplied is rejected. Native coordinates remain provider-grounding evidence, separate from product intents; no provider adapter, desktop driver, egress proxy or production receipts are implemented. A genuine validated live click and owner target confirmation are required for completion.
+
+Safety metadata is schema-validated before classification. Opaque check strings follow Meta's string types and are bounded by the 1 MiB response cap rather than an invented 128-character ID limit. Malformed metadata produces `invalid_response`; valid nonempty checks produce `safety_review_required`. The general result contains only safe codes/counts and field/type/constraint diagnostics. A separate private `safety-review.json` preserves bounded sanitized explanations for review, never opaque IDs or raw payloads. It is explicitly untrusted tool data and never triggers execution or automatic acknowledgement. Historical discarded check reasons cannot be reconstructed from old evidence.
+
+Stateless store:false continuation retains the genuine computer_call, call_id and meta_safety_replay_receipt unchanged, with documented reasoning items carried only in memory. Missing/malformed replay data stops before a second request. The supplied PNG is a static test scene, never represented as a fresh host capture. Per-turn stages, request counts and numeric usage are saved; opaque handles, receipts, reasoning and raw payloads are excluded. Repeated screenshot requests, unsafe/malformed output and exhausted budgets stop without accepting a click. Earlier one-shot evidence remains unchanged. Latest live evidence f4aa6650-f817-4148-8802-bb369129efcc contains a valid empty-check screenshot request, but continuation failed replay validation before a second call. Its finer replay reason was not retained and cannot be reconstructed. New executions expose only whitelisted replay subreason codes; the provider remains responsible for receipt authenticity verification. TASK-007 is still open.
 
 ### 8.2 Roles
 
@@ -604,17 +631,18 @@ These are layered mitigations, not guarantees.
 ### 15.1 Isolation [M]
 
 ```
-/home/<agent>/        owner: agent's Linux user, mode 700
+/workspace/homes/<agent-uuid>/  owner: agent Linux user, mode 700
 ├── inbox/            uploads from the owner
 ├── outbox/           deliverables
 ├── work/             scratch, cloned repos
-├── Downloads/        noexec mount; file-type policy + hash check
+├── Downloads/        validated alias -> /downloads/<agent-uuid>
 └── .config/chromium/ browser profile (hidden from Files tab)
 /crew/                handoff folders, one Linux group per sender/receiver pair
 ```
 
 - Each agent gets its own Linux user, screen, browser profile, credentials and files. There is no sudo and no access to other homes.
-- Containers run non-root with Docker's default seccomp/AppArmor and read-only system paths where possible.
+- Containers run non-root except ADR-026 trusted desktop administration. Desktop adds only the six approved bootstrap capabilities after cap-drop ALL, permanently removes SYS_ADMIN before normal operation, and applies an inherited syscall/ABI filter. Every agent has zero capability sets. Docker default AppArmor, read-only system paths, no-new-privileges and the pinned Chromium sandbox profile remain enforced.
+- Canonical `/downloads/<agent-uuid>` is mode 700 and mounted `noexec,nosuid,nodev`; its persistent source is inaccessible to agents under root-only `/workspace/.system`. Home/profile/subdirectories are mode 700. Alias changes and wrong ownership are rejected. `noexec` prevents direct execution, not interpreter use or copying elsewhere; approval/file-type checks remain later work.
 - The desktop container never mounts the database, secrets or `.env`.
 
 ### 15.2 Content trust
@@ -651,7 +679,8 @@ These are layered mitigations, not guarantees.
 |---|---|
 | File-type policy by magic bytes (executables, scripts, installers, APKs and macro Office files blocked) | [S] |
 | SHA-256 lookup against MalwareBazaar (hash only, never the file) | [S] |
-| `noexec` Downloads; macros disabled | [S] |
+| Kernel `noexec` Downloads | [M] TASK-011 |
+| Office macro policy | [S] |
 | Known payment-provider redirects allowed; look-alikes blocked; 3-D Secure / bank OTP always handed to the owner | [S] |
 | Site rules: Full / Assisted / Assist-only (strict anti-bot and queue sites default to assist-only) | [S] |
 | Never: CAPTCHA solving, bot-detection evasion, queue jumping, rush-refreshing | — |
@@ -671,13 +700,15 @@ These are layered mitigations, not guarantees.
 |---|---|
 | Accounts | Single owner, created at first run; signup closes permanently afterwards |
 | Credentials | Email + Eclipse Crew password, hashed with argon2id |
-| Sessions | Secure, HttpOnly, SameSite cookie; CSRF protection; active-session list; "Sign out everywhere" |
+| Sessions | Database-backed expiring/revocable records; HttpOnly, SameSite=Lax cookie (`eclipse_session` on HTTP, Secure `__Host-eclipse_session` on HTTPS); exact Origin and session-bound CSRF. Settings → Account lists only live owner sessions, marks the current one, and "Sign out everywhere" revokes every other session. |
 | Abuse | Rate limiting and temporary lockout on repeated failures |
 | Changes | Change password / email requires the current password; a password change signs out other sessions |
-| Recovery | `eclipse-crew reset-password` on the host |
+| Recovery | `npm run reset-password` on the host, with the new password supplied through private stdin; verified Compose image/network and least-privilege app role; password update and owner-session revocation are atomic |
 | 2FA [S] | TOTP (RFC 6238), off by default, 10 recovery codes, encrypted secret, `eclipse-crew reset-2fa` |
 | Binding | `127.0.0.1` by default; remote access via Tailscale or Caddy + HTTPS |
 | Future | Every table carries `owner_id` so team mode **[L]** needs no migration |
+
+Setup, login, account credential changes and password recovery use the same transaction advisory lock. Migration `0002_owner_singleton` enforces one owner row. Supported original-owner and sessions-schema migrations preserve rows/history, including historical LF/CRLF checksums; unsupported state and multiple legacy owners fail without deletion. The single-owner login lockout ignores caller-supplied forwarding headers.
 
 ---
 
@@ -698,19 +729,23 @@ Docker-managed volumes:
     postgres              ← database
 ```
 
-Workspace and artifacts use Docker volumes rather than Windows bind mounts. This gives better I/O on WSL 2 and keeps Linux ownership and permissions, which isolation depends on.
+Workspace and artifacts use Docker volumes rather than Windows bind mounts. This preserves Linux ownership and permissions and avoids the Windows host-file sharing path.
+
+TASK-009 developer feasibility is verified on Windows with Docker Desktop Linux engine 29.9.2 using a separate pinned Ubuntu fixture, one shared container and a fresh named home volume. Two real UIDs (20001/20002) retain mode-700 homes and synthetic file/profile markers after container recreation; 40 cross-user denial checks pass. Runtime has no effective capabilities, sudo, network, host mounts or published ports, and uses read-only root plus no-new-privileges. The spike runs no production services or model calls. Exclusive private evidence lives under ignored data/spikes/task-009/<uuid>/; cleanup checks exact labels, image identity and local-volume settings before removing only test resources.
+
+Run 68cb4301-90ea-4b9d-b191-3d91327f7447 completed six bounded I/O rounds in 28.6 seconds overall: each 1,000-file/4 KiB create-read-rename-delete cycle took approximately 2.8–2.9 seconds, and 32 MiB sequential writes including fdatasync measured 416–592 MiB/s. Reads were cached (1347–1383 MiB/s). These shell-workload measurements establish feasibility on this machine, not a product SLA or a comparison against bind mounts. That spike did not implement production provisioning. TASK-011 now verifies stable identities/private layouts and Downloads noexec; TASK-012 now verifies screens/browser sessions; controller and live viewing are implemented by TASK-013–015.
 
 ### 17.2 Data model (initial)
 
 | Table | Key fields |
 |---|---|
-| `owner` | id, login, password_hash, timezone |
+| `owner` | id, owner_id (equal to id), login, password_hash, timezone, created_at |
 | `providers` | id, kind, base_url, encrypted_key, key_hint, enabled |
 | `model_roles` | role, provider_id, model, use_main_key, mode, agent_id |
 | `agents` | id, name, role, linux_user, screen, browser, status, astra_mode, budgets, routing |
 | `agent_policies` | agent_id, tools[], domains[], actions[], memory_scopes[], limits |
 | `permissions` | agent_id, site, action, limit, expires_at, revoked_at |
-| `sessions` | agent_id, started_at, snapshot_version |
+| `sessions` (implemented owner authentication) | id, owner_id, token_hash, csrf_token, created_at, expires_at; future agent conversation/session state remains unimplemented |
 | `messages` | session_id, role, card_type, content, source_tag |
 | `memory_entries` / `memory_versions` | file, scope, visible_to[], provenance, trusted, pinned, confidence, version |
 | `skills` / `skill_versions` | agent_id, name, body, source, status, version, diff |
@@ -723,12 +758,18 @@ Workspace and artifacts use Docker volumes rather than Windows bind mounts. This
 | `traveller_profiles` | encrypted_blob, allowed_agents[] |
 | `backups` | target, status, size |
 
+The implemented Drizzle schema defines `owner`, authentication `sessions`, `agents` and `agent_policies`. `agents` stores owner scope, name, role, canonical `soul_md` persona content, `active`/`paused` status and integer-cent daily/monthly budgets; `agent_policies` stores default-deny tool, domain, action and memory-scope allowlists. Migrations `0000`–`0003` add these tables and the singleton-owner constraint. Runtime and migration connections use separate `DATABASE_URL` and `MIGRATION_DATABASE_URL` values. TASK-064 provisions the separate database roles and private database network. TASK-065 supplies master-key setup and shared authenticated encryption before stored model keys or credential injection.
+
+`.env.example` documents three separate database passwords and the runtime/migration URLs without supplying credentials. Compose mounts password secrets only into Postgres and gives the app only its runtime URL. Server-only validation rejects incorrect role URLs; database initialization verifies the authenticated role and releases failed initialization attempts so a later call can recover. CLI configuration loads `.env` with shell values taking precedence. No configuration substitutes the bootstrap account for either role. Migration SQL uses LF in Git; provisioning accepts the known migration's LF/CRLF hashes while preserving stored history and rejecting other hashes.
+
+The app renders dynamically. A fresh per-request nonce connects CSP to Next.js scripts and styles; production forbids script eval and inline scripts without a nonce. Redirects, errors and native upgrade refusals retain security headers. Production HSTS follows the configured HTTPS `APP_ORIGIN`, never an untrusted forwarding header. Ingress overwrites forwarding headers and the app trusts only the exact ingress DNS peer. Browser acceptance uses disposable profiles; personal browser access is unnecessary. A real external HTTPS deployment remains unverified.
+
+New artifacts volumes inherit ownership from the image's UID/GID 1000 directory. Existing project-managed local artifacts volumes can be repaired explicitly with `npm run artifacts:repair` while the app is stopped. The helper verifies the selected Compose container, volume labels, local driver and image; it mounts only that volume with no network or secrets and never follows symlinks outside it.
+
 ```mermaid
 erDiagram
   agents ||--o{ agent_policies : has
   agents ||--o{ permissions : grants
-  agents ||--o{ sessions : runs
-  sessions ||--o{ messages : contains
   agents ||--o{ skills : owns
   skills ||--o{ skill_versions : versions
   agents ||--o{ routines : schedules
@@ -830,6 +871,8 @@ flowchart LR
 | Mission Control [S] | All agents' live thumbnails, current step, spend |
 | PWA [S] | Installable; push for approvals, hand-offs, alerts, reports |
 
+Implemented workspace shell: at ≥1280 px the 260 px agent pane, flexible chat and resizable 380 px–50 vw right panel are separated by borders; at 768–1279 px the agent rail is 56 px and agent/panel sheets overlay chat; below 768 px Agents, Chat and Panel switch through a bottom bar. The right panel's Desktop tab mounts the existing authenticated noVNC view; the other tabs show honest empty states, and Settings links to the account page. Layout resolves before desktop children mount, so an unknown viewport cannot start a hidden stream.
+
 Real-time channels: noVNC over WebSocket (desktop), SSE for run/job updates **[S]**.
 
 Accessibility: keyboard navigable, visible focus, WCAG 2.2 AA contrast, ARIA labels, captions for voice replies.
@@ -925,7 +968,7 @@ Idle browsers are suspended to save RAM **[S]**.
 
 ## 25. Open questions
 
-1. Windows Docker volume permissions and performance for per-agent isolation (to verify).
+1. Windows volume feasibility verified by TASK-009; desktop image verified by TASK-010; persistent identities/private layouts and Downloads noexec verified by TASK-011; agent screens/profile lifecycle verified by TASK-012; authenticated controller/live view/takeover are verified by TASK-013–015.
 2. Computer-use replay cap (reported at 29 pairs) and SAM video billing minimum.
 3. Voice Transcribe pricing, rate limits and prompt-caching behaviour.
 4. uBlock Origin Lite and Safe Browsing on the Linux Chromium build.

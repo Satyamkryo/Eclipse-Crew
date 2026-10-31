@@ -137,64 +137,122 @@ You need an API key for one model provider (e.g. the Meta Model API), or a local
 
 ## Quickstart (your own PC)
 
-**1. Clone the repository**
+> **Current development status:** Owner setup/login, account settings, agent management and the authenticated three-pane workspace shell are implemented. The desktop has isolated persistent graphical sessions, live noVNC viewing and takeover. Agents are created, edited, paused, resumed and deleted in the workspace with default-deny permissions, a `SOUL.md` persona and daily/monthly budgets. The agent runtime and model settings remain upcoming. The egress proxy is inert.
 
-```bash
-git clone https://github.com/<your-org>/eclipse-crew.git
-cd eclipse-crew
+To run the local app, use Node.js 24, run `npm ci` and `npm run dev` from the project root, and open `http://127.0.0.1:3000`. Authentication requires the configured private PostgreSQL service; the complete isolated setup below is provided by Compose. `dev` and `start` use the application's Node/Next WebSocket entry point and bind to localhost; do not replace them with `next start` if desktop streaming is required.
+
+The configuration tests run with `npm run test:config` and require Node.js 22.6 or newer for built-in TypeScript stripping.
+
+PostgreSQL stays on Docker's private network. Provisioning creates separate application and migration roles; the application cannot change the schema or access migration metadata. Owner-scoped session and agent queries are implemented; later product tables remain future work.
+
+**Run the current Compose skeleton on Windows:** Start Docker Desktop and create `.env` only if it doesn't already exist:
+
+```powershell
+if (-not (Test-Path -LiteralPath .env)) { Copy-Item .env.example .env }
 ```
 
-**2. Create your `.env`**
+In the private `.env` file, set `POSTGRES_BOOTSTRAP_PASSWORD`, `POSTGRES_APP_PASSWORD`, and `POSTGRES_MIGRATOR_PASSWORD` to three different, randomly generated values of at least 32 ASCII letters or digits. Use the app password in `DATABASE_URL` and the migration password in `MIGRATION_DATABASE_URL`; preserve the role names, `postgres` host and `eclipse` database shown in the example. Keep all three values safe. Then run:
 
-```bash
-cp .env.example .env          # Windows PowerShell: Copy-Item .env.example .env
+```powershell
+docker compose up -d --build
+docker compose ps
+npm run db:provision
+npm run db:migrate
 ```
 
-`.env` holds the master encryption key that protects your saved API keys and credentials. Generate a random value (this works on any OS that has Docker):
+Set `DESKTOP_CONTROL_SECRET` to a privately generated 64-character lowercase hexadecimal value as described below. `APP_ORIGIN` must exactly match the URL used in the browser, including scheme and port; the default is `http://127.0.0.1:3000`. Use this address consistently instead of switching to `localhost`. Configure the exact HTTPS origin for a TLS deployment.
 
-```bash
-docker run --rm alpine sh -c "head -c 32 /dev/urandom | base64"
+Open `http://127.0.0.1:3000` and complete owner setup. To stop the containers while retaining their volumes, run `docker compose down`. The provisioning command checks the existing database and can be repeated; it supports the original owner schema and sessions schema plus the singleton-owner migration, preserving rows and existing LF/CRLF history. It refuses unknown state, multiple legacy owners or mismatched credentials and never deletes an account to repair a conflict. It does not rotate passwords. For an existing project volume, retain the original bootstrap password, back up the volume first, and supply the same role credentials on every run. If preflight refuses the volume, investigate the conflict instead of resetting it. Compose and the commands use shell settings in preference to `.env`; restart Compose after changing settings so its mounted secrets match. `.env` is ignored by Git and excluded from the build context.
+
+New artifacts volumes are writable by the app's non-root user. If an older installation reports permission denied under `/var/eclipse/artifacts`, back up its artifacts volume and run the following from the same Compose project:
+
+```powershell
+docker compose stop app
+npm run artifacts:repair
+docker compose start app
 ```
 
-Paste the output into the encryption-key line of `.env`. The comments in `.env.example` describe each setting.
+The repair command refuses a running app, bind mounts, custom volume-driver options or mismatched project labels. Its temporary maintenance container has only the artifacts volume, no network or credentials, and preserves file contents and permission modes. It does not follow symlinks outside the volume. Do not substitute a host directory or reset a volume to fix permissions.
 
-> Keep `.env` private and back it up somewhere safe. If you lose the encryption key, your saved API keys and credentials can't be decrypted. Never commit it; it's already in `.gitignore`.
+Pages render on each request so Next.js scripts receive fresh CSP nonces. Production responses, redirects and errors include security headers. Localhost remains HTTP; production HSTS follows the configured HTTPS `APP_ORIGIN`, never a caller-supplied forwarding header. Keep ingress's forwarding-header overwrite in place and configure the exact origin for a TLS deployment. Provisioning accepts supported LF/CRLF migration variants without rewriting stored history; `.gitattributes` enforces LF for future migration checkouts.
 
-**3. Start the stack**
+Regression checks: `npm run test:db-client` tests retry recovery; `npm run test:db-roles` checks database privileges and LF/CRLF upgrades; `npm run test:http-security` checks the five-service stack, CSP and artifacts repair using disposable resources. These checks do not require access to personal browsers.
 
-```bash
-docker compose up -d
-```
+The pinned noVNC 1.6.0 npm artifact has a CommonJS/top-level-await packaging incompatibility. `npm run dev` and `npm run build` automatically run `scripts/prepare-novnc.mjs`, which checks the package version and exact upstream file hash before normalizing only its browser utility module to ESM. It preserves the awaited feature probe and refuses unexpected bytes. `npm run test:novnc-compat` verifies that compatibility step; `npm run test:rfb-bridge` verifies the private view-only protocol.
 
-The first start builds the desktop image and downloads Chromium, which takes a few minutes.
+**TASK-010 desktop image:** `docker compose build desktop` builds the pinned Ubuntu toolchain. The approved lock contains 379 exact Ubuntu archives, verified by byte count/SHA256 before offline installation with networking disabled. Node 24.22.2, upstream Chromium 159.0.8134.0 (snapshot 1731633) and playwright-core 1.64.1 are separately pinned. The upstream browser is a development snapshot; updates require deliberate pinning and revalidation. No Chrome-for-Testing installer is used. The desktop now uses the owner-approved ADR-026 trusted setup role described below, with read-only root, bounded temporary storage and no published ports. Per-agent sessions are available through local administration; the agent runtime remains under development.
 
-**4. Open the workspace**
+`npm run test:desktop-image` runs offline guards and the disposable build/smoke, saving bounded evidence under ignored `data/spikes/task-010/<uuid>/`. Tool inventory, Compose health, Xauthority/Openbox, accepted/rejected VNC authentication, noVNC WebSocket and PNG/video checks pass. TASK-010 is complete: run c66f0dda-e890-428b-8f58-a1df20c978fa verifies genuine Playwright/xdotool clicks in graphical Chromium and confirms its namespace/PID/network and Seccomp-BPF sandboxes active. The desktop-only ADR-025 profile is pinned to the upstream Playwright policy plus Chromium’s required namespace-local chroot; the ordinary container process is still denied chroot. Run Compose from the project checkout so it can load docker/desktop/seccomp_profile.json. Keep this checked-in profile, cap-drop ALL and no-new-privileges; do not use seccomp=unconfined or --no-sandbox. The five-service `test:http-security` regression passes. No model calls or personal-browser data are used.
 
-Go to **http://localhost:3000** and follow [First-run setup](#first-run-setup).
-
-**Stop / start again**
+**TASK-011 agent identities:** Build and start the desktop with your configured Compose environment: `docker compose build desktop`, then `docker compose up -d desktop`. The owner CLI works from this checkout and accepts canonical lowercase UUIDs. Use the actual Compose project name when it differs from the directory name:
 
 ```bash
-docker compose stop        # stop, keep everything
-docker compose up -d       # start again
-docker compose logs -f app # watch logs
+npm run desktop:agent -- create --owner 11111111-1111-4111-8111-111111111111 --agent aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa --project main
+npm run desktop:agent -- inspect --owner 11111111-1111-4111-8111-111111111111 --agent aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa --project main
+npm run desktop:agent -- exec --owner 11111111-1111-4111-8111-111111111111 --agent aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa --project main -- id
 ```
 
-All services restart automatically after a reboot (`restart: unless-stopped`).
+These are trusted local owner operations using Docker authority for infrastructure administration; product agents are created and managed in the workspace. Creation is idempotent and keeps UID/GID and files. Homes at `/workspace/homes/<agent-uuid>`, their inbox/outbox/work/profile directories and canonical Downloads are agent-owned mode 700 on the workspace volume. The home Downloads alias points to `/downloads/<agent-uuid>`; a changed alias is refused. Future browser sessions must use the canonical path. Downloads has kernel `noexec,nosuid,nodev`; the executable backing store is hidden behind root-only infrastructure. This stops direct execution, not interpreters or copying files elsewhere. Stale provisioning locks, conflicting paths/ownership and corrupt state stop safely; inspect those before recovery rather than deleting data or changing permissions broadly.
+
+ADR-026 grants trusted setup only CHOWN/DAC_OVERRIDE/SETUID/SETGID/SETPCAP/SYS_ADMIN. The reduced PID 1 and administration entry points permanently remove SYS_ADMIN and apply an inherited syscall filter before normal operation. The trusted supervisor retains the other five capabilities and can access agent data; every agent command has zero capability sets, no supplementary groups and no-new-privileges. Keep the checked-in seccomp profile. Unsupported mount/capability behavior fails closed. `npm run test:agent-users` verifies real two-agent denials, concurrency, Downloads execution denial and recreation persistence in a disposable project; bounded private evidence is under ignored `data/spikes/task-011/<uuid>/`. No model calls or personal profiles are used.
+
+**TASK-012 sessions:** after creating an identity, use these trusted local commands with the same owner/agent UUIDs:
+
+```bash
+npm run desktop:agent -- session-start --owner 11111111-1111-4111-8111-111111111111 --agent aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa --project main
+npm run desktop:agent -- session-status --owner 11111111-1111-4111-8111-111111111111 --agent aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa --project main
+npm run desktop:agent -- session-stop --owner 11111111-1111-4111-8111-111111111111 --agent aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa --project main
+```
+
+Each running session has its own authenticated Xvfb screen, Openbox window manager and sandboxed graphical Chromium profile. Repeat start/stop safely; stopping keeps the profile. Following container recreation, explicitly start the agent to reopen its saved profile. Browser control stays on private pipes inside the container; there is no CDP TCP endpoint to publish. Stale/conflicting locks fail safely unless ownership and staleness are verified. After logging in, open `/?agent=AGENT_UUID` to view an existing running agent owned by that account. UUIDs provisioned for a different/stub owner are not silently adopted. **Take over** enables clicks and keyboard text; **Hand back**, closing the view or disconnecting releases control. Agent input/capture is blocked during takeover. An uncertain operation stops the session; explicitly stop/start it before retrying. `npm run test:agent-sessions` and `npm run test:auth-desktop-e2e` use synthetic pages/accounts and disposable containers, with no model calls or personal browser profiles.
+
+**TASK-009 volume feasibility spike:** Start Docker Desktop in Linux-container mode, then run `npm run test:volume-isolation` for offline guard tests and `npm run spike:volume-isolation` for the real disposable Docker fixture. The CLI recognizes the existing E-drive Docker installation on Windows, otherwise it uses Docker from PATH. No model calls, project `.env`, personal browser data or production volumes are used. The fixture uses the same pinned Ubuntu base as the desktop skeleton, two real Linux users and one fresh named volume; it tests own-file operations, cross-user denials, container-recreation persistence and three I/O rounds per user. Every workload has a 60-second deadline; the run budget is five minutes including reserved cleanup time.
+
+Results are written exclusively to ignored `data/spikes/task-009/<uuid>/result.json`. Cleanup removes only exact run-labeled test resources after identity verification; it never prunes Docker resources. A refused cleanup reports the test resource names for review. Real run 68cb4301-90ea-4b9d-b191-3d91327f7447 passed 40 cross-user denials and six I/O rounds, then removed its fixture resources. Small-file cycles took 2.8–2.9 seconds; sequential writes including fdatasync measured 416–592 MiB/s. Cached read rates and shell-command overhead are reported separately; there is no production SLA or bind-mount comparison. This verifies the filesystem feasibility spike; the production desktop and full agent isolation are still being built.
+
+**TASK-007 developer screenshot probe:** The CLI implements a bounded read-only native observation exchange using an owner-selected static PNG. Offline tests cover both turns; the latest live invocation stopped at stateless replay validation before image submission or a second request, so TASK-007 remains open. Earlier correct-click proof had a pending review flag. No browser capture, input execution or acknowledgement occurred. The owner selected muse-spark-1.3-contributor; Contributor training terms apply even with store:false. See [Meta's pricing modes](https://dev.meta.ai/docs/pricing-rate-limits) and [computer-use guide](https://dev.meta.ai/docs/computer-use).
+
+Set `MODEL_API_KEY` privately in ignored `.env.local` or your shell. Never paste it into chat, pass it as a command-line argument, or add it to a `NEXT_PUBLIC_*` setting. Save a PNG showing only the placeholder page, with no browser chrome, logins, OTPs or personal information. The PNG must be at most 5 MiB and 4096 pixels per side. Then run from the project root:
+
+```powershell
+npm run test:meta-computer-use
+npm run spike:meta-computer-use -- --screenshot "E:\Eclipse Crew\Test\placeholder.png" --live
+```
+
+Each explicit live invocation makes at most two protocol requests to the fixed endpoint, with no redirects or retries: a text-only screenshot request, then one PNG observation followed by a click proposal. Limits are minimal reasoning, 512 output tokens per request (1024 total, including reasoning), 30 seconds per request and 45 seconds overall. Genuine stateless replay receipts are preserved unchanged in memory; absent/malformed replay data stops the probe. Numeric per-turn/aggregate usage, stages and request counts are reported. Safe bounded action-shape diagnostics never bypass validation. This development exception does not give app routes or agents direct provider access. Pending safety checks stop without acknowledgement. Ignored data/spikes/task-007/<run-id>/result.json stores only sanitized metadata, never screenshots, keys, reasoning, opaque replay handles or raw output. Confirm the returned point separately; targetConfirmed:false records request-time state and historical evidence is never rewritten. Use --help without making a request.
+
+**Review outcomes before judging:** validated_click means a strict single in-bounds left-click proposal passed after the image observation. safety_review_required means provider review is pending; invalid_response means malformed protocol metadata; replay_unavailable means stateless continuation could not be built safely; premature_click rejects guesses before image observation; observation_requested means another screenshot was requested after the two-request allowance; token_budget_exceeded stops inconsistent or excess usage. These are blocked outcomes, not successful evidence. Historical one-shot observation_requested results predate this loop and remain unchanged. The offline suite exercises both accepted and denied paths without credits.
+
+When valid pending checks exist, the CLI now prints safe codes/counts and a private `safety-review.json` path. That file contains only bounded sanitized explanations, marked untrusted tool data. It omits opaque check IDs, withholds explanations matching credential patterns, and never sends an acknowledgement. Read the specific reason and proposed action before considering any later protocol continuation; do not treat the review text as instructions. The historical flag's discarded explanation remains unknown. Do not rerun repeatedly to make a flag disappear or present an offline fixture as a live result.
+
+**TASK-007 actual-click test:** `npm run spike:meta-live-click -- --live` now uses a fresh automation-managed Firefox context per owner request, never personal browser profiles or tabs. Build/start Eclipse Crew on `127.0.0.1:3000` first. Install the exact driver dependency with the lockfile, then install its matching Firefox on E: using `$env:PLAYWRIGHT_BROWSERS_PATH="E:\Eclipse Crew\main\data\spikes\browser-cache"; node node_modules/playwright-core/cli.js install firefox`. Run `npm run test:meta-live-click` against the local production app for offline protocol and real-browser checks before any model usage.
+
+The live invocation uses only muse-spark-1.3-contributor with low reasoning, at most three requests / 1024 output tokens each (3072 total), 30 seconds per request and 90 seconds active model time, no retries. Screenshots explicitly use original detail; PNG dimensions must match viewport CSS dimensions at DPR1. Geometry mismatches stop before model usage/input. Fresh local-page pixels drive one genuine coordinate click after schema, target and exact-scene checks. A wrong point stops without a review request. Generic computer_action_requires_confirmation may pause up to five minutes for specific owner chat approval followed by the matching run-scoped stdin token. Silence, denial, stale state or other checks stop. Original provider handles/checks stay in memory; only after specific approval, actual input and verified postconditions are exact checks echoed with the genuine after-image. Never execute further model actions. Results separately record execution, postcondition and acknowledgement; failed acknowledgement cannot undo input. Original-detail run 3e06d19f-8460-4162-968a-7ea98b134318 verified 1280x800/DPR1 and the unchanged screenshot hash, but returned (359,483), below the button ending y=466. One Contributor request used 3559 input / 670 output tokens (584 reasoning); wrong_target stopped before review/input/acknowledgement. Original detail did not resolve the miss; no token cap was reached. TASK-007 remains open for grounding; no automatic retries. Private evidence: data/spikes/task-007-live-click/<uuid>/. This driver is development-only.
+
+**TASK-008 SAM screenshot probe:** This developer CLI uses `sam-3.1` and the same private `MODEL_API_KEY` to segment the fixed concept `button` on one owner-selected safe PNG. SAM is a separate model, with no Contributor variant selected. It makes at most one non-streaming image request per explicit invocation, with a 30-second request/read deadline, an 8 MiB response cap and no retries. No browser capture or input execution occurs. Free-credit data-use terms apply.
+
+```powershell
+npm run test:sam-screenshot
+npm run spike:sam-screenshot -- --screenshot "E:\Eclipse Crew\Test\placeholder.png" --live
+```
+
+Results go under ignored `data/spikes/task-008/<run-id>/`: sanitized `result.json` and source-aligned monochrome mask PNGs, without source-image copies, credentials or raw provider text. `validated_masks` means geometry and real mask decoding passed; inspect those masks against the source before confirming the target. `no_matches` is a normal empty result; malformed, oversized and timeout results fail closed. The CLI prints safe stage/reason/schema/parser codes rather than arbitrary provider errors. SAM remains optional/off by default in the planned product; this spike does not implement its settings or perception adapter. Live TASK-008 verification passed on the approved placeholder PNG: one image request returned a valid mask covering View project status, confirmed by visual comparison. Evidence: `data/spikes/task-008/b91a98d6-8c75-408b-9b01-bfbba38c92b0/`. Token usage was reported as zero, which does not imply zero charge: SAM is billed per image. See [SAM documentation](https://dev.meta.ai/docs/sam/overview).
+
+**Full-product quickstart (not yet available):** Current setup requires explicit database provisioning and migration, and the workspace uses **http://127.0.0.1:3000**. The previous one-command quickstart instructions are omitted until the full-product setup is available.
 
 ---
 
 ## First-run setup
 
-The first visit to `http://localhost:3000` opens the setup wizard. It runs once.
+The first visit to `http://127.0.0.1:3000` opens owner setup. It runs once. Current setup creates the owner and timezone; model setup and product conversations remain upcoming.
 
 1. **Create the owner account.** Enter your email and a new **Eclipse Crew password**, not your Gmail or other password. There's only one account per install, and signup closes after this step.
 2. **Confirm your timezone.** It's detected from your browser and used for schedules and the clock every agent sees.
-3. **Add a model provider.** Paste a Meta Model API key, or choose another provider or a local server, then click **Test**. See [Models](#models).
-4. **Create your first agent** from a template, or start blank. Give it a name, role and persona.
-5. **Say hello.** Ask it "What's today's date and time?" and open the **Desktop** tab to watch its screen.
+3. **Planned, not yet available:** Configure a model provider and save its key. See [Models](#models) for the planned settings.
+4. **Create an agent.** Use **Create agent** in the Agents pane and give it a name, role, persona, default-deny permissions and daily/monthly budgets. Starter templates remain planned.
+5. **Planned, not yet available:** Run an agent, chat with it and watch it work from the **Desktop** tab.
 
-You can turn on two-factor login later in **Settings → Account** *(coming)*.
+The signed-in workspace uses three panes: Agents, Chat and a tabbed panel. At tablet width the agent rail collapses and the panel opens as a sheet; on a phone, use the Agents, Chat and Panel buttons at the bottom. Create an agent to provision its isolated desktop, then select it to open the live screen or edit it under **Settings**. The Desktop tab shows the real live screen.
 
 ---
 
@@ -305,7 +363,7 @@ Each job gets its own card, so you can mix providers:
 |---|---|
 | Chat, planning, most steps | Muse Spark (`muse-spark-1.3`) |
 | Hard computer-use steps | Muse Wonder (`muse-wonder-1.0`, preview; falls back to Spark) |
-| Pixel-precise grounding and verification | SAM 3.1 (`sam-3-1`) |
+| Pixel-precise grounding and verification | SAM 3.1 (`sam-3.1`) |
 | Speech to text | Muse Voice Transcribe (`muse-voice-transcribe-1.0`) |
 | Agent avatars | Muse Image |
 | Open weights / second provider | Muse Spark Open (e.g. on Baseten), Muse Glimmer (local) |
@@ -373,13 +431,13 @@ The workspace has three panes. The **left** pane lists your agents. The **center
 
 ### 1. Create an agent
 
-1. Click **New agent** in the left pane.
+1. Click **Create agent** in the left pane.
 2. Pick a template or start blank. Templates *(coming)*: Daily Briefer, Inbox Triage, PR Reviewer, Research Analyst, Dev Agent, Travel & Booking Assistant.
-3. Set the **name**, **role** and **persona** (`SOUL.md`, about 2,000 characters: identity, tone, boundaries).
+3. Set the **name**, **role** and **persona** (`SOUL.md`, up to 2,000 characters: identity, tone, boundaries). Leaving it blank uses an editable role-based default.
 4. Set **permissions**: allowed tools, websites, memory scopes and action types. Everything not listed is denied.
-5. Set a **budget** (daily / monthly) and, optionally, a different model than the crew default.
+5. Set the required **daily and monthly USD budgets**. Enforcement and warnings arrive with the run/budget tasks.
 
-Each agent gets its own Linux user, screen, browser profile and home folder. To pause an agent, use **Pause** in its menu. **Delete** removes its user, browser profile, files and memory, after offering a backup.
+Each agent gets its own Linux user, screen, browser profile and home folder. Select the agent and open **Settings** to edit it, **Pause agent** / **Resume agent**, or **Delete agent**. Deletion warns you to back up first and requires the exact agent name; it removes the user, browser profile, files, persona and permissions.
 
 ### 2. Chat with an agent
 
@@ -398,7 +456,7 @@ Each agent gets its own Linux user, screen, browser profile and home folder. To 
 2. Click **Take over** to use the mouse and keyboard yourself. The agent pauses.
 3. Click **Hand back**, and the agent resumes from where it was.
 
-**Login walls, CAPTCHAs, one-time codes and payment checks:** the agent stops and asks you. Take over, complete them, then hand back. The agent never solves CAPTCHAs. Logins persist in that agent's browser profile.
+**Planned login handoff:** the agent runtime will stop at login walls, CAPTCHAs, one-time codes and payment checks and ask the owner. Current desktop primitives reject password/OTP text and fill targets; protected credential entry and the runtime handoff remain later work. Existing profile state persists across explicit session restarts. Agents never solve CAPTCHAs.
 
 Nothing is recorded while you're in control, unless you press **Record** in teach mode.
 
@@ -445,11 +503,11 @@ Each routine can get a webhook URL `POST /api/hooks/<id>` with a secret token. C
 
 1. Open **History** and pick a run.
 2. Each step shows before/after thumbnails, the target (with the SAM highlight if enabled), the verification method, confidence, cost and pass/fail.
-3. Click **Export** to download `run.json`, then verify it offline:
+3. **Planned (TASK-030; not yet available):** Once the verifier is implemented, click **Export** to download `run.json` and verify it offline:
    ```bash
    docker compose exec app eclipse-crew verify /path/to/run.json
    ```
-   A pass means no step was altered, removed or reordered since it was signed.
+   A passing verification will mean no step was altered, removed or reordered since it was signed.
 
 ### 9. Rewind and branch
 
@@ -503,7 +561,7 @@ Each agent has its own home folder:
 inbox/      files you give the agent
 outbox/     what the agent produces for you
 work/       its scratch space
-Downloads/  browser downloads (can't be executed)
+Downloads/  alias to canonical noexec downloads (direct execution denied)
 ```
 
 Use the **Files** tab *(coming)* to browse, preview, download, upload to `inbox/`, or **Open on the agent's desktop**. Risky download types (executables, installers, macro Office files) are blocked by default.
@@ -602,14 +660,27 @@ Found a vulnerability? See [SECURITY.md](../docs/SECURITY.md). Please don't open
 
 | Task | How |
 |---|---|
-| Change password | **Settings → Account**. Needs your current password; signs out other sessions. |
-| Change email | **Settings → Account**. Needs your current password. |
-| See / end sessions | **Settings → Account → Active sessions**, then **Sign out everywhere** |
+| Change password | **Settings → Account**. Needs your current password; signs out other sessions and keeps this one signed in. |
+| Change email | **Settings → Account**. Needs your current password; no verification email is sent. |
+| See / end sessions | **Settings → Account → Active sessions**, then **Sign out everywhere** to end every other session while keeping this one. |
 | Turn on 2FA *(coming)* | **Settings → Account → Two-factor**: scan the QR code with an authenticator app (Google/Microsoft Authenticator, Authy, 2FAS, Aegis…) and save the 10 recovery codes |
-| Forgot password | On the host: `docker compose exec app eclipse-crew reset-password` |
+| Forgot password | On the host: `npm run reset-password`, supplying the new password through private stdin as shown below. This revokes all owner sessions. |
 | Lost phone and recovery codes *(coming)* | On the host: `docker compose exec app eclipse-crew reset-2fa` |
 
-The recovery commands are safe because only someone who already controls the machine can run them.
+Password recovery verifies the current Compose app image and private database network and runs with the least-privilege application role. It refuses password command-line arguments. On PowerShell, use a hidden prompt without putting the password in command history:
+
+```powershell
+$resetSecret = Read-Host 'New Eclipse Crew password (8-128 characters)' -AsSecureString
+$resetPointer = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($resetSecret)
+try {
+  [Runtime.InteropServices.Marshal]::PtrToStringBSTR($resetPointer) | npm run reset-password
+} finally {
+  [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($resetPointer)
+  Remove-Variable resetPointer, resetSecret
+}
+```
+
+Run from the project root with the existing private `.env` and Docker Desktop running. Recovery changes the password and invalidates the owner's sessions atomically. Two-factor recovery remains upcoming.
 
 ---
 
@@ -637,7 +708,7 @@ git pull
 docker compose up -d --build
 ```
 
-Database migrations run automatically on start. Make a backup before major updates.
+Database migrations are currently explicit: after starting the stack, run `npm run db:provision` and `npm run db:migrate`. Make a backup before major updates.
 
 ---
 
@@ -674,16 +745,17 @@ You can delete any run or agent's data immediately from the UI. Each agent has a
 
 ## CLI reference
 
-Run these on the machine where Eclipse Crew is installed:
+The implemented host commands run from the project root:
 
 ```bash
-docker compose exec app eclipse-crew <command>
+npm run reset-password       # new password through private stdin only
+npm run desktop:agent -- --help
 ```
 
 | Command | Purpose |
 |---|---|
-| `verify <run.json>` | Verify a run's receipt chain and signature offline |
-| `reset-password` | Reset the owner password |
+| `verify <run.json>` *(coming)* | Verify a run's receipt chain and signature offline |
+| `npm run reset-password` | Reset the owner password and revoke owner sessions |
 | `reset-2fa` | Turn off two-factor login *(coming)* |
 | `restore <backup.zip>` | Restore a backup *(coming)* |
 

@@ -16,7 +16,7 @@ Rules for AI agents:
 
 | ADR | Decision | Status |
 |---|---|---|
-| 001 | Self-hosted Docker Compose stack, no hosted SaaS | Accepted |
+| 001 | Self-hosted Docker Compose stack, no hosted SaaS | Superseded by ADR-024 |
 | 002 | Next.js full-stack + TypeScript, no separate backend | Accepted |
 | 003 | PostgreSQL + Drizzle ORM | Accepted |
 | 004 | pg-boss for jobs, not Inngest | Accepted |
@@ -39,11 +39,14 @@ Rules for AI agents:
 | 021 | Speech always becomes text before the Main AI | Accepted |
 | 022 | Apache-2.0 license | Proposed |
 | 023 | Three provider connectors: native Meta, OpenAI-compatible, Anthropic-compatible | Accepted |
+| 024 | Self-hosted Compose stack with localhost ingress | Accepted |
+| 025 | Desktop Chromium sandbox seccomp profile | Superseded by ADR-026 |
+| 026 | Trusted desktop setup and unprivileged agent identities | Accepted |
 
 ---
 
 ## ADR-001: Self-hosted Docker Compose stack
-Status: Accepted · 2026-10-28
+Status: Superseded by ADR-024 · 2026-10-28
 Decision: Ship as one `docker compose up` with four services: `app`, `postgres`, `desktop`, `egress-proxy`. Same file on Windows, macOS and Linux VPS.
 Reason: Users own the machine and the data; no hosted infrastructure to run or pay for.
 Rejected: Hosted SaaS, Vercel deployment, per-agent cloud sandboxes (E2B).
@@ -165,3 +168,20 @@ Reason: Patent grant and trademark clause. Waiting for owner confirmation.
 Status: Accepted · 2026-10-29 · Supersedes ADR-009
 Decision: The provider layer has three connectors behind one interface: native Meta (Muse, computer use), OpenAI-compatible (base URL + key), and Anthropic-compatible (Messages API, base URL + key, with prompt-cache markers). Separate role cards (Main AI, SAM, Voice, Images, Background). Tool calling is the minimum. Meta stays the default.
 Reason: Owner decision. Claude and other Anthropic-format endpoints need their own request format for tool calling, images, caching and computer use; everything else is covered by the OpenAI-compatible connector.
+
+## ADR-024: Self-hosted Compose stack with localhost ingress
+Status: Accepted · 2026-10-30 · Supersedes ADR-001
+Decision: Use one self-hosted Docker Compose stack with the four core services `app`, `postgres`, `desktop`, and `egress-proxy`, plus a fixed-purpose `ingress` service bound to `127.0.0.1:3000`. The app remains on internal-only networks.
+Reason: Docker does not publish a host port for a container attached only to internal networks. The owner approved separate ingress to preserve app isolation and localhost access.
+
+## ADR-025: Desktop Chromium sandbox seccomp profile
+Status: Superseded by ADR-026 · 2026-10-31
+Decision: Only desktop uses a pinned profile derived from official Playwright 1.64.1 (upstream SHA256 cc3e61cabda6bbc1e53e54d27ba4d55a9d3be829b6dd1a596f4a7b31b1cc7849; applied SHA256 fa1e603f170044c931a103bfbe3bac6cfc6c935bdc72408e01c4cf6425cde627). It permits clone/setns/unshare and Chromium’s namespace-local chroot. Kernel capability checks still deny chroot to the ordinary container process. Other services keep Docker default seccomp. Non-root, no-new-privileges, cap-drop ALL, read-only root, isolated networks and unpublished ports remain mandatory.
+Reason: Docker default blocks namespace creation; the unmodified upstream profile also gates chroot on an outer capability that cap-drop ALL removes. Chromium needs that syscall within its private user namespace to narrow its filesystem view.
+Rejected: disabling Chromium sandbox, seccomp=unconfined, privileged containers, added SYS_ADMIN capabilities or global host-kernel changes.
+
+## ADR-026: Trusted desktop setup and unprivileged agent identities
+Status: Accepted · 2026-10-31 · Owner approved · Supersedes ADR-025
+Decision: The shared desktop starts a trusted root bootstrap with only CHOWN/DAC_OVERRIDE/SETUID/SETGID/SETPCAP/SYS_ADMIN to prepare NSS views and persistent noexec Downloads. Before normal operation it permanently drops SYS_ADMIN, applies an inherited restrictive syscall filter, and retains only the five provisioning/UID-switch capabilities. Every agent has a distinct UID/GID, zero capability sets and no-new-privileges. Keep ADR-025’s pinned Chromium sandbox profile, read-only root, isolated networks and unpublished ports; other services keep existing roles/policies.
+Reason: An entirely unprivileged shared service cannot provision users, ownership or mounts. Trusted administration must be separate from agent execution. Python PID 1 reaps children after reducing privileges, so a separate init does not retain bootstrap permissions.
+Rejected: privileged containers, SYS_ADMIN retained after setup, agent sudo/setuid privileges, host/Docker-socket mounts, writable system root, per-agent containers or disabling browser/Downloads protections.

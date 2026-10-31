@@ -1,6 +1,9 @@
 # Private project planning and implementation prompts
 /docs/PRD.md
+/docs/TASKS.md
+/docs/MEMORY.md
 /prompts/
+/designs/
 
 # Secrets, runtime data, and backups
 .env
@@ -11,3 +14,9 @@
 
 # Installed dependencies
 node_modules/
+
+# Next.js build output
+/.next/
+/out/
+/build/
+*.tsbuildinfo

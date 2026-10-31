@@ -1,0 +1,83 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+:root {
+  --background: #000000;
+  --foreground: #ededed;
+  --card: #0a0a0a;
+  --card-foreground: #ededed;
+  --popover: #1a1a1a;
+  --popover-foreground: #ededed;
+  --primary: #ededed;
+  --primary-foreground: #0a0a0a;
+  --secondary: #0a0a0a;
+  --secondary-foreground: #ededed;
+  --muted: #141414;
+  --muted-foreground: #a1a1a1;
+  --accent: #141414;
+  --accent-foreground: #ededed;
+  --destructive: #cd2b31;
+  --destructive-foreground: #ffffff;
+  --border: #242424;
+  --input: #666666;
+  --ring: #ededed;
+  --radius: 0.5rem;
+  --surface-raised: #1a1a1a;
+  --border-strong: #333333;
+  --text-subtle: #878787;
+  --corona: #f2c46d;
+  --corona-foreground: #0a0a0a;
+  --success: #3fb950;
+  --danger: #ff6166;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-danger: var(--danger);
+  --color-success: var(--success);
+  --color-surface: var(--card);
+  --color-surface-hover: var(--accent);
+  --color-surface-raised: var(--surface-raised);
+  --color-text-subtle: var(--text-subtle);
+  --color-corona: var(--corona);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --font-sans: var(--font-geist-sans), system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), system-ui, sans-serif;
+}
+
+.workspace-panel {
+  width: var(--workspace-panel-width, 380px);
+  min-width: 380px;
+  max-width: 50vw;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+}

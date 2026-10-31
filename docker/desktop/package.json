@@ -1,0 +1,11 @@
+{
+  "name": "eclipse-crew-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "playwright-core": "1.64.1",
+    "ws": "8.18.0",
+    "zod": "4.6.7"
+  }
+}

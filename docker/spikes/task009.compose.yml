@@ -1,0 +1,28 @@
+services:
+  probe:
+    image: ${TASK009_IMAGE:?isolated image required}
+    build:
+      context: .
+      dockerfile: task009.Dockerfile
+      network: none
+      labels:
+        ai.eclipse.task009.run: ${TASK009_RUN:?run required}
+    labels:
+      ai.eclipse.task009.run: ${TASK009_RUN:?run required}
+    user: "20001:20001"
+    read_only: true
+    cap_drop: ["ALL"]
+    security_opt: ["no-new-privileges:true"]
+    network_mode: none
+    restart: "no"
+    pids_limit: 128
+    mem_limit: 256m
+    cpus: 1
+    volumes:
+      - homes:/home
+
+volumes:
+  homes:
+    driver: local
+    labels:
+      ai.eclipse.task009.run: ${TASK009_RUN:?run required}

@@ -1,0 +1,16 @@
+.git
+.agents
+.codex
+.aws
+.kiro
+.env
+.env.*
+.next
+node_modules
+data
+backups
+designs
+docs
+prompts
+*.tsbuildinfo
+*.md
