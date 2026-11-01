@@ -21,6 +21,37 @@ test("CSRF requires the actual session token, not only matching syntax", () => {
   for (const token of [undefined, "invalid", "0".repeat(64), expected.toUpperCase()])
     assert.equal(csrf.validateCsrfToken(token, expected), false);
 });
+test("auth rate limit reserves attempts synchronously without double-counting failures", () => {
+  const originalNow = Date.now;
+  let now = 1_000_000;
+  Date.now = () => now;
+  rateLimit.resetRateLimit();
+  try {
+    const concurrent = Array.from({ length: 8 }, () => rateLimit.checkRateLimit());
+    assert.deepEqual(concurrent.slice(0, 5).map((result) => result.allowed), [true, true, true, true, true]);
+    assert.deepEqual(concurrent.slice(5).map((result) => result.allowed), [false, false, false]);
+    assert.ok(concurrent[5].retryAfter > 0);
+
+    rateLimit.resetRateLimit();
+    for (let attempt = 0; attempt < 5; attempt++) {
+      assert.equal(rateLimit.checkRateLimit().allowed, true);
+      rateLimit.recordFailure();
+    }
+    const locked = rateLimit.checkRateLimit();
+    assert.equal(locked.allowed, false);
+    assert.equal(locked.retryAfter, 900);
+
+    rateLimit.recordSuccess();
+    assert.equal(rateLimit.checkRateLimit().allowed, true);
+    rateLimit.resetRateLimit();
+    for (let attempt = 0; attempt < 5; attempt++) rateLimit.checkRateLimit();
+    now += 15 * 60 * 1000;
+    assert.equal(rateLimit.checkRateLimit().allowed, true);
+  } finally {
+    rateLimit.resetRateLimit();
+    Date.now = originalNow;
+  }
+});
 test("single-owner lockout cannot be bypassed by changing claimed IP headers", async () => {
   const { POST } = unwrap(await import("../app/api/auth/login/route.ts"));
   const origin = process.env.APP_ORIGIN;

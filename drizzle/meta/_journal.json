@@ -29,6 +29,20 @@
       "when": 1793465922573,
       "tag": "0003_kind_jocasta",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1793493991087,
+      "tag": "0004_crazy_shocker",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1793495736650,
+      "tag": "0005_heavy_karen_page",
+      "breakpoints": true
     }
   ]
 }

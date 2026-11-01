@@ -39,7 +39,7 @@ WORKDIR /opt/eclipse/desktop
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
     && npm cache clean --force
-COPY check-tools.mjs smoke.mjs bootstrap.py agent-store.mjs agent-admin.mjs supervisor.mjs session-manager.mjs session-worker.mjs vnc-session.mjs rfb-bridge.mjs seccomp_profile.json controller-schema.mjs controller.mjs controller-channel.mjs ./
+COPY check-tools.mjs smoke.mjs bootstrap.py agent-store.mjs agent-admin.mjs supervisor.mjs session-manager.mjs session-worker.mjs cookie-snapshot.mjs vnc-session.mjs rfb-bridge.mjs seccomp_profile.json controller-schema.mjs controller.mjs controller-channel.mjs ./
 RUN cp /etc/passwd /opt/eclipse/desktop/base-passwd \
     && cp /etc/group /opt/eclipse/desktop/base-group \
     && mkdir -p /downloads \

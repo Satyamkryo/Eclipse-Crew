@@ -12,7 +12,7 @@ let database: ReturnType<typeof createDatabase> | undefined;
 async function createDatabase() {
   const connectionString = requireDatabaseUrl("DATABASE_URL", process.env.DATABASE_URL);
 
-  const pool = new Pool({ connectionString });
+  const pool = new Pool({ connectionString, max: 10, connectionTimeoutMillis: 5_000 });
   try {
     const result = await drizzle({ client: pool }).execute(sql`SELECT current_user AS current_user, session_user AS session_user,
       r.rolsuper, r.rolcreatedb, r.rolcreaterole, r.rolreplication, r.rolbypassrls,

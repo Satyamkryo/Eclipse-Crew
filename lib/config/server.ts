@@ -44,6 +44,15 @@ export function requireDatabaseUrl(name: DatabaseSetting, value: unknown): strin
   return result.data;
 }
 
+export function requireEncryptionKey(value: unknown = process.env.ENCRYPTION_KEY): string {
+  const result = z.string().regex(/^[0-9a-f]{64}$/).safeParse(value);
+  if (!result.success)
+    throw new Error(
+      "ENCRYPTION_KEY must be a 64-character lowercase hex string. Run npm run encryption-key to generate it.",
+    );
+  return result.data;
+}
+
 export function requireDesktopControlSecret(value: unknown): string {
   const result = z.string().regex(/^[0-9a-f]{64}$/).safeParse(value);
   if (!result.success)

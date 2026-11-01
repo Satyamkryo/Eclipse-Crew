@@ -27,6 +27,7 @@ test("takeover/control schemas require complete session, generation and lease me
   assert.equal(TakeoverSchema.safeParse({ ...base, operation: "takeover" }).success, true);
   assert.equal(TakeoverSchema.safeParse({ ...base, operation: "handback", leaseId: randomUUID() }).success, true);
   assert.equal(OwnerInputSchema.safeParse({ ...base, leaseId: randomUUID(), operation: "input.type", text: "hello" }).success, true);
+  assert.equal(OwnerInputSchema.safeParse({ ...base, leaseId: randomUUID(), operation: "input.type", text: "hello", ownerInput: true }).success, false);
   for (const key of ["generation", "sessionRef", "connectionId", "requestId"]) {
     const incomplete = { ...base, operation: "takeover" }; delete incomplete[key];
     assert.equal(TakeoverSchema.safeParse(incomplete).success, false, key);
@@ -91,10 +92,12 @@ test("owner input and handback are bound to the active owner/session/viewer/leas
   assert.equal(f.calls.length, 0);
   assert.deepEqual(await f.manager.ownerInput(f.ownerId, f.agentId, "input.type", { text: "hello" }, control), { ok: true });
   assert.deepEqual(f.calls[0].params, { operation: "input.type", text: "hello" });
+  assert.equal(f.calls[0].ownerInput, true);
   await rejectsCode(() => f.manager.ownerInput(f.ownerId, f.agentId, "capture.screenshot", {}, { ...control, requestId: randomUUID() }), "capture_blocked_during_takeover");
   assert.deepEqual(await f.manager.handBack(f.ownerId, f.agentId, control), { takenOver: false, generation: f.generation });
   assert.equal(f.manager.takeovers.has(f.agentId), false);
   assert.deepEqual(await f.manager.executeOperation(f.ownerId, f.agentId, f.generation, randomUUID(), "input.click", { x: 0, y: 0, button: "left" }), { ok: true });
+  assert.equal(Object.hasOwn(f.calls[1], "ownerInput"), false);
 });
 test("disconnect releases only its own lease and queued input cannot act afterward", async () => {
   const f = fixture();

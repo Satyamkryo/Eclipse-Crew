@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { test } from "node:test";
 import { getTableName } from "drizzle-orm";
 import { parseCommand } from "../docker/desktop/controller-schema.mjs";
@@ -123,6 +125,74 @@ test("desktop registry accepts deletion tombstones but rejects caller-chosen pat
   assert.match(source, /record\.state === "ready"/, "restart recovery skips pending and deleting tombstones");
 });
 
+test("process scanning ignores only exited PIDs and fails closed on read errors", async () => {
+  const store = unwrap(await import("../docker/desktop/agent-store.mjs"));
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), "eclipse-proc-scan-")));
+  try {
+    for (const pid of ["40", "41", "not-a-pid"]) await writeFile(path.join(root, pid), "");
+    const statusPath = (pid) => `${path.sep}${pid}${path.sep}`;
+    const readStatus = async (name) => {
+      if (name.includes(statusPath(41))) throw Object.assign(new Error("gone"), { code: "ENOENT" });
+      return "Uid:\t20000\t20000\t20000\t20000\nState:\tZ (zombie)\n";
+    };
+    assert.equal(await store.hasAgentProcess(20000, { procRoot: root, readStatus }), false);
+    await writeFile(path.join(root, "42"), "");
+    const alive = async (name) => name.includes(statusPath(42))
+      ? "Uid:\t20000\t20000\t20000\t20000\nState:\tS (sleeping)\n" : readStatus(name);
+    assert.equal(await store.hasAgentProcess(20000, { procRoot: root, readStatus: alive }), true);
+  } finally {
+    assert.equal(path.dirname(root), await realpath(tmpdir()));
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("process scanning rejects permission and unexpected IO failures", async () => {
+  const store = unwrap(await import("../docker/desktop/agent-store.mjs"));
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), "eclipse-proc-scan-")));
+  try {
+    await writeFile(path.join(root, "50"), "");
+    for (const code of ["EACCES", "EIO", "EPERM"]) {
+      const readStatus = async () => { throw Object.assign(new Error(code), { code }); };
+      await assert.rejects(store.hasAgentProcess(20000, { procRoot: root, readStatus }),
+        (error) => error.code === "process_scan_failed");
+    }
+    const missing = async () => { throw Object.assign(new Error("gone"), { code: "ENOENT" }); };
+    assert.equal(await store.hasAgentProcess(20000, { procRoot: root, readStatus: missing }), false);
+    const exited = async () => { throw Object.assign(new Error("gone"), { code: "ESRCH" }); };
+    assert.equal(await store.hasAgentProcess(20000, { procRoot: root, readStatus: exited }), false);
+    const unparseable = async () => "State:\tS (sleeping)\n";
+    await assert.rejects(store.hasAgentProcess(20000, { procRoot: root, readStatus: unparseable }),
+      (error) => error.code === "process_scan_failed");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("registry writes survive stale temp files and clean failed attempts", async () => {
+  const store = unwrap(await import("../docker/desktop/agent-store.mjs"));
+  const root = await realpath(await mkdtemp(path.join(tmpdir(), "eclipse-registry-write-")));
+  const target = path.join(root, "agents.json");
+  const value = { version: 1, agents: [{ ownerId: OWNER, agentId: AGENT, uid: 20000, gid: 20000, name: "ec_20000", state: "ready" }] };
+  try {
+    await assert.rejects(store.writeRegistryFile(value, path.join(root, "other.json")),
+      (error) => error.code === "invalid_registry_path");
+    await writeFile(`${target}.new`, "stale");
+    await mkdir(target);
+    await writeFile(path.join(target, "keep"), "preserved");
+    await assert.rejects(store.writeRegistryFile(value, target));
+    assert.equal(await readFile(`${target}.new`, "utf8"), "stale", "unknown stale file is untouched");
+    assert.deepEqual((await readdir(root)).filter((name) => name.endsWith(".tmp")), []);
+    assert.equal(await readFile(path.join(target, "keep"), "utf8"), "preserved");
+
+    await rm(target, { recursive: true, force: true });
+    await store.writeRegistryFile(value, target);
+    assert.deepEqual(JSON.parse(await readFile(target, "utf8")), value);
+    assert.deepEqual((await readdir(root)).filter((name) => name.endsWith(".tmp")), []);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 function flattenSql(value) {
   if (value === null || value === undefined) return [];
   if (typeof value !== "object") return [String(value)];
@@ -211,6 +281,124 @@ test("missing policy rows fail settings closed but still allow owner-scoped dele
   const identity = await data.getAgentIdentity(database, OWNER, AGENT);
   assert.equal(identity?.id, AGENT);
   assert.equal(identity?.name, "Orphan");
+});
+
+function lifecycleDatabase({ statusWrites = true, deleteWrites = true } = {}) {
+  const events = [];
+  const state = { agent: { id: AGENT, ownerId: OWNER, name: "Concurrent", status: "paused" } };
+  const select = () => ({
+    from: () => ({
+      where: () => ({
+        limit: () => ({
+          for: async (mode) => {
+            assert.equal(mode, "update");
+            events.push("lock");
+            return state.agent ? [{ ...state.agent }] : [];
+          },
+        }),
+      }),
+    }),
+  });
+  const update = () => ({
+    set: (values) => ({
+      where: () => ({
+        returning: async () => {
+          events.push("status");
+          if (!state.agent || statusWrites === false) return [];
+          state.agent = { ...state.agent, ...values };
+          return [{ agentId: AGENT }];
+        },
+      }),
+    }),
+  });
+  const remove = () => ({
+    where: () => ({
+      returning: async () => {
+        events.push("delete-row");
+        if (!state.agent || deleteWrites === false) return [];
+        state.agent = undefined;
+        return [{ agentId: AGENT }];
+      },
+    }),
+  });
+  let tail = Promise.resolve();
+  const database = {
+    select,
+    update,
+    delete: remove,
+    execute: async (query) => { events.push(["lock-timeout", String(query)]); },
+    transaction: async (callback) => {
+      const previous = tail;
+      let release;
+      tail = new Promise((resolve) => { release = resolve; });
+      await previous;
+      try {
+        return await callback(database);
+      } finally {
+        release();
+      }
+    },
+  };
+  return { database, events, state };
+}
+
+function lifecycleDesktop(events) {
+  return {
+    desktopCreateAgent: async () => { events.push("create-identity"); },
+    desktopDeleteAgent: async () => { events.push("delete-desktop"); },
+    desktopSession: async (_agentId, _ownerId, operation) => {
+      if (operation === "session.start") {
+        events.push("start-begin");
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        events.push("start-end");
+        return { state: "running", generation: randomUUID() };
+      }
+      events.push("stop");
+      return { state: "stopped" };
+    },
+  };
+}
+
+test("resume and delete serialize the complete owner lifecycle", async () => {
+  const service = unwrap(await import("../lib/agents/service.ts"));
+  const { database, events, state } = lifecycleDatabase();
+  const desktop = lifecycleDesktop(events);
+  const resumed = service.resumeAgentForOwner(database, OWNER, AGENT, desktop);
+  const deleted = service.deleteAgentForOwner(database, OWNER, AGENT, "Concurrent", desktop);
+  await Promise.all([resumed, deleted]);
+  assert.equal(events[0][0], "lock-timeout", "the bounded row-lock wait is set before locking");
+  assert.ok(events.indexOf("start-end") < events.indexOf("delete-desktop"), "delete waits for resume");
+  assert.ok(events.indexOf("status") < events.indexOf("delete-desktop"), "resume commits status before delete");
+  assert.equal(state.agent, undefined, "winning delete removes the agent");
+});
+
+test("delete that wins prevents a waiting resume from recreating the desktop", async () => {
+  const service = unwrap(await import("../lib/agents/service.ts"));
+  const { database, events, state } = lifecycleDatabase();
+  const desktop = lifecycleDesktop(events);
+  const deleted = service.deleteAgentForOwner(database, OWNER, AGENT, "Concurrent", desktop);
+  const resumed = service.resumeAgentForOwner(database, OWNER, AGENT, desktop).catch((error) => error);
+  await Promise.all([deleted, resumed]);
+  assert.equal((await resumed).code, "agent_not_found");
+  assert.ok(!events.includes("create-identity") && !events.includes("start-begin"), "resume never reaches the desktop");
+  assert.equal(state.agent, undefined);
+});
+
+test("lifecycle never reports success when its final database write is lost", async () => {
+  const service = unwrap(await import("../lib/agents/service.ts"));
+  const paused = lifecycleDatabase({ statusWrites: false });
+  const desktop = lifecycleDesktop(paused.events);
+  const pauseError = await service.pauseAgentForOwner(paused.database, OWNER, AGENT, desktop).catch((error) => error);
+  assert.equal(pauseError.code, "agent_not_found");
+  assert.ok(paused.events.includes("stop"), "pause reached the final write");
+  const resumeError = await service.resumeAgentForOwner(paused.database, OWNER, AGENT, desktop).catch((error) => error);
+  assert.equal(resumeError.code, "agent_not_found");
+  assert.ok(paused.events.includes("start-end"), "resume reached the final write");
+  const undeleted = lifecycleDatabase({ deleteWrites: false });
+  const deleteError = await service.deleteAgentForOwner(undeleted.database, OWNER, AGENT, "Concurrent", lifecycleDesktop(undeleted.events))
+    .catch((error) => error);
+  assert.equal(deleteError.code, "agent_not_found");
+  assert.ok(undeleted.events.includes("delete-desktop"), "delete reached the final row removal");
 });
 
 test("agent list/read/update/status/delete always scope by owner", async () => {

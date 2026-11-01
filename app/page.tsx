@@ -1,10 +1,10 @@
-import { MessageSquare } from "lucide-react";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { getAgentRecord, listAgentRecords } from "@/lib/agents/data";
 import { getDatabase } from "@/db/client";
 import { validateSession } from "@/lib/auth/session";
 import { desktopSession } from "@/lib/desktop/client";
+import { ChatPane } from "@/components/chat/chat-pane";
 import { LiveView } from "@/components/desktop/live-view";
 import { AgentPane, type AgentSummary } from "@/components/workspace/agent-pane";
 import { AgentSettings } from "@/components/workspace/agent-settings";
@@ -44,21 +44,10 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ a
     }
   }
   const mobileInitialView = liveAgentId ? "panel" : error ? "agents" : "chat";
-  const chatPane = (
-    <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-12 shrink-0 items-center gap-3 border-b border-border px-6">
-        <h2 className="text-lg font-semibold tracking-tight">Chat</h2>
-        {selectedAgent && <span className="min-w-0 truncate text-xs text-muted-foreground">{selectedAgent.name}</span>}
-      </div>
-      <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto p-6">
-        <div className="flex max-w-[720px] flex-col items-center gap-2 text-center">
-          <MessageSquare aria-hidden="true" className="h-5 w-5 text-muted-foreground" />
-          <p className="text-sm font-medium">No conversation yet.</p>
-          <p className="text-sm text-muted-foreground">Select an active agent to open its desktop. Agent conversations will appear here when the runtime is connected.</p>
-        </div>
-      </div>
-    </div>
-  );
+  const chatAgent = selectedAgent
+    ? { id: selectedAgent.id, name: selectedAgent.name, status: selectedAgent.status }
+    : undefined;
+  const chatPane = <ChatPane key={chatAgent?.id ?? "no-agent"} agent={chatAgent} csrfToken={session.csrfToken} />;
 
   return (
     <WorkspaceShell

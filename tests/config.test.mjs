@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
-import { requireDatabaseUrl, requireAppOrigin } from "../lib/config/server.ts";
+import { requireDatabaseUrl, requireAppOrigin, requireEncryptionKey } from "../lib/config/server.ts";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cli = path.join(root, "node_modules", "drizzle-kit", "bin.cjs");
@@ -17,6 +17,31 @@ test("APP_ORIGIN requires canonical scheme, host and port without extra URL comp
     assert.equal(requireAppOrigin(value), value);
   for (const value of [null, "", "null", "http://127.0.0.1:3000/", "http://127.0.0.1:3000/path", "https://user:CANARY@crew.example.test", "https://crew.example.test?q=CANARY", "ftp://example.test", "http://127.0.0.1:3000#CANARY"])
     assert.throws(() => requireAppOrigin(value), (error) => !error.message.includes("CANARY"));
+});
+
+test("ENCRYPTION_KEY accepts only one canonical 256-bit lowercase key", () => {
+  const valid = "0123456789abcdef".repeat(4);
+  const original = process.env.ENCRYPTION_KEY;
+  assert.equal(requireEncryptionKey(valid), valid);
+  try {
+    delete process.env.ENCRYPTION_KEY;
+    assert.throws(() => requireEncryptionKey(), (error) => {
+      assert.match(error.message, /ENCRYPTION_KEY/);
+      return true;
+    });
+  } finally {
+    if (original === undefined) delete process.env.ENCRYPTION_KEY;
+    else process.env.ENCRYPTION_KEY = original;
+  }
+  for (const value of [null, "", valid.toUpperCase(), "a".repeat(63), "a".repeat(65),
+    `${valid}\n`, ` ${valid}`, `${valid} `, `${valid}0`, "g".repeat(64), "CANARY".repeat(10) + "CANARY"]) {
+    assert.throws(() => requireEncryptionKey(value), (error) => {
+      assert.match(error.message, /ENCRYPTION_KEY/);
+      assert.ok(!error.message.includes("CANARY"));
+      assert.ok(!error.message.includes(valid));
+      return true;
+    });
+  }
 });
 
 test("accepts URLs using the designated PostgreSQL role", () => {

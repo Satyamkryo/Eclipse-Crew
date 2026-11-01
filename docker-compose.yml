@@ -8,6 +8,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:-}
       APP_ORIGIN: ${APP_ORIGIN:-http://127.0.0.1:3000}
       DESKTOP_CONTROL_SECRET: ${DESKTOP_CONTROL_SECRET:-}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
     depends_on:
       postgres:
         condition: service_healthy

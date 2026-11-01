@@ -81,7 +81,10 @@ export function AgentSettings({ agent, desktopRunning, csrfToken }: { agent: Age
         <p className="mt-1 text-sm text-muted-foreground">Permanently removes this agent&apos;s desktop, browser profile, files and configuration.</p>
         <Button type="button" variant="destructive" className="mt-3" onClick={() => setConfirmingDelete(true)}>Delete agent</Button>
       </section>
-      <Link href="/settings/account" className="text-sm underline underline-offset-4">Account settings</Link>
+      <div className="flex flex-wrap gap-4">
+        <Link href="/settings/models" className="text-sm underline underline-offset-4">Model settings</Link>
+        <Link href="/settings/account" className="text-sm underline underline-offset-4">Account settings</Link>
+      </div>
       {confirmingDelete && <DeleteAgentDialog agent={agent} csrfToken={csrfToken} onClose={() => setConfirmingDelete(false)} />}
     </div>
   );

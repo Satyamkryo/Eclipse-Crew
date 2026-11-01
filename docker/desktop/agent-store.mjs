@@ -1,5 +1,7 @@
 import { constants } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { open, lstat, mkdir, chown, chmod, readFile, readdir, rename, rm, unlink, symlink, readlink } from "node:fs/promises";
+import path from "node:path";
 import { spawn } from "node:child_process";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -64,12 +66,25 @@ export async function readRegistry() {
   }
   try { return validateRegistry(JSON.parse(text)); } catch { throw new AgentError("invalid_registry"); }
 }
-async function saveRegistry(value) {
+export async function writeRegistryFile(value, target = REGISTRY) {
   validateRegistry(value);
-  const temporary = `${REGISTRY}.new`;
-  const file = await open(temporary, "wx", 0o600);
-  try { await file.writeFile(`${JSON.stringify(value)}\n`); await file.sync(); } finally { await file.close(); }
-  await rename(temporary, REGISTRY);
+  check(path.basename(target) === "agents.json", "invalid_registry_path");
+  const temporary = `${target}.${process.pid}.${randomUUID()}.tmp`;
+  let created = false;
+  try {
+    const file = await open(temporary, "wx", 0o600);
+    created = true;
+    try { await file.writeFile(`${JSON.stringify(value)}\n`); await file.sync(); } finally { await file.close(); }
+    await rename(temporary, target);
+  } catch (error) {
+    if (created) {
+      try { await unlink(temporary); } catch (cleanupError) { if (cleanupError.code !== "ENOENT") throw cleanupError; }
+    }
+    throw error;
+  }
+}
+async function saveRegistry(value) {
+  await writeRegistryFile(value);
   const parent = await open(SYSTEM, "r"); try { await parent.sync(); } finally { await parent.close(); }
 }
 async function locked(fn) {
@@ -178,14 +193,20 @@ async function unpublishAccount(record) {
     } finally { await file.close(); }
   }
 }
-async function hasAgentProcess(uid) {
-  for (const entry of await readdir("/proc")) {
+export async function hasAgentProcess(uid, { procRoot = "/proc", readStatus = readFile } = {}) {
+  let entries;
+  try { entries = await readdir(procRoot); } catch { throw new AgentError("process_scan_failed"); }
+  for (const entry of entries) {
     if (!/^[0-9]+$/.test(entry)) continue;
     try {
-      const status = await readFile(`/proc/${entry}/status`, "utf8");
+      const status = await readStatus(path.join(procRoot, entry, "status"), "utf8");
       const owner = /^Uid:\s+(\d+)/m.exec(status)?.[1];
-      if (Number(owner) === uid && !/^State:\s+Z/m.test(status)) return true;
-    } catch { /* process exited while scanning */ }
+      const state = /^State:\s+(\S)/m.exec(status)?.[1];
+      if (!owner || !state) throw new AgentError("process_scan_failed");
+      if (Number(owner) === uid && state !== "Z") return true;
+    } catch (error) {
+      if (error.code !== "ENOENT" && error.code !== "ESRCH") throw new AgentError("process_scan_failed");
+    }
   }
   return false;
 }

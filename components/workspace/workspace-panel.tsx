@@ -60,9 +60,12 @@ export function WorkspacePanel({ desktop, settings }: { desktop?: ReactNode; set
           <div className="flex flex-col gap-4 p-6">
             <div>
               <h3 className="text-lg font-semibold tracking-tight">Settings</h3>
-              <p className="mt-1 text-sm text-muted-foreground">Select an agent to edit its persona, permissions and budget, or manage your owner account.</p>
+              <p className="mt-1 text-sm text-muted-foreground">Select an agent to edit its persona, permissions and budget, or manage models and your owner account.</p>
             </div>
-            <Link href="/settings/account" className="text-sm underline underline-offset-4">Account settings</Link>
+            <div className="flex flex-wrap gap-4">
+              <Link href="/settings/models" className="text-sm underline underline-offset-4">Model settings</Link>
+              <Link href="/settings/account" className="text-sm underline underline-offset-4">Account settings</Link>
+            </div>
           </div>
         ))}
         {active !== "desktop" && active !== "settings" && <Empty title={tabs.find((tab) => tab.id === active)?.label ?? ""} body={emptyCopy[active]} />}

@@ -74,6 +74,10 @@ if (process.argv.includes("--inside")) {
     await database.execute(sql`GRANT SELECT, INSERT, UPDATE, DELETE ON public.sessions TO eclipse_app`);
     await database.execute(sql`GRANT SELECT, INSERT, UPDATE, DELETE ON public.agents TO eclipse_app`);
     await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.agent_policies TO eclipse_app`);
+    await database.execute(sql`GRANT SELECT, INSERT ON public.chat_sessions TO eclipse_app`);
+    await database.execute(sql`GRANT SELECT, INSERT ON public.messages TO eclipse_app`);
+    await database.execute(sql`GRANT SELECT, INSERT, UPDATE, DELETE ON public.providers TO eclipse_app`);
+    await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.model_roles TO eclipse_app`);
     console.log("Database migrations applied.");
   } catch {
     console.error(`Database ${stage} failed.`);

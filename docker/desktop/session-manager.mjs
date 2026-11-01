@@ -220,8 +220,12 @@ export class SessionManager {
     ids.add(requestId);
     if (ids.size > DUPLICATE_ID_CACHE_LIMIT) ids.delete(ids.values().next().value);
   }
-  async perform(entry, requestId, operation, params) {
-    try { const value = await entry.channel.send({ command: "operation", requestId, operation, params }); return resultFor(operation, value, params); }
+  async perform(entry, requestId, operation, params, trustedOwnerInput = false) {
+    try {
+      const message = { command: "operation", requestId, operation, params };
+      if (trustedOwnerInput) message.ownerInput = true;
+      const value = await entry.channel.send(message); return resultFor(operation, value, params);
+    }
     catch (error) {
       if (["uncertain_outcome", "channel_closed"].includes(error.code)) {
         entry.uncertain = true; entry.reason = "uncertain_outcome"; entry.state = "failed"; this.closeViewers(entry.record.agentId);
@@ -238,7 +242,7 @@ export class SessionManager {
       const lease = this.takeovers.get(agentId);
       if (!lease || lease.ownerId !== ownerId || lease.leaseId !== control.leaseId || lease.sessionRef !== control.sessionRef || lease.connectionId !== control.connectionId) throw new AgentError("not_in_takeover");
       const fields = operationFields({ ...params, operation }); if (!operation.startsWith("input.")) throw new AgentError("capture_blocked_during_takeover");
-      this.remember(agentId, control.requestId); return this.perform(entry, control.requestId, operation, fields);
+      this.remember(agentId, control.requestId); return this.perform(entry, control.requestId, operation, fields, true);
     });
   }
   executeOperation(ownerId, agentId, generation, requestId, operation, params) {

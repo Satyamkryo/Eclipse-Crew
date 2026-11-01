@@ -22,6 +22,7 @@ Rules for AI agents:
 - [ ] Database uses distinct least-privilege runtime and migration roles; application queries are owner-scoped and cross-owner access is denied.
 - [x] TASK-064: runtime credentials cannot create/alter/drop schema objects, create roles or escalate privileges; migrations use separate credentials; setup preserves existing database data.
 - [x] TASK-064: provisioning rejects unexpected roles, grants, default privileges and migration history; mismatched mounted credentials do not rotate existing passwords.
+- [x] Provisioning compares the complete ordered model-role constraint names and definitions; altered same-name role, shape and provider-FK constraints retaining former substrings are rejected.
 - [x] TASK-064: isolated fresh and bootstrap-owned volumes retain owner rows and migration history across repeat provisioning and migration; Postgres has no published port.
 - [x] Foundation audit fixes: failed database initialization releases its cache; concurrent calls share attempts, recovery succeeds, and privileged roles remain denied.
 - [x] Foundation audit fixes: LF/CRLF migration histories provision repeatedly without rewriting hashes, rows or timestamps; other histories remain rejected.
@@ -41,6 +42,7 @@ Rules for AI agents:
 - [x] TASK-009: own-file controls pass; 40 cross-user list/read/create/overwrite/delete/chmod/chown/symlink denials pass across initial/recreated containers, with protected contents and ownership unchanged.
 - [x] TASK-009: six bounded I/O rounds (1,000 x 4 KiB files and 32 MiB sequential data per round) complete with checksum verification; timings distinguish cached reads, flushed writes and host-command overhead.
 - [x] TASK-009: nine offline guard/lifecycle tests pass; real run 68cb4301-90ea-4b9d-b191-3d91327f7447 verifies non-root users, no effective capabilities/sudo, read-only root, no network/ports/host mounts/secrets, scoped cleanup and unchanged existing resources.
+- [x] Setup scripts (`npm run desktop:secret`, `npm run encryption-key`) share `scripts/lib/env-secret.mjs`: they create a mode-600 `.env`, are idempotent, never print a value, keep CRLF/LF endings, and never rotate or duplicate a valid key. They refuse duplicate, padded, invalid, `export`ed or symlinked entries without changing the file, and a failed write leaves `.env` intact with no temp file (`test:desktop-secret` 9/9 on Linux, `test:encryption` 9 pass + 1 symlink skip on Windows).
 
 ## Owner account
 
@@ -48,6 +50,7 @@ Rules for AI agents:
 - [x] After setup, `/setup` returns 404 and no second account can be created
 - [x] Owner can log in; wrong email or password shows an error
 - [x] Repeated failed logins are rate-limited and temporarily locked out
+- [x] Authentication rate-limit slots are reserved synchronously; concurrent admissions cannot exceed five, failures do not double-count, and success/expiry reset the bucket.
 - [x] Logged-out users cannot open any page, API route, SSE stream or the desktop stream
 - [x] Change password requires the current password and signs out other sessions while keeping the current one (two real browsers; run `fa384f27-e199-473b-9390-f26ed549efc0`)
 - [x] Change email requires the current password, normalizes the login and updates the visible form immediately
@@ -75,22 +78,26 @@ Rules for AI agents:
 - [x] Pause stops only the selected desktop and closes its live stream; resume restores the same agent while the peer desktop remains available
 - [x] Delete removes the owner-scoped agent/policy rows, Linux account, registry identity, profile, home and Downloads while the peer home survives; registry-only and missing agents are denied
 - [x] Create requires CSRF, rejects owner overrides, and browser setup/layout plus the existing live noVNC/takeover checks remain green (run `3e1696fa-fc34-4429-9833-aefc708e637c`, cleanup complete)
+- [x] Lifecycle hardening: pause/resume/delete serialize under an owner-scoped row lock and require final DB writes; process-scan errors fail closed; registry writes retry after failure; real routes deny wrong Origin/CSRF/cross-owner/confirmation; per-field blur/submit errors focus the first invalid field; altered agent/policy constraints fail preflight
 
 ## Agents and isolation
 
 - [x] Owner can create, edit, pause and delete an agent (name, role, persona, permissions, budget)
 - [x] Each agent gets its own Linux user, `700` home, screen and Chromium profile (TASK-011/012 local administration verified; TASK-019 product CRUD verified)
-- [ ] Agent A cannot read Agent B's files, browser profile, cookies or credentials
-- [ ] Agents have no sudo and cannot read the database, `.env` or host folders
-- [ ] Logins persist in an agent's browser profile across restarts
+- [x] Agent A cannot read Agent B's files, browser profile or cookies (TASK-011/012 files and profile denials; run `7b47dde4-ffbe-476e-9a66-05b9307ef705` adds: each agent's window shows only its own persistent and session cookie, and the peer's `Cookies`/`Login Data` paths return EACCES)
+- [ ] Agent A cannot read Agent B's saved credentials: no credential store exists yet; test it when one is built
+- [x] Agents have no sudo and cannot read the database, `.env` or host folders (run `7b47dde4-ffbe-476e-9a66-05b9307ef705`, both agent users: `sudo` not installed and `su` refused, no secret-like environment variables, `/proc/1/environ` unreadable, a real Postgres in the stack unreachable by IP and DNS, no outbound internet, loopback control works, no `.env*` file in the desktop filesystem, only the `/workspace` volume mounted)
+- [x] Logins stored as persistent cookies persist in an agent's browser profile across session restart and container recreation (same run)
+- [x] Logins stored as session cookies (no expiry, the common case for real sites) also survive pause/resume, container recreation and a killed worker: the worker snapshots them to a private file and restores them after launch (run `ce7251bc-68b9-4a1e-a7f5-6119e5ef8252`: graceful stop/start, a cookie deleted before stop stays deleted, killed worker after the 30 s periodic save, container recreation, peer agent denied, snapshot mode 600 and exact contents; corrupt, oversized, symlinked and group-readable snapshots are ignored without blocking start; a killed display keeps the last saved cookies; `test:cookie-snapshot` 9/9 on Linux)
+- Known limit: a crash loses at most the session-cookie changes made since the last 30 s save
 - [x] Delete removes the agent's Linux user, profile, files and memory after a backup prompt
 - [ ] Agent knows its persona, its permissions and the current date/time
 
 ## Chat and files
 
-- [ ] Replies render as the four card types: message, clarification, tool connection, routine
-- [ ] Invalid model output is rejected and never executed
-- [ ] Chat history persists per agent; background run results appear in the timeline
+- [x] Replies render as the four card types: message, clarification, tool connection, routine (TASK-022 real browser plus escaped card rendering)
+- [x] Invalid model output is rejected and never executed (TASK-022 schema and append-boundary checks)
+- [x] Chat history persists per agent; background run results appear in the timeline (TASK-022 reload, polling, isolation and background-append checks)
 - [ ] Files can be attached by button, drag-and-drop and paste; they land in that agent's `inbox/`
 - [ ] Files over the size limit (default 250 MB) are rejected
 - [ ] Files the agent writes to `outbox/` appear as file cards with Download and Open on the agent's desktop
@@ -132,7 +139,8 @@ Rules for AI agents:
 - [x] RFB view-only protocol rejects key/pointer/clipboard injection; private VNC challenge authentication and sanitized pixel transport pass synthetic TCP/WS tests
 - [x] Revoked/replaced sessions close native streams within five seconds; silent peers and application shutdown release streams (behavioral bridge tests)
 - [x] Real browser logout revokes HTTP and the live stream; real takeover blocks agent capture/input until release
-- [x] Actual password/OTP controls deny desktop typing and key input, including inside single and nested closed shadow roots; ordinary focused text input still works (TASK-012 run 01331fe8-87b7-4535-b598-375fa9aec997)
+- [x] Agent-directed typing/key input is denied on actual password/OTP controls, including inside single and nested closed shadow roots; ordinary focused text input still works (TASK-012 run 01331fe8-87b7-4535-b598-375fa9aec997)
+- [x] Trusted owner takeover marker is manager-generated, rejected on browser input, and allows manual type/key input on a synthetic sensitive field; no recording is enabled.
 - [x] Pinned noVNC package normalization preserves awaited feature detection and fails on changed bytes/version; real x11vnc true-colour flag 255 is accepted with view-only filtering retained
 - [x] Interrupted session startup cannot deadlock supervisor shutdown; uncertain sessions can be explicitly stopped
 - [ ] Agent stops at login walls, CAPTCHAs, OTPs and payment checks and asks the owner
@@ -209,10 +217,15 @@ Rules for AI agents:
 - [x] TASK-007 bounded loop offline: text-only first turn, unchanged genuine replay/call correlation, static PNG only on matching tool output, strict post-image click acceptance and two-request ceiling. Missing/invalid receipts, premature clicks, repeat observations, safety checks, credential replay and inconsistent/excess usage stop safely.
 - [x] TASK-007 deadlines offline: simulated 30-second request timeout aborts a non-cooperating transport without retries; a 45-second total overrun stops before continuation.
 - [ ] TASK-007 bounded loop live: latest evidence f4aa6650-f817-4148-8802-bb369129efcc stopped replay_unavailable before a second request (2284 input / 89 output tokens; empty checks). Exact replay subreason was not retained. Still required: one approved invocation, at most two Contributor requests / 512 output tokens each, obtains genuine post-image validated_click and owner target confirmation. No input execution.
-- [ ] TASK-065: missing or malformed master keys are rejected; encrypted values round-trip correctly and reject tampering or the wrong key without leaking plaintext or keys.
+- [x] TASK-065: missing or malformed master keys are rejected; encrypted values round-trip correctly and reject tampering or the wrong key without leaking plaintext or keys (AES-256-GCM, private idempotent setup, app-only Compose exposure and Linux symlink refusal pass).
+- [x] TASK-021 offline: 16 mocked-transport tests pass for keyless Meta/OpenAI requests, bounded safe failures, model lists, text/image/tool normalization, exact source-tag framing, Meta safety/replay binding, no automatic acknowledgement, hybrid capability probes and unknown-versus-unsupported handling.
+- [x] TASK-021 offline: a model that returns a valid completion without the forced probe tool is rejected with `tool_calling_unsupported`; failed, rejected or incomplete probes remain `tool_calling_unknown`.
+- [ ] TASK-021 live integration: authenticated provider transport must inject saved credentials at the egress proxy before real model lists, Settings Test latency or provider calls are accepted.
+- [x] TASK-020 offline: 17 model tests pass for owner-safe settings, AES-GCM persistence, short-key masking, provider-change key clearing, same-key reuse, the serialized same-key invariant, CSRF/Origin/owner denials, bounded mocked Test output and independent rate limiting.
+- [x] TASK-020 browser: run `cc8ffafe-25fe-4fe2-afa1-58fea2d5375e` saved Main AI with a synthetic key, reloaded to a masked hint only, shared one encrypted provider with SAM same-key, rendered a mocked bounded model/latency Test response, showed honest live-Test unavailability, denied unauth/Origin/CSRF/unknown/oversized inputs and fit at 375 px (6 model checks plus encrypted-at-rest database assertion).
 - [ ] Main AI accepts a Meta Model API key; Test shows models and latency
-- [ ] SAM card with "Use the same key as Main AI" works with one Meta key
-- [ ] Saved keys show only as `••••1a2b` and are never returned by the API
+- [x] SAM card with "Use the same key as Main AI" works with one Meta key
+- [x] Saved keys show only as `••••1a2b` and are never returned by the API
 - [ ] Keys never appear in model prompts, logs or receipts
 - [ ] Muse Wonder is used for hard computer-use steps and falls back to Spark when unavailable
 - [ ] A model without tool calling is rejected with a clear message

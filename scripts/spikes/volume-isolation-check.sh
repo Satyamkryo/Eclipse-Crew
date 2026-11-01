@@ -9,7 +9,7 @@ home=/home/$me; peer=/home/$other
 [[ $(stat -c '%u:%g:%a' "$home") == "$uid:$uid:700" ]]
 grep -Eq '^CapEff:[[:space:]]+0+$' /proc/self/status
 grep -Eq '^NoNewPrivs:[[:space:]]+1$' /proc/self/status
-! command -v sudo >/dev/null 2>&1
+if command -v sudo >/dev/null 2>&1; then exit 1; fi
 for tool in cat cmp dd sha256sum chmod chown ln ls mv rm date timeout; do command -v "$tool" >/dev/null; done
 cd "$home"
 marker="task009-$run-$me"
