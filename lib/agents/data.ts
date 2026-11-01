@@ -5,6 +5,7 @@ import { agentPolicies, agents } from "../../db/schema";
 import { defaultSoul, type AgentCreateInput, type AgentUpdateInput } from "./schema";
 
 type Database = Awaited<ReturnType<typeof getDatabase>>;
+type AgentStore = Pick<Database, "select" | "update" | "delete">;
 
 export type AgentStatus = "active" | "paused";
 
@@ -47,9 +48,12 @@ export async function getAgentRecord(database: Database, ownerId: string, agentI
   return { ...agent, ...policy, status: agent.status as AgentStatus };
 }
 
-export async function getAgentIdentity(database: Database, ownerId: string, agentId: string) {
-  const rows = await database.select({ id: agents.id, ownerId: agents.ownerId, name: agents.name, status: agents.status })
+export async function getAgentIdentity(
+  database: AgentStore, ownerId: string, agentId: string, { forUpdate = false } = {},
+) {
+  const query = database.select({ id: agents.id, ownerId: agents.ownerId, name: agents.name, status: agents.status })
     .from(agents).where(and(eq(agents.ownerId, ownerId), eq(agents.id, agentId))).limit(1);
+  const rows = await (forUpdate ? query.for("update") : query);
   const agent = rows[0];
   return agent ? { ...agent, status: agent.status as AgentStatus } : undefined;
 }
@@ -116,14 +120,14 @@ export async function updateAgentRecord(
 }
 
 export async function setAgentStatus(
-  database: Database, ownerId: string, agentId: string, status: AgentStatus,
+  database: AgentStore, ownerId: string, agentId: string, status: AgentStatus,
 ): Promise<boolean> {
   const updated = await database.update(agents).set({ status, updatedAt: new Date() })
     .where(and(eq(agents.ownerId, ownerId), eq(agents.id, agentId))).returning({ agentId: agents.id });
   return Boolean(updated[0]);
 }
 
-export async function deleteAgentRecord(database: Database, ownerId: string, agentId: string): Promise<boolean> {
+export async function deleteAgentRecord(database: AgentStore, ownerId: string, agentId: string): Promise<boolean> {
   const deleted = await database.delete(agents)
     .where(and(eq(agents.ownerId, ownerId), eq(agents.id, agentId))).returning({ agentId: agents.id });
   return Boolean(deleted[0]);

@@ -42,6 +42,7 @@ Rules for AI agents:
 | 024 | Self-hosted Compose stack with localhost ingress | Accepted |
 | 025 | Desktop Chromium sandbox seccomp profile | Superseded by ADR-026 |
 | 026 | Trusted desktop setup and unprivileged agent identities | Accepted |
+| 027 | Master encryption key and authenticated AES-256-GCM envelopes | Accepted |
 
 ---
 
@@ -185,3 +186,9 @@ Status: Accepted · 2026-10-31 · Owner approved · Supersedes ADR-025
 Decision: The shared desktop starts a trusted root bootstrap with only CHOWN/DAC_OVERRIDE/SETUID/SETGID/SETPCAP/SYS_ADMIN to prepare NSS views and persistent noexec Downloads. Before normal operation it permanently drops SYS_ADMIN, applies an inherited restrictive syscall filter, and retains only the five provisioning/UID-switch capabilities. Every agent has a distinct UID/GID, zero capability sets and no-new-privileges. Keep ADR-025’s pinned Chromium sandbox profile, read-only root, isolated networks and unpublished ports; other services keep existing roles/policies.
 Reason: An entirely unprivileged shared service cannot provision users, ownership or mounts. Trusted administration must be separate from agent execution. Python PID 1 reaps children after reducing privileges, so a separate init does not retain bootstrap permissions.
 Rejected: privileged containers, SYS_ADMIN retained after setup, agent sudo/setuid privileges, host/Docker-socket mounts, writable system root, per-agent containers or disabling browser/Downloads protections.
+
+## ADR-027: Master encryption key and authenticated AES-256-GCM envelopes
+Status: Accepted · 2026-11-01 · Owner approved
+Decision: Keep one server-only 256-bit `ENCRYPTION_KEY` (64 lowercase hex characters) in `.env` and encrypt sensitive values with AES-256-GCM using a fresh 12-byte nonce and 16-byte tag. Store a versioned canonical base64url envelope `v1.<nonce>.<tag>.<ciphertext>`; reject malformed, tampered, unsupported and wrong-key values with a generic error.
+Reason: Node's built-in authenticated encryption covers future provider keys, connection tokens and sensitive blobs without another dependency; the versioned format leaves explicit room for migration.
+Rejected: unauthenticated encryption, storing plaintext, exposing the key to browser/desktop/models, and silent key rotation that would make existing ciphertext unreadable.

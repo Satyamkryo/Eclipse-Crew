@@ -38,6 +38,13 @@ export const CommandSchema = z.discriminatedUnion("operation", [
 const control = { ...running, sessionRef: z.string().regex(/^[0-9a-f]{64}$/), connectionId: uuid };
 export const TakeoverSchema = z.discriminatedUnion("operation", [z.object({ ...control, operation: z.literal("takeover") }).strict(), z.object({ ...control, operation: z.literal("handback"), leaseId: uuid }).strict()]);
 export const OwnerInputSchema = z.discriminatedUnion("operation", input.map((v) => z.object({ ...control, leaseId: uuid, ...v }).strict()));
+export const WorkerOperationSchema = z.object({
+  command: z.literal("operation"),
+  requestId: uuid,
+  operation: z.string().min(1),
+  params: z.unknown(),
+  ownerInput: z.literal(true).optional(),
+}).strict();
 export const StreamSchema = z.object({ ownerId: uuid, generation, sessionRef: control.sessionRef, connectionId: uuid }).strict();
 const tagged = { source_tag: z.literal("tool"), untrusted: z.literal(true) };
 const ok = z.object({ ok: z.literal(true) }).strict();

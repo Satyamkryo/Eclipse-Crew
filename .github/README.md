@@ -151,16 +151,18 @@ PostgreSQL stays on Docker's private network. Provisioning creates separate appl
 if (-not (Test-Path -LiteralPath .env)) { Copy-Item .env.example .env }
 ```
 
-In the private `.env` file, set `POSTGRES_BOOTSTRAP_PASSWORD`, `POSTGRES_APP_PASSWORD`, and `POSTGRES_MIGRATOR_PASSWORD` to three different, randomly generated values of at least 32 ASCII letters or digits. Use the app password in `DATABASE_URL` and the migration password in `MIGRATION_DATABASE_URL`; preserve the role names, `postgres` host and `eclipse` database shown in the example. Keep all three values safe. Then run:
+In the private `.env` file, set `POSTGRES_BOOTSTRAP_PASSWORD`, `POSTGRES_APP_PASSWORD`, and `POSTGRES_MIGRATOR_PASSWORD` to three different, randomly generated values of at least 32 ASCII letters or digits. Use the app password in `DATABASE_URL` and the migration password in `MIGRATION_DATABASE_URL`; preserve the role names, `postgres` host and `eclipse` database shown in the example. Keep all three values safe. Generate the two server-only secrets without printing them, then run:
 
 ```powershell
+npm run encryption-key
+npm run desktop:secret
 docker compose up -d --build
 docker compose ps
 npm run db:provision
 npm run db:migrate
 ```
 
-Set `DESKTOP_CONTROL_SECRET` to a privately generated 64-character lowercase hexadecimal value as described below. `APP_ORIGIN` must exactly match the URL used in the browser, including scheme and port; the default is `http://127.0.0.1:3000`. Use this address consistently instead of switching to `localhost`. Configure the exact HTTPS origin for a TLS deployment.
+Preserve `ENCRYPTION_KEY` with backups: changing or losing it makes existing encrypted credentials unreadable. Keep `DESKTOP_CONTROL_SECRET` private too. `APP_ORIGIN` must exactly match the URL used in the browser, including scheme and port; the default is `http://127.0.0.1:3000`. Use this address consistently instead of switching to `localhost`. Configure the exact HTTPS origin for a TLS deployment.
 
 Open `http://127.0.0.1:3000` and complete owner setup. To stop the containers while retaining their volumes, run `docker compose down`. The provisioning command checks the existing database and can be repeated; it supports the original owner schema and sessions schema plus the singleton-owner migration, preserving rows and existing LF/CRLF history. It refuses unknown state, multiple legacy owners or mismatched credentials and never deletes an account to repair a conflict. It does not rotate passwords. For an existing project volume, retain the original bootstrap password, back up the volume first, and supply the same role credentials on every run. If preflight refuses the volume, investigate the conflict instead of resetting it. Compose and the commands use shell settings in preference to `.env`; restart Compose after changing settings so its mounted secrets match. `.env` is ignored by Git and excluded from the build context.
 
@@ -244,13 +246,13 @@ Results go under ignored `data/spikes/task-008/<run-id>/`: sanitized `result.jso
 
 ## First-run setup
 
-The first visit to `http://127.0.0.1:3000` opens owner setup. It runs once. Current setup creates the owner and timezone; model setup and product conversations remain upcoming.
+The first visit to `http://127.0.0.1:3000` opens owner setup. It runs once. Current setup creates the owner and timezone; model setup, live agent replies, chat attachments and file cards remain upcoming.
 
 1. **Create the owner account.** Enter your email and a new **Eclipse Crew password**, not your Gmail or other password. There's only one account per install, and signup closes after this step.
 2. **Confirm your timezone.** It's detected from your browser and used for schedules and the clock every agent sees.
 3. **Planned, not yet available:** Configure a model provider and save its key. See [Models](#models) for the planned settings.
 4. **Create an agent.** Use **Create agent** in the Agents pane and give it a name, role, persona, default-deny permissions and daily/monthly budgets. Starter templates remain planned.
-5. **Planned, not yet available:** Run an agent, chat with it and watch it work from the **Desktop** tab.
+5. **Planned, not yet available:** Receive live agent replies in chat while the agent works.
 
 The signed-in workspace uses three panes: Agents, Chat and a tabbed panel. At tablet width the agent rail collapses and the panel opens as a sheet; on a phone, use the Agents, Chat and Panel buttons at the bottom. Create an agent to provision its isolated desktop, then select it to open the live screen or edit it under **Settings**. The Desktop tab shows the real live screen.
 
@@ -344,7 +346,7 @@ Each job gets its own card, so you can mix providers:
 
 - **"Use the same key as Main AI"** is ticked by default whenever a role uses the same provider, so one Meta key can power Spark, SAM, Voice and Image.
 - Keys are **saved once**, encrypted, and shown only as `••••1a2b` afterwards. They're never sent to the model.
-- The **Test** button on each card checks the key or address and shows available models and latency.
+- The **Test** button checks saved configuration and, once secure credential injection is connected, shows available models and latency. Until then it reports that live testing is unavailable rather than sending a saved key directly from the app.
 
 ### Typical setups
 
@@ -441,14 +443,14 @@ Each agent gets its own Linux user, screen, browser profile and home folder. Sel
 
 ### 2. Chat with an agent
 
-- Type a task in plain language: *"Find last month's invoices on the vendor portal and save them as PDFs."*
-- Replies arrive as cards:
+- Type a task in plain language: *"Find last month's invoices on the vendor portal and save them as PDFs."* Messages are stored per agent, and per-agent history remains available after a reload. The live agent runtime is not connected yet.
+- When the runtime is connected, replies arrive as cards:
   - **message:** a normal reply.
   - **clarification:** the agent needs a missing detail.
   - **tool connection:** connect a tool inline.
   - **routine:** a schedule to confirm.
-- **Attach files** by button, drag-and-drop or paste (images, PDF, Office, CSV/JSON, code, audio, video; up to 250 MB by default). They're saved to the agent's `inbox/`.
-- Files the agent produces appear as **file cards** with **Download**, **Show in Files** and **Open on the agent's desktop**.
+- **Attach files** *(coming)* by button, drag-and-drop or paste (images, PDF, Office, CSV/JSON, code, audio, video; up to 250 MB by default). They'll be saved to the agent's `inbox/`.
+- Files the agent produces will appear as **file cards** *(coming)* with **Download**, **Show in Files** and **Open on the agent's desktop**.
 
 ### 3. Watch and take over
 

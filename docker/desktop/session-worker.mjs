@@ -6,8 +6,10 @@ import { hostname } from "node:os";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { validateIds, validateRegistry } from "./agent-store.mjs";
-import { OperationSchema, resultFor, validatePng, uuid } from "./controller-schema.mjs";
+import { OperationSchema, WorkerOperationSchema, resultFor, validatePng } from "./controller-schema.mjs";
+import { fingerprint, readSnapshot, sessionCookies, writeSnapshot } from "./cookie-snapshot.mjs";
 
+const COOKIE_SAVE_INTERVAL_MS = 30_000;
 const fail = (code) => { throw Error(code); };
 export const SESSION_FAILURES = new Set(["invalid_session_record", "agent_not_ready", "worker_identity_invalid", "worker_capabilities_invalid", "worker_security_invalid", "unsafe_session_path", "profile_busy_or_unsafe", "display_conflict", "xauthority_failed", "display_start_failed", "display_authentication_failed", "window_manager_start_failed", "browser_start_failed", "session_component_failed", "session_start_failed", "private_ipc_required"]);
 export function runtimePrefix(uid) {
@@ -88,6 +90,15 @@ export async function startSession(input, { onFailure = () => {}, onRuntime = ()
   const directory = await mkdtemp(runtimePrefix(record.uid)); const original = await lstat(directory);
   onRuntime(directory);
   const authority = `${directory}/Xauthority`; const children = []; let context; let closing = false; let ready = false;
+  // Session cookies (no expiry) are not kept by Chromium's profile; see cookie-snapshot.mjs.
+  let cookieTimer; let savedCookies = ""; let savingCookies = false;
+  const saveCookies = async () => {
+    if (!context || savingCookies) return; savingCookies = true;
+    try {
+      const cookies = sessionCookies(await context.cookies()); const text = fingerprint(cookies);
+      if (text !== savedCookies) { await writeSnapshot(profile, cookies); savedCookies = text; }
+    } catch { /* A failed save never affects the session; the next save retries. */ } finally { savingCookies = false; }
+  };
   const env = { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: record.home, USER: record.name, LOGNAME: record.name, LANG: "C.UTF-8",
     DISPLAY: `:${record.display}`, XAUTHORITY: authority, XDG_RUNTIME_DIR: `${directory}/runtime`, TMPDIR: directory };
   const command = (executable, args, extra = {}) => spawnSync(executable, args, { env, stdio: "ignore", timeout: 1000, ...extra });
@@ -102,6 +113,8 @@ export async function startSession(input, { onFailure = () => {}, onRuntime = ()
   };
   const close = async () => {
     if (closing) return; closing = true;
+    clearInterval(cookieTimer);
+    if (context && ready) { savingCookies = false; await Promise.race([saveCookies(), delay(1500)]); }
     if (context) await Promise.race([context.close().catch(() => {}), delay(3000)]);
     for (const child of [...children].reverse()) { try { child.kill("SIGTERM"); } catch { /* already stopped */ } }
     for (let i = 0; i < 20 && children.some((c) => c.exitCode === null && c.signalCode === null); i++) await delay(50);
@@ -125,6 +138,12 @@ export async function startSession(input, { onFailure = () => {}, onRuntime = ()
       headless: false, viewport: null, env, downloadsPath: record.downloads, timeout: 15000,
       args: ["--window-position=0,0", "--window-size=1024,768", "--disable-dev-shm-usage", "--disable-background-networking", "--no-first-run"] }); }
     catch (cause) { throw Error("browser_start_failed", { cause }); }
+    try {
+      const restored = await readSnapshot(profile, uid);
+      if (restored.length) await context.addCookies(restored);
+    } catch { /* Start without restored cookies rather than failing the session. */ }
+    try { savedCookies = fingerprint(sessionCookies(await context.cookies())); } catch { savedCookies = ""; }
+    cookieTimer = setInterval(() => { void saveCookies(); }, COOKIE_SAVE_INTERVAL_MS); cookieTimer.unref();
     context.once("close", () => { if (!closing) onFailure("session_component_failed"); }); ready = true;
     return { context, env, display: record.display, directory, close };
   } catch (e) { await close().catch(() => {}); throw e; }
@@ -275,7 +294,7 @@ async function requireSafeFocus(context, signal) {
 }
 const xKeys = { Control: "ctrl", Alt: "alt", Shift: "shift", Meta: "super", Enter: "Return", Space: "space", Backspace: "BackSpace",
   ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right", PageUp: "Prior", PageDown: "Next" };
-async function performOperation(session, command, signal) {
+async function performOperation(session, command, signal, trustedOwnerInput) {
   const { operation } = command;
   if (operation === "capture.screenshot") {
     const crop = command.crop;
@@ -288,11 +307,11 @@ async function performOperation(session, command, signal) {
     return { ...dimensions, base64: png.toString("base64"), source_tag: "tool", untrusted: true };
   }
   if (operation.startsWith("input.")) {
-    if (operation === "input.type" || operation === "input.key") await requireSafeFocus(session.context, signal);
+    if (!trustedOwnerInput && (operation === "input.type" || operation === "input.key")) await requireSafeFocus(session.context, signal);
     if (signal.aborted) throw operationError("uncertain_outcome");
     let args, input;
     if (operation === "input.click") args = ["mousemove", "--sync", String(command.x), String(command.y), "click", "--clearmodifiers", "--repeat", command.button === "double" ? "2" : "1", "--delay", "100", command.button === "right" ? "3" : "1"];
-    else if (operation === "input.type") { args = ["type", "--clearmodifiers", "--file", "-"]; input = Buffer.from(command.text, "utf8"); }
+    else if (operation === "input.type") { args = ["type", "--clearmodifiers", "--delay", "0", "--file", "-"]; input = Buffer.from(command.text, "utf8"); }
     else if (operation === "input.key") args = ["key", "--clearmodifiers", "--delay", "0", command.key.split("+").map((key) => xKeys[key] ?? key).join("+")];
     else args = ["click", "--clearmodifiers", "--repeat", String(command.count), "--delay", "10", String({ up: 4, down: 5, left: 6, right: 7 }[command.direction])];
     await desktopProcess(session, "xdotool", args, { input, signal });
@@ -327,13 +346,14 @@ async function performOperation(session, command, signal) {
   } finally { await target?.dispose().catch(() => {}); }
 }
 /** Private worker boundary; schema-valid operations only, never arbitrary browser evaluation. */
-export async function dispatchOperation(session, operation, params = {}) {
+export async function dispatchOperation(session, operation, params = {}, trustedOwnerInput = false) {
+  if (typeof trustedOwnerInput !== "boolean") throw operationError("invalid_operation");
   if (!params || typeof params !== "object" || Array.isArray(params) || params.operation !== undefined && params.operation !== operation)
     throw operationError("invalid_operation");
   const parsed = OperationSchema.safeParse({ ...params, operation });
   if (!parsed.success) throw operationError("invalid_operation");
   const command = parsed.data;
-  return boundedOperation(async (signal) => resultFor(operation, await performOperation(session, command, signal), command));
+  return boundedOperation(async (signal) => resultFor(operation, await performOperation(session, command, signal, trustedOwnerInput), command));
 }
 async function main() {
   if (process.argv[2] === "--terminate") {
@@ -412,11 +432,12 @@ async function main() {
     for await (const message of readFramed(process.stdin)) {
       if (message?.command === "stop" && Object.keys(message).length === 1) {
         void finish(); break;
-      } else if (message?.command === "operation" &&
-        Object.keys(message).sort().join() === "command,operation,params,requestId" && uuid.safeParse(message.requestId).success) {
-        const { requestId, operation, params } = message;
+      } else if (message?.command === "operation") {
+        const parsed = WorkerOperationSchema.safeParse(message);
+        if (!parsed.success) throw operationError("invalid_frame");
+        const { requestId, operation, params, ownerInput } = parsed.data;
         try {
-          const result = await dispatchOperation(session, operation, params);
+          const result = await dispatchOperation(session, operation, params, ownerInput === true);
           await sendMsg({ requestId, result });
         } catch (err) {
           const safeCodes = new Set(["invalid_operation", "uncertain_outcome", "desktop_command_failed", "desktop_result_too_large", "sensitive_target", "focused_target_unknown", "too_many_pages", "too_many_frames", "page_not_found", "ambiguous_locator", "target_not_found"]);

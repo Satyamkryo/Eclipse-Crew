@@ -166,10 +166,20 @@ try {
     await page.getByRole('main',{name:'Eclipse Crew workspace'}).waitFor();
     const pane=page.getByRole('complementary',{name:'Agents pane'});
     const csrf=await (await context.request.get(base+'/api/auth/csrf')).json();
-    const missingCsrf=await context.request.post(base+'/api/agents',{headers:{Origin:base},data:{name:'Forged',role:'None',dailyBudgetUsd:'1.00',monthlyBudgetUsd:'1.00',tools:[],domains:[],actions:[],memoryScopes:[]}});
-    assert.equal(missingCsrf.status(),403,'agent create requires CSRF');
-    const forgedFields=await context.request.post(base+'/api/agents',{headers:{Origin:base,'x-csrf-token':csrf.csrfToken},data:{name:'Forged',role:'None',dailyBudgetUsd:'1.00',monthlyBudgetUsd:'1.00',tools:[],domains:[],actions:[],memoryScopes:[],ownerId:crypto.randomUUID()}});
+    const agentBody={name:'Forged',role:'None',soulMd:'Boundaries: ask.',dailyBudgetUsd:'1.00',monthlyBudgetUsd:'1.00',tools:[],domains:[],actions:[],memoryScopes:[]};
+    const mutation=(method,path,{origin=base,csrfToken=csrf.csrfToken,data=agentBody}={})=>context.request.fetch(base+path,{method,headers:{Origin:origin,...(csrfToken?{'x-csrf-token':csrfToken}:{})},data});
+    assert.equal((await mutation('POST','/api/agents',{csrfToken:''})).status(),403,'agent create requires CSRF');
+    assert.equal((await mutation('POST','/api/agents',{origin:'https://denied.example'})).status(),403,'agent create requires exact origin');
+    assert.equal((await mutation('POST','/api/agents',{csrfToken:'0'.repeat(64)})).status(),403,'agent create requires the session CSRF token');
+    const forgedFields=await mutation('POST','/api/agents',{data:{...agentBody,ownerId:crypto.randomUUID()}});
     assert.equal(forgedFields.status(),400,'agent create rejects owner overrides');
+    const unknownAgent=crypto.randomUUID();
+    for(const [method,path] of [['PATCH','/api/agents/'+unknownAgent],['DELETE','/api/agents/'+unknownAgent],['POST','/api/agents/'+unknownAgent+'/pause'],['POST','/api/agents/'+unknownAgent+'/resume']]){
+      const data=method==='DELETE'?{confirmation:'Unknown',backupAcknowledged:true}:agentBody;
+      assert.equal((await mutation(method,path,{origin:'https://denied.example',data})).status(),403,method+' '+path+' requires exact origin');
+      assert.equal((await mutation(method,path,{csrfToken:'0'.repeat(64),data})).status(),403,method+' '+path+' requires the session CSRF token');
+      assert.equal((await mutation(method,path,{data})).status(),404,method+' '+path+' rejects a non-owned agent');
+    }
     const registryOnly=await context.request.get(base+'/api/desktop/'+crypto.randomUUID()+'/stream');
     assert.equal(registryOnly.status(),404,'desktop access requires a saved owner-scoped agent');
     const createButton=pane.getByRole('button',{name:'Create agent',exact:true}).first();
@@ -199,6 +209,46 @@ try {
       await dialog.getByLabel('Domains',{exact:true}).fill(spec.domain);
       await dialog.getByLabel('Actions',{exact:true}).fill(spec.action);
       await dialog.getByRole('checkbox',{name:'agent',exact:true}).check();
+      if(index===0){
+        const name=dialog.getByLabel('Name',{exact:true});
+        const daily=dialog.getByLabel('Daily budget (USD)',{exact:true});
+        const domains=dialog.getByLabel('Domains',{exact:true});
+        const submit=dialog.getByRole('button',{name:'Create agent',exact:true});
+        await name.fill('');
+        await name.press('Tab');
+        await dialog.getByText('Name is required.').waitFor();
+        assert.equal(await name.getAttribute('aria-invalid'),'true','blur validation marks the field');
+        await name.focus();
+        await submit.click();
+        await page.waitForFunction(()=>document.activeElement?.id==='new-agent-name',{timeout:2000}).catch(()=>{});
+        const focusState=await page.evaluate(()=>({id:document.activeElement?.id||'',tag:document.activeElement?.tagName||'',invalid:[...document.querySelectorAll('[aria-invalid="true"]')].map(element=>element.id),errors:[...document.querySelectorAll('[id$="-error"]')].map(element=>element.textContent)}));
+        assert.equal(focusState.id,'new-agent-name','first invalid field is focused '+JSON.stringify(focusState));
+        assert.equal(await name.getAttribute('aria-invalid'),'true');
+        await dialog.getByText('Name is required.').waitFor();
+        await name.fill(spec.name);
+        await daily.fill('0');
+        await submit.click();
+        await page.waitForFunction(()=>document.activeElement?.id==='new-agent-daily-budget',{timeout:2000}).catch(()=>{});
+        assert.equal(await page.evaluate(()=>document.activeElement?.id),'new-agent-daily-budget');
+        assert.equal(await daily.getAttribute('aria-invalid'),'true');
+        await dialog.getByText('Enter a daily budget from 0.01 to 1,000,000.00.').waitFor();
+        await daily.fill(spec.daily);
+        await domains.fill('https://example.com');
+        await submit.click();
+        await page.waitForFunction(()=>document.activeElement?.id==='new-agent-domains',{timeout:2000}).catch(()=>{});
+        assert.equal(await page.evaluate(()=>document.activeElement?.id),'new-agent-domains');
+        assert.equal(await domains.getAttribute('aria-invalid'),'true');
+        await dialog.getByText('Domains must be hostnames such as example.com.').waitFor();
+        await domains.fill(spec.domain);
+        const tools=dialog.getByLabel('Tools',{exact:true});
+        await tools.fill('a'.repeat(65));
+        await submit.click();
+        await page.waitForFunction(()=>document.activeElement?.id==='new-agent-tools',{timeout:2000}).catch(()=>{});
+        assert.equal(await page.evaluate(()=>document.activeElement?.id),'new-agent-tools');
+        assert.equal(await tools.getAttribute('aria-invalid'),'true');
+        await dialog.getByText('Each identifier must be 64 characters or fewer.').waitFor();
+        await tools.fill(index?'web.fetch':'web.fetch, web.fetch');
+      }
       const previous=new URL(page.url()).searchParams.get('agent');
       const createdResponse=page.waitForResponse(response=>response.request().method()==='POST'&&new URL(response.url()).pathname==='/api/agents');
       await dialog.getByRole('button',{name:'Create agent',exact:true}).click();
@@ -259,6 +309,10 @@ try {
     await deleteDialog.getByRole('checkbox',{name:'I understand no backup will be made.',exact:true}).check();
     assert.equal(await confirmDelete.isDisabled(),true,'wrong name keeps deletion disabled');
     await deleteDialog.getByLabel('Type Temporary Agent to confirm',{exact:true}).fill('Temporary Agent');
+    assert.equal((await mutation('DELETE','/api/agents/'+deletedId,{origin:'https://denied.example',data:{confirmation:'Temporary Agent',backupAcknowledged:true}})).status(),403,'real-agent delete requires exact origin');
+    assert.equal((await mutation('DELETE','/api/agents/'+deletedId,{csrfToken:'0'.repeat(64),data:{confirmation:'Temporary Agent',backupAcknowledged:true}})).status(),403,'real-agent delete requires the session CSRF token');
+    assert.equal((await mutation('DELETE','/api/agents/'+deletedId,{data:{confirmation:'wrong',backupAcknowledged:true}})).status(),409,'wrong confirmation is denied before deletion');
+    assert.equal((await mutation('DELETE','/api/agents/'+deletedId,{data:{confirmation:'Temporary Agent',backupAcknowledged:false}})).status(),400,'backup acknowledgement is required');
     const deleteResponse=page.waitForResponse(response=>response.request().method()==='DELETE'&&new URL(response.url()).pathname==='/api/agents/'+deletedId);
     await confirmDelete.click();
     assert.equal((await deleteResponse).status(),200,'agent delete API succeeds');
@@ -275,7 +329,7 @@ try {
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>document.documentElement.clientWidth),false,'agent creation fits at 375 px');
     await page.keyboard.press('Escape');
     await mobileCreate.waitFor({state:'detached'});
-    console.log(JSON.stringify({phase:'agents',agents:created,deletedId,checks:['agent_create_edit_pause_resume_delete','agent_modal_focus_and_backup_confirmation','agent_mobile_create_no_overflow'],screenshot}));
+    console.log(JSON.stringify({phase:'agents',agents:created,deletedId,checks:['agent_create_edit_pause_resume_delete','agent_modal_focus_and_backup_confirmation','agent_route_origin_csrf_owner_denials','agent_field_errors_and_focus','agent_mobile_create_no_overflow'],screenshot}));
   } else if(input.phase==='layout') {
     const visible=async locator=>await locator.count()>0&&await locator.isVisible();
     const box=async locator=>{const value=await locator.boundingBox();assert.ok(value,'element has a layout box');return value;};
@@ -392,6 +446,123 @@ try {
     await page.goto(base+'/?agent=not-a-uuid');
     await page.getByRole('dialog',{name:'Agents pane',exact:true}).getByRole('alert').filter({hasText:/agent link is invalid/}).waitFor();
     console.log(JSON.stringify({phase:'layout',checks:['workspace_three_pane_resize','workspace_tabs_keyboard','workspace_tablet_sheet_focus','workspace_mobile_tabs_no_overflow','workspace_agent_error_visible'],screenshots:{'workspace-1440':desktopCapture,'workspace-768-sheet':sheetCapture,'workspace-375-panel':mobileCapture}}));
+  } else if(input.phase==='chat') {
+    await page.setViewportSize({width:1440,height:900});
+    await page.goto(base+'/?agent='+input.agents[0]);
+    const chat=page.getByRole('region',{name:'Chat pane'});
+    await chat.waitFor();
+    const composer=chat.getByLabel('Message',{exact:true});
+    await composer.waitFor();
+    await composer.fill('Please prepare the synthetic brief.');
+    const sendResponse=page.waitForResponse(response=>response.request().method()==='POST'&&new URL(response.url()).pathname==='/api/agents/'+input.agents[0]+'/messages');
+    await chat.getByRole('button',{name:'Send message',exact:true}).click();
+    assert.equal((await sendResponse).status(),201,'user message persists through the authenticated route');
+    await chat.getByText('Please prepare the synthetic brief.',{exact:true}).waitFor();
+    await chat.getByText('Background run completed.',{exact:true}).waitFor({timeout:30000});
+    await chat.locator('[data-card-type="clarification"]').getByText('More information needed',{exact:true}).waitFor();
+    await chat.locator('[data-card-type="tool_connection"]').getByText('Connect GitHub',{exact:true}).waitFor();
+    const routine=chat.locator('[data-card-type="routine"]');
+    await routine.getByText('Every weekday at 09:00',{exact:true}).waitFor();
+    assert.equal(await routine.getByRole('button').count(),0,'routine confirmation remains a later task');
+    assert.equal(await chat.locator('[data-card-type="tool_connection"]').getByRole('button').count(),0,'tool connection remains a later task');
+    await page.reload();
+    await page.getByRole('region',{name:'Chat pane'}).getByText('Please prepare the synthetic brief.',{exact:true}).waitFor();
+    const csrf=await (await context.request.get(base+'/api/auth/csrf')).json();
+    const anonymous=await browser.newContext();
+    assert.equal((await anonymous.request.get(base+'/api/agents/'+input.agents[0]+'/messages')).status(),401,'chat history requires an owner session');
+    await anonymous.close();
+    assert.equal((await context.request.post(base+'/api/agents/'+input.agents[0]+'/messages',{headers:{Origin:base},data:{text:'Missing CSRF'}})).status(),403);
+    assert.equal((await context.request.post(base+'/api/agents/'+input.agents[0]+'/messages',{headers:{Origin:'https://denied.example','x-csrf-token':csrf.csrfToken},data:{text:'Wrong origin'}})).status(),403);
+    assert.equal((await context.request.post(base+'/api/agents/'+input.agents[0]+'/messages',{headers:{Origin:base,'x-csrf-token':csrf.csrfToken},data:{text:'Forged role',role:'agent'}})).status(),400,'public chat writes cannot forge agent cards');
+    assert.equal((await context.request.get(base+'/api/agents/'+input.agents[0]+'/messages?limit=1')).status(),400,'history rejects unknown query fields');
+    assert.equal((await context.request.get(base+'/api/agents/'+input.agents[0]+'/messages?after=not-a-uuid')).status(),400,'history rejects malformed cursors');
+    assert.equal((await context.request.get(base+'/api/agents/'+crypto.randomUUID()+'/messages')).status(),404,'history rejects an unowned agent');
+    const firstHistory=await (await context.request.get(base+'/api/agents/'+input.agents[0]+'/messages')).json();
+    assert.ok(firstHistory.messages.some(message=>message.card.text==='Please prepare the synthetic brief.'));
+    assert.ok(firstHistory.messages.some(message=>message.runId&&message.card.text==='Background run completed.'),'background result keeps its run reference');
+    await page.goto(base+'/?agent='+input.agents[1]);
+    const peerChat=page.getByRole('region',{name:'Chat pane'});
+    await peerChat.getByText(/^No conversation yet\./).waitFor();
+    assert.equal(await peerChat.getByText('Please prepare the synthetic brief.',{exact:true}).count(),0,'chat history is isolated per agent');
+    const secondHistory=await (await context.request.get(base+'/api/agents/'+input.agents[1]+'/messages')).json();
+    assert.equal(secondHistory.messages.length,0);
+    assert.equal((await context.request.post(base+'/api/agents/'+input.agents[0]+'/pause',{headers:{Origin:base,'x-csrf-token':csrf.csrfToken},data:{}})).status(),200);
+    await page.goto(base+'/?agent='+input.agents[0]);
+    const pausedChat=page.getByRole('region',{name:'Chat pane'});
+    await pausedChat.getByText('Please prepare the synthetic brief.',{exact:true}).waitFor();
+    assert.equal(await pausedChat.getByLabel('Message',{exact:true}).isDisabled(),true,'paused agent chat is read-only');
+    await pausedChat.getByText('Resume this agent to send a message.',{exact:true}).waitFor();
+    assert.equal((await context.request.post(base+'/api/agents/'+input.agents[0]+'/resume',{headers:{Origin:base,'x-csrf-token':csrf.csrfToken},data:{}})).status(),200);
+    await page.setViewportSize({width:375,height:800});
+    await page.goto(base+'/?agent='+input.agents[0]);
+    await page.getByRole('navigation',{name:'Workspace panes'}).getByRole('button',{name:'Chat',exact:true}).click();
+    await page.getByRole('region',{name:'Chat pane'}).getByLabel('Message',{exact:true}).waitFor();
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>document.documentElement.clientWidth),false,'chat fits at 375 px');
+    const chatCapture=(await page.screenshot()).toString('base64');
+    console.log(JSON.stringify({phase:'chat',checks:['chat_user_message_persists','chat_background_result_polls_live','chat_four_validated_cards_render','chat_route_origin_csrf_owner_and_input_denials','chat_history_isolated_per_agent','chat_paused_read_only','chat_mobile_no_overflow'],screenshot:chatCapture}));
+  } else if(input.phase==='models') {
+    const modelKey=input.modelKey;
+    const anonymous=await browser.newContext();
+    const unauthenticated=await anonymous.request.put(base+'/api/models/roles/main',{headers:{Origin:base},data:{kind:'meta',model:'muse-spark-1.3',apiKey:modelKey}});
+    assert.equal(unauthenticated.status(),401);
+    await anonymous.close();
+    const csrf=await (await context.request.get(base+'/api/auth/csrf')).json();
+    const missingCsrf=await context.request.put(base+'/api/models/roles/main',{headers:{Origin:base},data:{kind:'meta',model:'muse-spark-1.3',apiKey:modelKey}});
+    assert.equal(missingCsrf.status(),403);
+    const wrongOrigin=await context.request.put(base+'/api/models/roles/main',{headers:{Origin:'http://evil.test','x-csrf-token':csrf.csrfToken},data:{kind:'meta',model:'muse-spark-1.3',apiKey:modelKey}});
+    assert.equal(wrongOrigin.status(),403);
+    const unknownField=await context.request.put(base+'/api/models/roles/main',{headers:{Origin:base,'x-csrf-token':csrf.csrfToken},data:{kind:'meta',model:'muse-spark-1.3',apiKey:modelKey,ownerId:input.agents[0]}});
+    assert.equal(unknownField.status(),400);
+    const invalidUrl=await context.request.put(base+'/api/models/roles/main',{headers:{Origin:base,'x-csrf-token':csrf.csrfToken},data:{kind:'openai-compatible',model:'muse-glimmer',baseUrl:'https://user:secret@example.test/v1'}});
+    assert.equal(invalidUrl.status(),400);
+    await page.goto(base+'/settings/models');
+    await page.getByRole('heading',{name:'Models',exact:true}).waitFor();
+    const mainCard=page.getByRole('region',{name:'Main AI'});
+    const samCard=page.getByRole('region',{name:'Vision precision (SAM 3.1)'});
+    await mainCard.getByText('Setup needed',{exact:true}).waitFor();
+    await mainCard.getByLabel('API key').fill(modelKey);
+    const mainSaveResponse=page.waitForResponse(response=>response.url()===base+'/api/models/roles/main'&&response.request().method()==='PUT');
+    await mainCard.getByRole('button',{name:'Save Main AI',exact:true}).click();
+    const mainSaveBody=await (await mainSaveResponse).text();
+    assert.ok(!mainSaveBody.includes(modelKey),'save response never returns the key');
+    assert.doesNotMatch(mainSaveBody,/v1\.[A-Za-z0-9_-]+\./,'save response never returns ciphertext');
+    await mainCard.getByText(/Saved key .*1234/).waitFor();
+    assert.equal(await mainCard.getByLabel('API key').inputValue(),'','key input clears after save');
+    await page.reload();
+    await page.getByRole('heading',{name:'Models',exact:true}).waitFor();
+    const reloadedMain=page.getByRole('region',{name:'Main AI'});
+    await reloadedMain.getByText(/Saved key .*1234/).waitFor();
+    assert.doesNotMatch(await page.locator('main').innerText(),new RegExp(modelKey),'saved key never returns to the browser');
+    assert.doesNotMatch(await page.locator('main').innerText(),/v1\.[A-Za-z0-9_-]+\./,'page never exposes ciphertext');
+    const reloadedSam=page.getByRole('region',{name:'Vision precision (SAM 3.1)'});
+    await reloadedSam.getByLabel('Mode').selectOption('meta');
+    assert.equal(await reloadedSam.getByRole('checkbox',{name:/Use the same key as Main AI/}).isChecked(),true,'same-key defaults on');
+    const samSaveResponse=page.waitForResponse(response=>response.url()===base+'/api/models/roles/sam'&&response.request().method()==='PUT');
+    await reloadedSam.getByRole('button',{name:'Save SAM',exact:true}).click();
+    const samSaveBody=await (await samSaveResponse).text();
+    assert.ok(!samSaveBody.includes(modelKey));
+    await reloadedSam.getByRole('status').filter({hasText:'SAM saved.'}).waitFor();
+    await page.reload();
+    await page.getByRole('heading',{name:'Models',exact:true}).waitFor();
+    const savedMain=page.getByRole('region',{name:'Main AI'});
+    const savedSam=page.getByRole('region',{name:'Vision precision (SAM 3.1)'});
+    assert.equal(await savedSam.getByLabel('Mode').inputValue(),'meta');
+    assert.equal(await savedSam.getByRole('checkbox',{name:/Use the same key as Main AI/}).isChecked(),true);
+    assert.equal(await savedSam.getByLabel('SAM API key').count(),0,'same-key SAM stores no second key');
+    await page.route('**/api/models/test',route=>route.fulfill({status:200,contentType:'application/json',body:JSON.stringify({models:[{id:'muse-spark-1.3',contextTokens:1048576},{id:'muse-wonder-1.0',contextTokens:null}],latencyMs:7})}));
+    await savedMain.getByRole('button',{name:'Test',exact:true}).click();
+    await savedMain.getByText('Provider reachable',{exact:true}).waitFor();
+    await savedMain.getByText('7 ms',{exact:true}).waitFor();
+    assert.equal(await savedMain.getByText('muse-wonder-1.0',{exact:true}).count(),1);
+    await page.unroute('**/api/models/test');
+    await savedSam.getByRole('button',{name:'Test',exact:true}).click();
+    await savedSam.getByText('Live provider testing is not connected yet. Your saved settings are unchanged.',{exact:true}).waitFor();
+    await page.setViewportSize({width:375,height:800});
+    await page.reload();
+    await page.getByRole('heading',{name:'Models',exact:true}).waitFor();
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>document.documentElement.clientWidth),false,'model settings fit at 375 px');
+    const modelsCapture=(await page.screenshot()).toString('base64');
+    console.log(JSON.stringify({phase:'models',checks:['model_main_save_masked_encrypted','model_same_key_one_provider','model_saved_test_rendering','model_live_transport_unavailable','model_route_origin_csrf_owner_and_input_denials','model_mobile_no_overflow'],screenshot:modelsCapture}));
   } else if(input.phase==='account') {
     await page.goto(base+'/settings/account');
     await page.getByRole('heading',{name:'Account',exact:true}).waitFor();
@@ -518,6 +689,61 @@ for(const selector of ['#sensitive-password','#sensitive-code']){
 console.log(JSON.stringify({checks:['real_full_desktop_png','real_bounded_crop_png','dom_pages_tagged_untrusted','actual_password_and_otp_fields_denied']}));
 `;
 
+const chatFixtureProbe = String.raw`
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
+const input=JSON.parse(process.argv[1]);
+const client=await import('./db/client.ts');const{getDatabase}=client.getDatabase?client:client.default;
+const schema=await import('./db/schema.ts');const{messages}=schema.messages?schema:schema.default;
+const chat=await import('./lib/chat/data.ts');const{appendAgentCard,listAgentMessages}=chat.appendAgentCard?chat:chat.default;
+const db=await getDatabase();
+if(input.mode==='seed'){
+  const before=(await db.select({id:messages.id}).from(messages)).length;
+  let invalid=false;
+  try{await appendAgentCard(db,input.ownerId,input.agentId,{card:{type:'message',text:''}});}catch(error){invalid=error.code==='invalid_card';}
+  const after=(await db.select({id:messages.id}).from(messages)).length;
+  assert.equal(invalid,true,'invalid agent card is rejected');
+  assert.equal(after,before,'invalid agent card never reaches storage');
+  for(const [card,sourceTag] of [
+    [{type:'message',text:'Synthetic message card.'},'agent'],
+    [{type:'clarification',question:'Which account should I use?',missingParameters:['Account','Site']},'agent'],
+    [{type:'tool_connection',tool:'github',name:'GitHub',description:'Connect GitHub to read pull requests.'},'tool'],
+    [{type:'routine',goal:'Prepare the daily brief.',steps:['Open the dashboard','Summarize changes'],schedule:'Every weekday at 09:00',timezone:'Asia/Kolkata',tools:['web.fetch'],budgetCents:300,catchUp:'run_once'},'agent'],
+  ]) await appendAgentCard(db,input.ownerId,input.agentId,{card,sourceTag});
+  let wrongOwner=false;
+  try{await appendAgentCard(db,randomUUID(),input.agentId,{card:{type:'message',text:'Cross-owner'}});}catch(error){wrongOwner=error.code==='agent_not_found';}
+  assert.equal(wrongOwner,true,'agent cards require exact owner scope');
+  const history=await listAgentMessages(db,input.ownerId,input.agentId);
+  assert.ok(history.messages.length>=4,'validated cards are readable back');
+  const first=history.messages[0];
+  const older=await listAgentMessages(db,input.ownerId,input.agentId,{before:first.id});
+  assert.equal(older.messages.length,0,'first cursor has no earlier page');
+  const newer=await listAgentMessages(db,input.ownerId,input.agentId,{after:first.id});
+  assert.ok(newer.messages.length>=3,'after cursor returns the remaining timeline');
+  let invalidCursor=false;
+  try{await listAgentMessages(db,input.ownerId,input.agentId,{after:randomUUID()});}catch(error){invalidCursor=error.code==='invalid_cursor';}
+  assert.equal(invalidCursor,true,'foreign cursors are rejected');
+  console.log(JSON.stringify({outcome:'passed',checks:['invalid_agent_card_rejected_without_row','four_cards_seeded','agent_append_owner_scoped','chat_cursor_history_owner_scoped']}));
+}else{
+  const deadline=Date.now()+60000;
+  let found=false;
+  while(Date.now()<deadline){
+    const history=await listAgentMessages(db,input.ownerId,input.agentId);
+    if(history.messages.some(message=>message.card.type==='message'&&message.card.text===input.marker)){found=true;break;}
+    await new Promise(resolve=>setTimeout(resolve,100));
+  }
+  try{
+    assert.equal(found,true,'browser message reached durable history');
+    await appendAgentCard(db,input.ownerId,input.agentId,{card:{type:'message',text:'Background run completed.'},sourceTag:'agent',runId:randomUUID()});
+    fs.writeFileSync(input.resultPath,JSON.stringify({outcome:'passed',checks:['background_result_appended_after_user_message']}),{mode:0o600});
+  }catch{
+    fs.writeFileSync(input.resultPath,JSON.stringify({outcome:'failed'}),{mode:0o600});
+    process.exitCode=1;
+  }
+}
+`;
+
 const accountRollbackProbe = String.raw`
 import assert from 'node:assert/strict';import fs from 'node:fs';import{eq,and}from'drizzle-orm';
 const input=JSON.parse(fs.readFileSync(0,'utf8'));
@@ -596,16 +822,18 @@ test("fresh Compose browser auth and two real desktop streams", { timeout: 18000
   const appPassword = randomBytes(24).toString("hex");
   const migratorPassword = randomBytes(24).toString("hex");
   const controlSecret = randomBytes(32).toString("hex");
+  const encryptionKey = randomBytes(32).toString("hex");
   const password = randomBytes(24).toString("hex");
   const replacementPassword = randomBytes(24).toString("hex");
+  const modelApiKey = `synthetic-meta-key-${randomBytes(6).toString("hex")}1234`;
   let agents = [randomUUID(), randomUUID()];
   const env = { ...process.env, ...(process.platform === "win32" ? { PATH: `E:\\Apps\\Docker\\resources\\bin;${process.env.PATH ?? ""}` } : {}), COMPOSE_PROJECT_NAME: project,
     COMPOSE_FILE: [path.resolve("docker-compose.yml"), override, ports].join(path.delimiter), COMPOSE_ENV_FILES: empty,
     POSTGRES_BOOTSTRAP_PASSWORD: bootstrap, POSTGRES_APP_PASSWORD: appPassword, POSTGRES_MIGRATOR_PASSWORD: migratorPassword,
-    DESKTOP_CONTROL_SECRET: controlSecret, APP_ORIGIN: "http://127.0.0.1:8080",
+    DESKTOP_CONTROL_SECRET: controlSecret, ENCRYPTION_KEY: encryptionKey, APP_ORIGIN: "http://127.0.0.1:8080",
     DATABASE_URL: `postgresql://eclipse_app:${appPassword}@postgres:5432/eclipse`,
     MIGRATION_DATABASE_URL: `postgresql://eclipse_migrator:${migratorPassword}@postgres:5432/eclipse` };
-  const secrets = [bootstrap, appPassword, migratorPassword, controlSecret, password, replacementPassword];
+  const secrets = [bootstrap, appPassword, migratorPassword, controlSecret, encryptionKey, password, replacementPassword, modelApiKey];
   const raw = (args, options = {}) => spawnSync("docker", args, { env, encoding: "utf8", timeout: 60000, maxBuffer: 8 * 1024 * 1024, ...options });
   const check = (result, label) => {
     const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
@@ -652,7 +880,7 @@ test("fresh Compose browser auth and two real desktop streams", { timeout: 18000
     browserCreated = true;
     docker(["exec", "-i", browserName, "sh", "-c", "cat > /tmp/browser-program.mjs"], "install isolated browser program", { input: browserProgram });
     const browser = (phase) => JSON.parse(docker(["exec", "-i", browserName, "node", "/tmp/browser-program.mjs"],
-      `real browser ${phase}`, { input: JSON.stringify({ phase, login: "audit-owner@example.test", password, replacementPassword, agents }), timeout: 180000 }));
+      `real browser ${phase}`, { input: JSON.stringify({ phase, login: "audit-owner@example.test", password, replacementPassword, agents, modelKey: modelApiKey }), timeout: 180000 }));
     summary.phase = "browser-auth";
     const authResult = browser("setup");
     assert.equal(authResult.phase, "setup");
@@ -690,6 +918,32 @@ test("fresh Compose browser auth and two real desktop streams", { timeout: 18000
     assert.equal(raw(["exec", "--user", "0:0", desktop, "test", "-d", `/workspace/homes/${agents[0]}`]).status, 0, "peer home survives deletion");
     assert.notEqual(raw(["exec", "--user", "0:0", desktop, "python3", "/opt/eclipse/desktop/bootstrap.py", "--admin", "inspect", ownerId, agentResult.deletedId]).status, 0, "registry identity is gone");
     summary.checks.push("agent_deleted_from_database_and_desktop_without_peer_loss");
+    summary.phase = "browser-chat";
+    saveSummary();
+    const chatSeed = JSON.parse(docker(["exec", "-i", app, "node", "--conditions=react-server", "--import", "tsx", "--input-type=module", "-e", chatFixtureProbe,
+      JSON.stringify({ mode: "seed", ownerId, agentId: agents[0] })], "seed validated chat cards through the server-only append boundary", { timeout: 120000 }));
+    assert.equal(chatSeed.outcome, "passed");
+    summary.checks.push(...chatSeed.checks);
+    const chatProbeResultPath = `/var/eclipse/artifacts/${runId}-chat-probe.json`;
+    docker(["exec", "-d", app, "node", "--conditions=react-server", "--import", "tsx", "--input-type=module", "-e", chatFixtureProbe,
+      JSON.stringify({ mode: "background", ownerId, agentId: agents[0], marker: "Please prepare the synthetic brief.", resultPath: chatProbeResultPath })],
+    "start background chat-result append probe");
+    const chatResult = browser("chat");
+    assert.equal(chatResult.phase, "chat");
+    const backgroundChat = JSON.parse(docker(["exec", app, "node", "-e", "console.log(require('node:fs').readFileSync(process.argv[1],'utf8'))", chatProbeResultPath], "actual background chat append evidence"));
+    assert.equal(backgroundChat.outcome, "passed");
+    summary.checks.push(...chatResult.checks, ...backgroundChat.checks);
+    writeFileSync(path.join(evidence, "task022-chat.png"), Buffer.from(chatResult.screenshot, "base64"), { mode: 0o600 });
+    saveSummary();
+    summary.phase = "browser-models";
+    const modelsResult = browser("models");
+    assert.equal(modelsResult.phase, "models");
+    summary.checks.push(...modelsResult.checks);
+    assert.equal(psql("SELECT (SELECT count(*) FROM public.providers), (SELECT count(*) FROM public.model_roles), (SELECT count(DISTINCT provider_id) FROM public.model_roles)"), "1|2|1", "one encrypted provider is shared by Main AI and SAM");
+    assert.equal(psql("SELECT encrypted_key LIKE 'v1.%' AND key_hint = repeat(chr(8226),4)||'1234' AND position('synthetic-meta-key' in encrypted_key) = 0 FROM public.providers"), "t", "only an authenticated ciphertext and hint are stored");
+    assert.equal(psql("SELECT (role = 'sam' AND use_main_key AND mode = 'meta')::text FROM public.model_roles WHERE role = 'sam'"), "true", "SAM uses the Main key");
+    summary.checks.push("model_settings_encrypted_at_rest_with_shared_same_key");
+    writeFileSync(path.join(evidence, "task020-models.png"), Buffer.from(modelsResult.screenshot, "base64"), { mode: 0o600 });
     saveSummary();
     const expiredSessionId = randomUUID();
     const unrelatedSessionId = randomUUID();
@@ -752,9 +1006,17 @@ test("fresh Compose browser auth and two real desktop streams", { timeout: 18000
     assert.equal(takeoverResult.outcome, "passed");
     summary.checks.push(...takeoverResult.checks);
     const { display } = displayByAgent.get(agents[0]);
-    const title = admin("exec", agents[0], ["node", "--input-type=module", "-e",
+    const readTitle = () => admin("exec", agents[0], ["node", "--input-type=module", "-e",
       `import fs from 'node:fs';import{spawnSync}from'node:child_process';const runtime=fs.readdirSync('/tmp').find(n=>n.startsWith('ec-'+process.getuid()+'-'));const r=spawnSync('xdotool',['getactivewindow','getwindowname'],{env:{PATH:process.env.PATH,DISPLAY:':${display}',XAUTHORITY:'/tmp/'+runtime+'/Xauthority'},encoding:'utf8',timeout:2000});if(r.status!==0)process.exit(1);console.log(r.stdout);`]);
-    assert.match(title, /Audit A AuditTyping42/, "ordinary takeover letters reached the actual remote textarea");
+    // Chromium can update the window title a moment after the last key; poll for up to 5 s so a late
+    // title passes while keystrokes that never arrive still fail with the last title seen.
+    let title = "";
+    for (let attempt = 0; attempt < 20; attempt++) {
+      try { title = readTitle(); } catch { title = ""; }
+      if (/Audit A AuditTyping42/.test(title)) break;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
+    }
+    assert.match(title, /Audit A AuditTyping42/, `ordinary takeover letters reached the actual remote textarea (last title: ${JSON.stringify(title.trim())})`);
     summary.checks.push(...result.checks);
     summary.frames = result.frames;
     writeFileSync(path.join(evidence, "task018-workspace-live.png"), Buffer.from(result.screenshot, "base64"), { mode: 0o600 });
