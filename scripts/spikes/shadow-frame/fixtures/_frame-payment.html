@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Secure card payment input frame</title>
+<script>window.__spikeClicks = []; window.__spikeClick = (name) => { window.__spikeClicks = [...(window.__spikeClicks || []), name]; };</script>
+<style>body { margin: 8px; font: 14px sans-serif; } input { width: 180px; height: 26px; display: block; margin: 0 0 6px; }</style>
+</head>
+<body>
+<input type="text" autocomplete="cc-number" aria-label="Card number" inputmode="numeric">
+<input type="text" autocomplete="cc-exp" aria-label="Expiry date">
+<input type="text" autocomplete="cc-csc" aria-label="Security code" maxlength="4" inputmode="numeric">
+<button onclick="__spikeClick('Payment frame button')">Payment frame button</button>
+</body>
+</html>

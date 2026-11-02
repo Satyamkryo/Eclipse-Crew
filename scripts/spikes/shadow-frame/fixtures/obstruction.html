@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Obstruction</title>
+<script>window.__spikeClicks = []; window.__spikeClick = (name) => { window.__spikeClicks = [...(window.__spikeClicks || []), name]; };</script>
+<style>
+body { margin: 0; font: 14px sans-serif; }
+button.target { position: absolute; width: 200px; height: 36px; }
+iframe { position: absolute; border: 0; }
+.veil { position: fixed; z-index: 10; background: rgba(20, 20, 20, 0.02); }
+x-cover { display: block; position: absolute; left: 20px; top: 20px; }
+</style>
+</head>
+<body>
+<x-cover></x-cover>
+<iframe src="/_frame-covered.html" style="left:420px;top:10px;width:320px;height:260px"></iframe>
+<button class="target" style="left:20px;top:420px" onclick="document.getElementById('victim').remove(); __spikeClick('Remove target')">Remove target</button>
+<button class="target" id="victim" style="left:240px;top:420px" onclick="__spikeClick('Removed target')">Removed target</button>
+<script>
+customElements.define("x-cover", class extends HTMLElement {
+  connectedCallback() {
+    if (this.shadowRoot) return;
+    this.attachShadow({ mode: "open" }).innerHTML =
+      `<button style="display:block;width:220px;height:36px" onclick="__spikeClick('Covered shadow')">Covered shadow</button>`;
+  }
+});
+// Overlays are plain divs: not controls, but they are what a hit test must report.
+const first = document.createElement("div");
+first.className = "veil";
+first.style.cssText = "left:0;top:0;width:300px;height:200px";
+const second = document.createElement("div");
+second.className = "veil";
+second.style.cssText = "left:400px;top:0;width:360px;height:220px";
+document.body.append(first, second);
+</script>
+</body>
+</html>

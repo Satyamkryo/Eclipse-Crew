@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Half visible frame</title>
+<script>window.__spikeClicks = []; window.__spikeClick = (name) => { window.__spikeClicks = [...(window.__spikeClicks || []), name]; };</script>
+<style>body { margin: 0; font: 14px sans-serif; } button { position: absolute; width: 220px; height: 36px; }</style>
+</head>
+<body>
+<button style="left:10px;top:10px" onclick="__spikeClick('Frame left edge')">Frame left edge</button>
+<!-- The frame starts at screen x 720 and is 400 px wide, so 1024 cuts it at child-local x 304. -->
+<button style="left:250px;top:52px" onclick="__spikeClick('Visible half')">Visible half</button>
+<button style="left:340px;top:96px" onclick="__spikeClick('Offscreen half')">Offscreen half</button>
+</body>
+</html>

@@ -76,7 +76,7 @@ test("desktop inputs preserve approved package pins and browser sandbox constrai
 
 test("package lock has the approved digest and refuses a mutated manifest or unsafe source entry", async () => {
   const original = await readFile("docker/desktop/ubuntu-packages.lock.json");
-  const manifest = validateManifest(original); assert.equal(manifest.packages.length, 379);
+  const manifest = validateManifest(original); assert.equal(manifest.packages.length, 388);
   validateManifest(Buffer.from(original.toString().replace(/\n/g, "\r\n")));
   assert.throws(() => validateManifest(Buffer.from(original.toString().replace('"schema": 1', '"schema": 2'))));
   const entry = manifest.packages[0];
@@ -216,7 +216,7 @@ test("real pinned desktop image and isolated Compose smoke", { timeout: 1200000 
       checks: (smoke.checks ?? []).filter((check) => checks.includes(check.name) && check.passed === true),
       ...(reasons.has(smoke.reason) ? { reason: smoke.reason } : {}) };
     if (smoke.versions) summary.versions = Object.fromEntries(Object.entries(smoke.versions).filter(([key, value]) =>
-      ["node", "playwright", "chromium", "openbox", "xdotool", "ffmpeg", "x11vnc", "websockify", "xvfb", "novnc"].includes(key) && /^[\w.+:~\-]{1,80}$/.test(value)));
+      ["node", "playwright", "chromium", "openbox", "xdotool", "ffmpeg", "x11vnc", "websockify", "xvfb", "novnc", "git"].includes(key) && /^[\w.+:~\-]{1,80}$/.test(value)));
     if (smoke.sandbox?.namespace === true && smoke.sandbox?.seccompBpf === true) summary.sandbox = { namespace: true, seccompBpf: true };
     assert.equal(summary.sandbox?.namespace, true, "browser_namespace_sandbox_not_verified");
     assert.equal(summary.sandbox?.seccompBpf, true, "browser_seccomp_sandbox_not_verified");

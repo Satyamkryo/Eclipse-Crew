@@ -2,10 +2,12 @@ import "server-only";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { getDatabase } from "../../db/client";
 import { agentPolicies, agents, teachRecordings } from "../../db/schema";
+import { appendSoulVersion } from "../memory/store";
 import { defaultSoul, type AgentCreateInput, type AgentUpdateInput } from "./schema";
 
 type Database = Awaited<ReturnType<typeof getDatabase>>;
 type AgentStore = Pick<Database, "select" | "update" | "delete">;
+type Transaction = Parameters<Parameters<Database["transaction"]>[0]>[0];
 
 export type AgentStatus = "active" | "paused";
 
@@ -15,6 +17,7 @@ const agentFields = {
   role: agents.role,
   soulMd: agents.soulMd,
   status: agents.status,
+  astraMode: agents.astraMode,
   dailyBudgetCents: agents.dailyBudgetCents,
   monthlyBudgetCents: agents.monthlyBudgetCents,
   createdAt: agents.createdAt,
@@ -33,6 +36,7 @@ export async function listAgentRecords(database: Database, ownerId: string) {
     name: agents.name,
     role: agents.role,
     status: agents.status,
+    astraMode: agents.astraMode,
     attentionReason: sql<string | null>`case when ${agents.attentionReason} is not null then ${agents.attentionReason} when exists (select 1 from ${teachRecordings} where ${teachRecordings.ownerId} = ${agents.ownerId} and ${teachRecordings.agentId} = ${agents.id} and ${teachRecordings.state} = 'paused') then 'teach_paused' else null end`,
   }).from(agents).where(eq(agents.ownerId, ownerId)).orderBy(asc(agents.name));
 }
@@ -61,6 +65,7 @@ export async function getAgentIdentity(
 
 export async function createAgentRecord(
   database: Database, ownerId: string, input: AgentCreateInput, agentId: string,
+  audit?: (transaction: Transaction) => Promise<void>,
 ): Promise<{ agentId: string }> {
   await database.transaction(async (transaction) => {
     await transaction.insert(agents).values({
@@ -81,14 +86,20 @@ export async function createAgentRecord(
       actions: input.actions,
       memoryScopes: input.memoryScopes,
     }).returning({ agentId: agentPolicies.agentId });
+    await audit?.(transaction);
   });
   return { agentId };
 }
 
 export async function updateAgentRecord(
   database: Database, ownerId: string, agentId: string, input: AgentUpdateInput,
+  audit?: (transaction: Transaction, change: { permissionsChanged: boolean }) => Promise<void>,
 ): Promise<boolean> {
   return database.transaction(async (transaction) => {
+    const before = await transaction.select(policyFields).from(agentPolicies)
+      .where(and(eq(agentPolicies.ownerId, ownerId), eq(agentPolicies.agentId, agentId))).limit(1);
+    const beforeAgent = await transaction.select({ soulMd: agents.soulMd }).from(agents)
+      .where(and(eq(agents.ownerId, ownerId), eq(agents.id, agentId))).limit(1);
     const updated = await transaction.update(agents).set({
       name: input.name,
       role: input.role,
@@ -116,8 +127,21 @@ export async function updateAgentRecord(
         memoryScopes: input.memoryScopes,
       }).returning({ agentId: agentPolicies.agentId });
     }
+    const previous = before[0];
+    const permissionsChanged = !previous || !sameSet(previous.tools, input.tools) || !sameSet(previous.domains, input.domains) ||
+      !sameSet(previous.actions, input.actions) || !sameSet(previous.memoryScopes, input.memoryScopes);
+    if (beforeAgent[0] && beforeAgent[0].soulMd !== input.soulMd) {
+      await appendSoulVersion(transaction, ownerId, agentId, beforeAgent[0].soulMd, input.soulMd);
+    }
+    await audit?.(transaction, { permissionsChanged });
     return true;
   });
+}
+
+function sameSet(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false;
+  const set = new Set(left);
+  return right.every((value) => set.has(value));
 }
 
 export async function setAgentStatus(

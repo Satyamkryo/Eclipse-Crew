@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import Link from "next/link";
-import { Bot, ListChecks, MessageSquare, PanelRight, UsersRound, X } from "lucide-react";
+import { Bot, ListChecks, MessageSquare, PanelRight, ShieldCheck, UsersRound, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
@@ -115,9 +115,14 @@ export function WorkspaceShell({ initialMobileView, showAgentPanel, showAgentErr
       <main aria-label="Eclipse Crew workspace" className="flex h-dvh w-full flex-col overflow-hidden bg-background text-foreground">
         <header className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
           <h1 className="text-lg font-semibold tracking-tight">Eclipse Crew</h1>
-          <Button asChild variant="ghost" size="sm">
-            <Link href="/jobs"><ListChecks aria-hidden="true" className="h-4 w-4" />Jobs</Link>
-          </Button>
+          <div className="flex items-center gap-1">
+            <Button asChild variant="ghost" size="sm">
+              <Link href="/security"><ShieldCheck aria-hidden="true" className="h-4 w-4" />Security</Link>
+            </Button>
+            <Button asChild variant="ghost" size="sm">
+              <Link href="/jobs"><ListChecks aria-hidden="true" className="h-4 w-4" />Jobs</Link>
+            </Button>
+          </div>
         </header>
         <div className="min-h-0 flex-1">
           {mobileView === "agents" && <aside aria-label="Agents pane" className="h-full">{agentPane}</aside>}
@@ -146,6 +151,9 @@ export function WorkspaceShell({ initialMobileView, showAgentPanel, showAgentErr
             <h1 className="text-lg font-semibold tracking-tight">Eclipse Crew</h1>
             <div className="flex items-center gap-1">
               <Button asChild variant="ghost" size="sm">
+                <Link href="/security"><ShieldCheck aria-hidden="true" className="h-4 w-4" />Security</Link>
+              </Button>
+              <Button asChild variant="ghost" size="sm">
                 <Link href="/jobs"><ListChecks aria-hidden="true" className="h-4 w-4" />Jobs</Link>
               </Button>
               <Button ref={panelOpener} type="button" variant="secondary" size="sm" aria-label="Open workspace panel"
@@ -163,20 +171,26 @@ export function WorkspaceShell({ initialMobileView, showAgentPanel, showAgentErr
   }
 
   return (
-    <main aria-label="Eclipse Crew workspace" className="flex h-dvh w-full overflow-hidden bg-background text-foreground">
+    <main aria-label="Eclipse Crew workspace" className="flex h-dvh w-full flex-col overflow-hidden bg-background text-foreground">
+        <header className="flex h-12 shrink-0 items-center justify-between gap-6 border-b border-border px-4">
+          <h1 className="whitespace-nowrap text-lg font-semibold tracking-tight">Eclipse Crew</h1>
+          <div className="flex items-center gap-1">
+            <Button asChild variant="ghost" size="sm">
+              <Link href="/security"><ShieldCheck aria-hidden="true" className="h-4 w-4" />Security</Link>
+            </Button>
+            <Button asChild variant="ghost" size="sm">
+              <Link href="/jobs"><ListChecks aria-hidden="true" className="h-4 w-4" />Jobs</Link>
+            </Button>
+          </div>
+        </header>
+      <div className="flex min-h-0 flex-1 overflow-hidden">
       <aside aria-label="Agents pane" className="flex w-[260px] shrink-0 flex-col border-r border-border">
-        <div className="flex h-12 shrink-0 items-center justify-between border-b border-border pl-6 pr-3">
-          <h1 className="text-lg font-semibold tracking-tight">Eclipse Crew</h1>
-          <Button asChild variant="ghost" size="sm">
-            <Link href="/jobs"><ListChecks aria-hidden="true" className="h-4 w-4" />Jobs</Link>
-          </Button>
-        </div>
         <div className="min-h-0 flex-1">{agentPane}</div>
       </aside>
       <section aria-label="Chat pane" className="min-w-0 flex-1">{chatPane}</section>
       <div role="separator" aria-label="Resize workspace panel" aria-orientation="vertical" tabIndex={0}
         aria-valuemin={380} aria-valuemax={maxPanelWidth} aria-valuenow={effectivePanelWidth} aria-valuetext={`${effectivePanelWidth} pixels`}
-        className="group relative w-6 shrink-0 cursor-col-resize touch-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring after:absolute after:inset-y-0 after:left-1/2 after:w-px after:bg-border"
+        className="relative z-10 w-px shrink-0 cursor-col-resize touch-none bg-border focus-visible:outline-2 focus-visible:outline-ring after:absolute after:inset-y-0 after:-left-3 after:w-6"
         onKeyDown={onSeparatorKeyDown}
         onPointerDown={(event) => {
           if (event.button !== 0) return;
@@ -193,6 +207,7 @@ export function WorkspaceShell({ initialMobileView, showAgentPanel, showAgentErr
       <aside aria-label="Workspace panel" className="workspace-panel flex min-h-0 shrink-0 flex-col">
         {panel}
       </aside>
+      </div>
     </main>
   );
 }

@@ -33,12 +33,14 @@ export async function tickRoutines(
   enqueue: (db: PgBossTransaction, job: RoutineJob) => Promise<boolean>,
   now = new Date(),
 ): Promise<{ routines: number; jobs: number }> {
-  const owners = await database.select({ id: owner.id }).from(owner).limit(2);
+  const owners = await database.select({ id: owner.id, crewStoppedAt: owner.crewStoppedAt }).from(owner).limit(2);
   let processedRoutines = 0;
   let queuedJobs = 0;
   let remaining = MAX_JOBS_PER_TICK;
 
   for (const current of owners) {
+    // TASK-052. A stopped crew schedules nothing; next_run_at stays as it was, so the catch-up policy applies on resume.
+    if (current.crewStoppedAt) continue;
     const due = await database.select({ id: routines.id }).from(routines).where(and(
       eq(routines.ownerId, current.id),
       eq(routines.active, true),

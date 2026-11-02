@@ -4,7 +4,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, writeFile, readFile, lstat, readlink, unlink, readdir, realpath, rm, open } from "node:fs/promises";
 import { constants } from "node:fs";
-import { hostname } from "node:os";
+import { hostname, networkInterfaces } from "node:os";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { validateIds, validateRegistry } from "./agent-store.mjs";
@@ -12,10 +12,11 @@ import { OperationSchema, WorkerOperationSchema, resultFor, validatePng } from "
 import { fingerprint, readSnapshot, sessionCookies, writeSnapshot } from "./cookie-snapshot.mjs";
 import { checkOpenable } from "./outbox-reader.mjs";
 import { takeSnapshot, verifySnapshot } from "./page-snapshot.mjs";
+import { startSocketToTcpForwarder, startTcpToSocketForwarder } from "./egress-relay.mjs";
 
 const COOKIE_SAVE_INTERVAL_MS = 30_000;
 const fail = (code) => { throw Error(code); };
-export const SESSION_FAILURES = new Set(["invalid_session_record", "agent_not_ready", "worker_identity_invalid", "worker_capabilities_invalid", "worker_security_invalid", "unsafe_session_path", "profile_busy_or_unsafe", "display_conflict", "xauthority_failed", "display_start_failed", "display_authentication_failed", "window_manager_start_failed", "browser_start_failed", "session_component_failed", "session_start_failed", "private_ipc_required", "egress_not_configured"]);
+export const SESSION_FAILURES = new Set(["invalid_session_record", "agent_not_ready", "worker_identity_invalid", "worker_capabilities_invalid", "worker_security_invalid", "unsafe_session_path", "profile_busy_or_unsafe", "display_conflict", "xauthority_failed", "display_start_failed", "display_authentication_failed", "window_manager_start_failed", "browser_start_failed", "session_component_failed", "session_start_failed", "private_ipc_required", "egress_not_configured", "namespace_required"]);
 export function runtimePrefix(uid) {
   if (!Number.isInteger(uid) || uid < 20000 || uid > 59999) fail("worker_identity_invalid");
   // Chromium adds its own directory and SingletonSocket; leave room below AF_UNIX's 108-byte limit.
@@ -78,13 +79,16 @@ async function cleanDisplay(record, tracked) {
   catch (e) { if (e.code !== "ENOENT") throw e; }
   await unlink(lock);
 }
-export async function startSession(input, { onFailure = () => {}, onRuntime = () => {}, egress = null } = {}) {
+export async function startSession(input, { onFailure = () => {}, onRuntime = () => {} } = {}) {
   const record = sessionRecord(input); const uid = process.getuid();
-  if (egress !== null && (typeof egress !== "string" || !/^[0-9a-f]{64}$/.test(egress))) fail("egress_not_configured");
   if (uid !== record.uid || process.getgid() !== record.gid || process.getgroups().some((group) => group !== record.gid)) fail("worker_identity_invalid");
   const status = await readFile("/proc/self/status", "utf8");
   for (const field of ["CapEff", "CapPrm", "CapInh", "CapAmb", "CapBnd"]) if (!new RegExp(`^${field}:\\s+0+$`, "m").test(status)) fail("worker_capabilities_invalid");
   if (!/^NoNewPrivs:\s+1$/m.test(status) || !/^Seccomp:\s+2$/m.test(status) || +/^Seccomp_filters:\s+(\d+)/m.exec(status)?.[1] < 2) fail("worker_security_invalid");
+  // TASK-071. Fail closed unless the worker is in its own network namespace with only loopback.
+  const interfaces = Object.keys(networkInterfaces());
+  if (interfaces.length !== 1 || interfaces[0] !== "lo") fail("namespace_required");
+  const nsDirectory = `/run/eclipse-ns/${record.agentId}`;
   await privateDirectory(record.home, uid); await privateDirectory(`${record.home}/.config`, uid);
   const profile = `${record.home}/.config/chromium`; await privateDirectory(profile, uid); await privateDirectory(record.downloads, uid);
   await recoverProfile(profile, uid);
@@ -97,6 +101,7 @@ export async function startSession(input, { onFailure = () => {}, onRuntime = ()
   const authority = `${directory}/Xauthority`; const children = []; let context; let closing = false; let ready = false;
   // Session cookies (no expiry) are not kept by Chromium's profile; see cookie-snapshot.mjs.
   let cookieTimer; let savedCookies = ""; let savingCookies = false;
+  let egressForwarder; let gatewayForwarder;
   const saveCookies = async () => {
     if (!context || savingCookies) return; savingCookies = true;
     try {
@@ -119,6 +124,8 @@ export async function startSession(input, { onFailure = () => {}, onRuntime = ()
   const close = async () => {
     if (closing) return; closing = true;
     clearInterval(cookieTimer);
+    await egressForwarder?.close().catch(() => {});
+    await gatewayForwarder?.close().catch(() => {});
     if (context && ready) { savingCookies = false; await Promise.race([saveCookies(), delay(1500)]); }
     if (context) await Promise.race([context.close().catch(() => {}), delay(3000)]);
     for (const child of [...children].reverse()) { try { child.kill("SIGTERM"); } catch { /* already stopped */ } }
@@ -138,12 +145,16 @@ export async function startSession(input, { onFailure = () => {}, onRuntime = ()
     if (command("xdpyinfo", [], { env: { ...env, XAUTHORITY: `${directory}/absent` } }).status === 0) fail("display_authentication_failed");
     start("openbox", ["--sm-disable"]);
     await until(() => /window id # 0x[1-9a-f]/i.test(command("xprop", ["-root", "_NET_SUPPORTING_WM_CHECK"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).stdout ?? ""), "window_manager_start_failed");
+    egressForwarder = await startTcpToSocketForwarder({ socketPath: `${nsDirectory}/egress.sock` }).catch(() => fail("egress_not_configured"));
+    // TASK-073b: git's plain-HTTP gateway stays optional so a session without the supervisor relay still starts.
+    gatewayForwarder = await startTcpToSocketForwarder({ port: 3129, socketPath: `${nsDirectory}/gateway.sock` }).catch(() => null);
     const { chromium } = await import("playwright-core");
     try { context = await chromium.launchPersistentContext(profile, { executablePath: "/opt/chromium/chrome-linux/chrome", chromiumSandbox: true,
       headless: false, viewport: null, env, downloadsPath: record.downloads, timeout: 15000,
       // TASK-045: the token is Playwright's proxy password (Chromium answers the 407 in memory, never argv/env).
       // Loopback bypass keeps the mock vendor fixture reachable; shared loopback is a TASK-071 limit.
-      ...(egress ? { proxy: { server: "http://egress-proxy:4321", username: record.agentId, password: egress, bypass: "localhost,127.0.0.1,[::1]" } } : {}),
+      // TASK-071: plain loopback proxy; the supervisor relay adds the token outside this namespace.
+      proxy: { server: "http://127.0.0.1:3128", bypass: "127.0.0.1,localhost" },
       args: ["--window-position=0,0", "--window-size=1024,768", "--disable-dev-shm-usage", "--disable-background-networking", "--no-first-run"] }); }
     catch (cause) { throw Error("browser_start_failed", { cause }); }
     try {
@@ -153,7 +164,7 @@ export async function startSession(input, { onFailure = () => {}, onRuntime = ()
     try { savedCookies = fingerprint(sessionCookies(await context.cookies())); } catch { savedCookies = ""; }
     cookieTimer = setInterval(() => { void saveCookies(); }, COOKIE_SAVE_INTERVAL_MS); cookieTimer.unref();
     context.once("close", () => { if (!closing) onFailure("session_component_failed"); }); ready = true;
-    return { context, env, display: record.display, directory, home: record.home, close };
+    return { context, env, display: record.display, directory, home: record.home, nsDirectory, close };
   } catch (e) { await close().catch(() => {}); throw e; }
 }
 
@@ -304,6 +315,11 @@ const xKeys = { Control: "ctrl", Alt: "alt", Shift: "shift", Meta: "super", Ente
   ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right", PageUp: "Prior", PageDown: "Next" };
 async function performOperation(session, command, signal, trustedOwnerInput) {
   const { operation } = command;
+  if (operation === "shell.run") {
+    // TASK-073. The command runs as this worker user, inside this worker's network namespace.
+    const { runShell } = await import("./shell-runner.mjs");
+    return runShell({ command: command.command, cwd: command.cwd, timeout: command.timeout ?? 60, home: session.home, env: session.env });
+  }
   if (operation === "capture.screenshot") {
     const crop = command.crop;
     const args = ["-nostdin", "-hide_banner", "-loglevel", "error", "-f", "x11grab", "-draw_mouse", "0", "-video_size", "1024x768", "-i", session.env.DISPLAY,
@@ -383,14 +399,49 @@ async function performOperation(session, command, signal, trustedOwnerInput) {
 /** Private worker boundary; schema-valid operations only, never arbitrary browser evaluation. */
 export async function dispatchOperation(session, operation, params = {}, trustedOwnerInput = false) {
   if (typeof trustedOwnerInput !== "boolean") throw operationError("invalid_operation");
+  if (operation === "fixture.mock_vendor") return fixtureOperation(params);
   if (!params || typeof params !== "object" || Array.isArray(params) || params.operation !== undefined && params.operation !== operation)
     throw operationError("invalid_operation");
   const parsed = OperationSchema.safeParse({ ...params, operation });
   if (!parsed.success) throw operationError("invalid_operation");
+  if (operation === "shell.run") {
+    // A long command must not mark the session uncertain, so it skips the 4 s operation bound and enforces its own timeout.
+    return resultFor(operation, await performOperation(session, parsed.data, undefined, false), parsed.data);
+  }
   const command = parsed.data;
   const run = () => boundedOperation(async (signal) => resultFor(operation, await performOperation(session, command, signal, trustedOwnerInput), command));
   return trustedOwnerInput && session.teach ? session.teach.around(command, run) : run();
 }
+// TASK-071. Fixtures run inside the agent namespace so Chromium can reach them on its own loopback.
+let mockVendor = null;
+let cookieFixture = null;
+async function fixtureOperation(params) {
+  if (process.env.ECLIPSE_FIXTURES !== "1") throw operationError("fixtures_disabled");
+  const input = params && typeof params === "object" && !Array.isArray(params) ? params : {};
+  const fixture = input.fixture === "cookie" ? "cookie" : "vendor";
+  const action = input.action;
+  let state = fixture === "cookie" ? cookieFixture : mockVendor;
+  if (action === "start") {
+    if (!state) {
+      if (fixture === "cookie") {
+        const { startCookieFixture } = await import("./mock-vendor/cookie-fixture.mjs");
+        cookieFixture = state = await startCookieFixture();
+      } else {
+        const { startMockVendor } = await import("./mock-vendor/server.mjs");
+        mockVendor = state = await startMockVendor();
+      }
+    }
+    return { source_tag: "tool", untrusted: true, url: state.url };
+  }
+  if (action === "status") return { source_tag: "tool", untrusted: true, url: state?.url ?? null };
+  if (action === "stop") {
+    await state?.close?.().catch(() => {});
+    if (fixture === "cookie") cookieFixture = null; else mockVendor = null;
+    return { source_tag: "tool", untrusted: true, stopped: true };
+  }
+  throw operationError("invalid_operation");
+}
+
 async function main() {
   if (process.argv[2] === "--terminate") {
     const tracked = JSON.parse(process.argv[3]); const record = sessionRecord(JSON.parse(process.argv[4]));
@@ -424,7 +475,7 @@ async function main() {
   const { readFramed, writeFramed } = await import("./controller-channel.mjs");
   const record = JSON.parse(process.argv[2]); let session; let stopping = false;
   const frames = readFramed(process.stdin);
-  let vnc = null, vncStarting = null;
+  let vnc = null, vncStarting = null, vncForwarder = null;
   const vncAbort = new AbortController();
   const closeVnc = async () => { try { await vnc?.close(); } catch { /* */ } vnc = null; };
   const finish = async () => {
@@ -432,6 +483,7 @@ async function main() {
     session?.teach?.abort("session_stopped");
     vncAbort.abort();
     await vncStarting?.catch(() => {});
+    await vncForwarder?.close().catch(() => {});
     await closeVnc();
     await session?.close().catch(() => {});
     process.exit(0);
@@ -444,15 +496,7 @@ async function main() {
 
   sessionRecord(record);
 
-  // TASK-045: the supervisor sends the per-agent egress token as the first frame, before any command.
-  const first = await frames.next();
-  const handshake = first.value;
-  if (first.done || !handshake || typeof handshake !== "object" || Array.isArray(handshake) ||
-      Object.keys(handshake).sort().join() !== "command,token" || handshake.command !== "egress" ||
-      !(handshake.token === null || (typeof handshake.token === "string" && /^[0-9a-f]{64}$/.test(handshake.token)))) fail("egress_not_configured");
-
   session = await startSession(record, {
-    egress: handshake.token,
     onRuntime: (directory) => { void sendMsg({ state: "runtime", directory }); },
     onFailure: () => { void sendMsg({ state: "failed", reason: "session_component_failed" }).then(() => finish()); },
   });
@@ -465,6 +509,8 @@ async function main() {
       onFailure: () => { void sendMsg({ state: "failed", reason: "session_component_failed" }).then(() => finish()); } });
     vnc = await vncStarting; vncStarting = null;
     if (stopping) { await closeVnc(); return; }
+    // TASK-071: the controller reaches this pathname socket; x11vnc stays on the namespace loopback.
+    vncForwarder = await startSocketToTcpForwarder({ socketPath: `${session.nsDirectory}/vnc.sock`, port: vnc.vncPort });
     // Private framed pipe only; the root manager never includes this password in status.
     await sendMsg({ state: "vnc_ready", vncPort: vnc.vncPort, password: vnc.password });
   } catch {

@@ -1,0 +1,14 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Payment</title>
+<script>window.__spikeClicks = []; window.__spikeClick = (name) => { window.__spikeClicks = [...(window.__spikeClicks || []), name]; };</script>
+<style>body { margin: 0; font: 14px sans-serif; } iframe { position: absolute; border: 0; width: 320px; height: 200px; }</style>
+</head>
+<body>
+<!-- A real Stripe frame is cross-origin, named __privateStripeFrame* and titled "Secure card payment input frame". -->
+<iframe src="http://localhost:8082/_frame-payment.html" name="__privateStripeFrame1" title="Secure card payment input frame" style="left:10px;top:10px"></iframe>
+<button style="position:absolute;left:20px;top:250px;width:200px;height:36px" onclick="__spikeClick('Pay later')">Pay later</button>
+</body>
+</html>

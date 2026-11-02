@@ -8,10 +8,37 @@ import { setTimeout as delay } from "node:timers/promises";
 const SYSTEM = "/workspace/.system";
 const REGISTRY = `${SYSTEM}/agents.json`;
 const RUNTIME = "/run/eclipse";
+const NS_ROOT = "/run/eclipse-ns";
 const LOCK = `${RUNTIME}/agents.lock`;
 export const ADMIN_MASK = 0x1c3n; // CHOWN, DAC_OVERRIDE, SETGID, SETUID, SETPCAP.
 const INITIAL_MASK = ADMIN_MASK | (1n << 21n);
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+export const NETNS_HELPER = "/opt/eclipse/desktop/netns-enter.py";
+export function nsDirectory(agentId) {
+  if (typeof agentId !== "string" || !uuid.test(agentId)) throw new AgentError("invalid_identity");
+  return `${NS_ROOT}/${agentId}`;
+}
+async function ensureNsRoot() {
+  let stat;
+  try { stat = await lstat(NS_ROOT); } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    await mkdir(NS_ROOT, { mode: 0o711 }); await chmod(NS_ROOT, 0o711); await chown(NS_ROOT, 0, 0);
+    stat = await lstat(NS_ROOT);
+  }
+  check(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === 0 && stat.gid === 0 && (stat.mode & 0o7777) === 0o711, "unsafe_namespace_directory");
+}
+export async function ensureNsDirectory(record) {
+  const directory = nsDirectory(record.agentId);
+  await ensureNsRoot();
+  let stat;
+  try { stat = await lstat(directory); } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    await mkdir(directory, { mode: 0o700 }); await chmod(directory, 0o700); await chown(directory, record.uid, record.gid);
+    stat = await lstat(directory);
+  }
+  check(stat.isDirectory() && !stat.isSymbolicLink() && stat.uid === record.uid && stat.gid === record.gid && (stat.mode & 0o7777) === 0o700, "unsafe_namespace_directory");
+  return directory;
+}
 export class AgentError extends Error { constructor(code) { super(code); this.code = code; } }
 const check = (ok, code) => { if (!ok) throw new AgentError(code); };
 export function validateIds(ownerId, agentId) {
@@ -115,6 +142,7 @@ export function deletionPaths(record) {
     home: `/workspace/homes/${record.agentId}`,
     downloads: `${SYSTEM}/downloads/${record.agentId}`,
     downloadsView: `/downloads/${record.agentId}`,
+    ns: nsDirectory(record.agentId),
   };
 }
 function accountLines(record) {
@@ -142,7 +170,14 @@ async function layout(record, create = false) {
     const { lchown } = await import("node:fs/promises"); await lchown(link, record.uid, record.gid);
   }
   await directory(downloads, 0o700, record.uid);
+  await ensureNsDirectory(record);
 }
+export async function removeNsDirectory(record) {
+  const directory = nsDirectory(record.agentId);
+  await validateDeletableDirectory(directory, record);
+  await removeOwnedDirectory(directory, record);
+}
+
 export async function restoreAccounts() {
   await requireAdmin({ bootstrap: true });
   const registry = await readRegistry(); const base = await bases();
@@ -237,6 +272,7 @@ export async function deleteAgent(ownerId, agentId) {
     await validateDeletableDirectory(targets.home, record);
     await validateDeletableDirectory(targets.downloads, record);
     await validateDeletableDirectory(targets.downloadsView, record);
+    await validateDeletableDirectory(targets.ns, record);
     if (record.state !== "deleting") {
       record.state = "deleting";
       await saveRegistry(registry);
@@ -244,6 +280,7 @@ export async function deleteAgent(ownerId, agentId) {
     await removeOwnedDirectory(targets.home, record);
     await removeOwnedDirectory(targets.downloads, record);
     await removeOwnedDirectory(targets.downloadsView, record);
+    await removeOwnedDirectory(targets.ns, record);
     await unpublishAccount(record);
     registry.agents = registry.agents.filter((item) => item.agentId !== agentId);
     await saveRegistry(registry);
@@ -282,10 +319,15 @@ export async function inspectAgent(ownerId, agentId) {
 export function launchAgent(record, argv, options = {}) {
   validateIds(record.ownerId, record.agentId);
   check(Number.isInteger(record.uid) && record.uid >= 20000 && record.uid <= 59999 && record.gid === record.uid && record.home === `/workspace/homes/${record.agentId}`, "invalid_identity");
+  const { extraEnv, ...spawnOptions } = options;
+  const env = { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: record.home, USER: record.name, LOGNAME: record.name, LANG: "C.UTF-8", TMPDIR: `${record.home}/work` };
+  if (extraEnv !== undefined) {
+    check(extraEnv && typeof extraEnv === "object" && !Array.isArray(extraEnv) && Object.entries(extraEnv).every(([key, value]) => key === "ECLIPSE_FIXTURES" && value === "1"), "invalid_identity");
+    Object.assign(env, extraEnv);
+  }
   return spawn("/usr/bin/setpriv", ["--reuid", String(record.uid), "--regid", String(record.gid), "--clear-groups", "--bounding-set=-all",
-    "--inh-caps=-all", "--ambient-caps=-all", "--no-new-privs", ...argv], { ...options,
-    cwd: record.home, shell: false, env: { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: record.home, USER: record.name, LOGNAME: record.name,
-      LANG: "C.UTF-8", TMPDIR: `${record.home}/work` } });
+    "--inh-caps=-all", "--ambient-caps=-all", "--no-new-privs", "python3", NETNS_HELPER, "--agent-dir", nsDirectory(record.agentId), "--", ...argv], { ...spawnOptions,
+    cwd: record.home, shell: false, env });
 }
 export async function executeAgent(ownerId, agentId, argv) {
   check(Array.isArray(argv) && argv.length > 0 && argv.length <= 128 && argv.every((arg) => typeof arg === "string" && !arg.includes("\0")) &&

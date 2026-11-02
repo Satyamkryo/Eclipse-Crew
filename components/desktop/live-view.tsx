@@ -5,6 +5,7 @@ import { AlertTriangle, Loader2, Maximize2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { getForwardedKeyChord } from "@/lib/desktop/key-chord";
 import { ExpandedView } from "@/components/desktop/expanded-view";
+import { AstraBadge } from "@/components/ui/astra-badge";
 import { TeachControls } from "@/components/desktop/teach-controls";
 import { useTeachCapture } from "@/lib/teach/client";
 
@@ -13,7 +14,7 @@ type ActiveView = { generation: string; connectionId: string; csrfToken: string;
 type Viewer = { background: string; viewOnly: boolean; scaleViewport: boolean; resizeSession: boolean; disconnect(): void; addEventListener(type: string, callback: EventListener): void };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export function LiveView({ agentId, agentName, modelName }: { agentId: string; agentName?: string; modelName?: string }) {
+export function LiveView({ agentId, agentName, modelName, astraMode }: { agentId: string; agentName?: string; modelName?: string; astraMode?: boolean }) {
   const frameRef = useRef<HTMLDivElement>(null);
   // The noVNC target. React never owns it: it is moved between the inline slot and the expanded slot, so opening or
   // closing the expanded view never reconnects the stream or drops a takeover.
@@ -257,6 +258,7 @@ export function LiveView({ agentId, agentName, modelName }: { agentId: string; a
         <div className="flex items-center gap-2 text-xs">
           <span aria-hidden="true" className={`h-2 w-2 rounded-full ${status === "live" ? "motion-safe:animate-pulse bg-foreground" : "bg-muted-foreground"}`} />
           <span className="font-medium">{agentName ?? "Agent desktop"}</span>
+          {astraMode && <AstraBadge />}
           <span className="text-muted-foreground" role="status">{status === "live" ? "Live" : status === "connecting" ? "Connecting…" : "Offline"}</span>
         </div>
         <div className="flex items-center gap-2">
@@ -279,7 +281,7 @@ export function LiveView({ agentId, agentName, modelName }: { agentId: string; a
       </div>
       {error && status === "live" && <p role="alert" className="border-t border-border px-3 py-2 text-xs text-danger">{error}</p>}
       {expanded && (
-        <ExpandedView agentName={agentName ?? "Agent desktop"} status={status} takenOver={takenOver} busy={busy} phone={phone} modelName={modelName}
+        <ExpandedView agentName={agentName ?? "Agent desktop"} astraMode={astraMode === true} status={status} takenOver={takenOver} busy={busy} phone={phone} modelName={modelName}
           teachControls={(takenOver || teach.capture || teach.saved.length > 0) ? teachControls : null} connectedAt={connectedAt} error={error} slotRef={setExpandedSlot} overlay={overlay} onScreenKeyDown={handleKeyDown}
           onTakeOver={takeOver} onHandBack={handBack} onExit={() => setExpanded(false)} />
       )}

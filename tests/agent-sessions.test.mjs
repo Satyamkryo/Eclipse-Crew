@@ -6,6 +6,7 @@ import { readFile, writeFile, access } from "node:fs/promises";
 import path from "node:path";
 import { SessionManager, validateSessionRequest } from "../docker/desktop/session-manager.mjs";
 import { sessionRecord, runtimePrefix } from "../docker/desktop/session-worker.mjs";
+import { launchAgent } from "../docker/desktop/agent-store.mjs";
 import { minimalEnvironment, reserveEvidence, runProcess } from "../scripts/spikes/volume-isolation.mjs";
 
 const OWNER = "11111111-1111-4111-8111-111111111111", OTHER = "22222222-2222-4222-8222-222222222222";
@@ -19,6 +20,13 @@ test("session identities and closed IPC schema reject caller-selected paths, fla
   validateSessionRequest({ command: "session-start", ownerId: OWNER, agentId: A });
   for (const record of [{ ...identity(), uid: 0 }, { ...identity(), state: "pending" }, { ...identity(), home: "/root" }, { ...identity(), agentId: "../root" }]) assert.throws(() => sessionRecord(record));
   for (const request of [{ command: "exec", ownerId: OWNER, agentId: A }, { command: "session-start", ownerId: OWNER, agentId: A, args: ["--no-sandbox"] }, { command: "session-stop", ownerId: OWNER, agentId: "../root" }]) assert.throws(() => validateSessionRequest(request));
+  validateSessionRequest({ command: "session-fixture-cookie", ownerId: OWNER, agentId: A });
+  assert.throws(() => validateSessionRequest({ command: "session-fixture-cookie", ownerId: OWNER, agentId: A, fixture: "cookie" }));
+});
+test("worker fixture environment is allowlisted to ECLIPSE_FIXTURES=1", () => {
+  const record = { ...identity(), home: `/workspace/homes/${A}` };
+  for (const extraEnv of [{ PATH: "/tmp" }, { ECLIPSE_FIXTURES: "0" }, { ECLIPSE_FIXTURES: "1", LD_PRELOAD: "/tmp/x.so" }, { ECLIPSE_FIXTURES: "1", HOME: "/tmp" }, null, []])
+    assert.throws(() => launchAgent(record, ["true"], { extraEnv, stdio: "ignore" }), (error) => error.code === "invalid_identity");
 });
 test("session lifecycle serializes the same agent and recovers its queue after refusal", async () => {
   const manager = new SessionManager(); const calls = [];
@@ -57,13 +65,13 @@ test("two real graphical agent sessions isolate displays/profiles and survive li
   const project = `eclipse012${randomBytes(8).toString("hex")}`; const evidence = await reserveEvidence(path.resolve("data/spikes/task-012"));
   const summary = { task: "TASK-012", runId: evidence.runId, outcome: "incomplete", phase: "build", checks: [], cleanup: "pending" };
   let dockerPath = "docker"; if (process.platform === "win32") { try { await access("E:\\Apps\\Docker\\resources\\bin\\docker.exe"); dockerPath = "E:\\Apps\\Docker\\resources\\bin\\docker.exe"; } catch { /* PATH fallback. */ } }
-  const env = { ...minimalEnvironment(), DESKTOP_CONTROL_SECRET: randomBytes(32).toString("hex"), POSTGRES_BOOTSTRAP_PASSWORD: randomBytes(24).toString("hex"), POSTGRES_APP_PASSWORD: randomBytes(24).toString("hex"), POSTGRES_MIGRATOR_PASSWORD: randomBytes(24).toString("hex") };
+  const env = { ...minimalEnvironment(), DESKTOP_CONTROL_SECRET: randomBytes(32).toString("hex"), EGRESS_DESKTOP_SECRET: randomBytes(32).toString("hex"), POSTGRES_BOOTSTRAP_PASSWORD: randomBytes(24).toString("hex"), POSTGRES_APP_PASSWORD: randomBytes(24).toString("hex"), POSTGRES_MIGRATOR_PASSWORD: randomBytes(24).toString("hex") };
   const empty = path.join(evidence.directory, "empty.env"), override = path.join(evidence.directory, "override.json");
   await writeFile(empty, "", { flag: "wx", mode: 0o600 });
-  await writeFile(override, JSON.stringify({ services: { desktop: { labels: { "ai.eclipse.task012.run": project }, build: { labels: { "ai.eclipse.task012.run": project } } } } }), { flag: "wx", mode: 0o600 });
+  await writeFile(override, JSON.stringify({ services: { desktop: { environment: { ECLIPSE_FIXTURES: "1" }, labels: { "ai.eclipse.task012.run": project }, build: { labels: { "ai.eclipse.task012.run": project } } } } }), { flag: "wx", mode: 0o600 });
   const prefix = ["compose", "--env-file", empty, "--project-name", project, "--file", path.resolve("docker-compose.yml"), "--file", override];
   const raw = (args, options = {}) => spawnSync(dockerPath, args, { env, encoding: "utf8", windowsHide: true, timeout: 60000, maxBuffer: 4 * 1024 * 1024, ...options });
-  const checked = (args, options) => { const result = raw(args, options); assert.equal(result.status, 0, `${summary.phase}: ${String(result.stderr).slice(0, 2000)}`); return result.stdout.trim(); };
+  const checked = (args, options) => { const result = raw(args, options); assert.equal(result.status, 0, `${summary.phase}: ${String(result.stderr).slice(-4000)}`); return result.stdout.trim(); };
   const compose = (args, options) => checked([...prefix, ...args], options); let container, built = false;
   const args = (command, id = A, extra = [], owner = OWNER) => ["exec", "--user", "0:0", container, "python3", "/opt/eclipse/desktop/bootstrap.py", "--admin", command, owner, id, ...extra];
   const admin = (command, id, extra, owner) => checked(args(command, id, extra, owner));
@@ -77,25 +85,14 @@ test("two real graphical agent sessions isolate displays/profiles and survive li
     const cmd=(a)=>{const r=spawnSync('xdotool',a,{env,encoding:'utf8',timeout:2000});assert.equal(r.status,0);return r.stdout.trim();};`;
   const navigate = (id, display, url) => agent(id, sessionEnv(id, display) + `cmd(['key','--clearmodifiers','ctrl+l']);cmd(['type','--clearmodifiers','--delay','1','--',${JSON.stringify(url)}]);cmd(['key','Return']);`);
   const title = (id, display) => agent(id, sessionEnv(id, display) + "console.log(cmd(['getactivewindow','getwindowname']));");
-  // Fixture pages: /seed sets a persistent cookie plus two session cookies, /late adds one more session cookie,
-  // /drop deletes one, /check only reports. Every page shows its cookies in the window title.
-  const fixtureCode = `import http from 'node:http';
-    const seeds = { A: true, B: true };
-    http.createServer((req, res) => {
-      const u = new URL(req.url, 'http://127.0.0.1'); const v = u.searchParams.get('value'); let script = '';
-      if (u.pathname === '/seed' && seeds[v]) script = 'localStorage.setItem("fixture",' + JSON.stringify(v) + ');document.cookie="fixture=' + v + '; Max-Age=3600; SameSite=Strict";document.cookie="sess=' + v + '; SameSite=Strict";document.cookie="gone=' + v + '; SameSite=Strict";';
-      else if (u.pathname === '/late' && seeds[v]) script = 'document.cookie="late=' + v + '; SameSite=Strict";';
-      else if (u.pathname === '/crash' && seeds[v]) script = 'document.cookie="crashc=' + v + '; SameSite=Strict";';
-      else if (u.pathname === '/drop') script = 'document.cookie="gone=; Max-Age=0; SameSite=Strict";';
-      res.setHeader('Content-Type', 'text/html');
-      res.end('<!doctype html><script>' + script + 'document.title="Fixture "+localStorage.getItem("fixture")+" Cookie "+document.cookie;</script>');
-    }).listen(18765, '127.0.0.1');`;
-  const fixtureServer = () => checked(["exec", "-d", "--user", "0:0", container, "node", "--input-type=module", "-e", fixtureCode]);
+  // The cookie fixture runs inside each agent's network namespace, on that agent's own loopback.
+  const startFixture = (id) => admin("session-fixture-cookie", id);
+  const loopbackListener = () => root(`import net from 'node:net';const s=net.connect({host:'127.0.0.1',port:18765});s.setTimeout(1500,()=>{s.destroy();console.log('refused');});s.once('connect',()=>{s.destroy();console.log('reachable');});s.once('error',()=>console.log('refused'));`);
   const noAgentProcesses = (uid) => root(`import fs from 'node:fs';let alive=0;for(const pid of fs.readdirSync('/proc').filter(x=>/^[0-9]+$/.test(x))){try{const s=fs.readFileSync('/proc/'+pid+'/status','utf8');if(Number(/^Uid:\\s+(\\d+)/m.exec(s)?.[1])===${uid}&&!/^State:\\s+Z/m.test(s))alive++;}catch{}}console.log(alive);`);
   try {
     compose(["build", "desktop"], { timeout: 300000 }); built = true; compose(["up", "-d", "--no-build", "desktop"]); compose(["ps"]); container = compose(["ps", "-q", "desktop"]); await ready();
     summary.phase = "provision";
-    const a = JSON.parse(admin("create", A)), b = JSON.parse(admin("create", B)); fixtureServer();
+    const a = JSON.parse(admin("create", A)), b = JSON.parse(admin("create", B));
     root("import fs from 'node:fs';fs.writeFileSync('/workspace/unrelated-control','keep');");
     summary.phase = "conflicts";
     agent(A, "import fs from 'node:fs';fs.writeFileSync('/tmp/.X100-lock','1',{flag:'wx',mode:0o600});");
@@ -119,6 +116,12 @@ test("two real graphical agent sessions isolate displays/profiles and survive li
     const cli = spawnSync(process.execPath, ["scripts/desktop-agent.mjs", "session-status", "--project", project, "--owner", OWNER, "--agent", A], { env: { ...env, PATH: path.dirname(dockerPath) + path.delimiter + (env.PATH ?? "") }, encoding: "utf8", windowsHide: true, timeout: 15000 });
     assert.equal(cli.status, 0, cli.stderr); assert.equal(JSON.parse(cli.stdout).state, "running");
     summary.checks.push("two_concurrent_graphical_sessions_idempotent_owner_cli");
+    // Start A's fixture first: the container's own loopback must still have no listener, so the
+    // server really lives in A's namespace, and B's namespace gets a separate one below.
+    startFixture(A);
+    assert.equal(loopbackListener(), "refused");
+    startFixture(B);
+    summary.checks.push("cookie_fixture_only_inside_each_agent_namespace");
     summary.phase = "windows";
     navigate(A, sa.display, "http://127.0.0.1:18765/seed?value=A"); navigate(B, sb.display, "http://127.0.0.1:18765/seed?value=B");
     await wait(() => title(A, sa.display).includes("Fixture A Cookie fixture=A") && title(B, sb.display).includes("Fixture B Cookie fixture=B"));
@@ -142,7 +145,7 @@ test("two real graphical agent sessions isolate displays/profiles and survive li
       agent(self.agentId, `import fs from 'node:fs';import assert from 'node:assert/strict';for(const file of ['Default/Cookies','Default/Network/Cookies','Default/Login Data'])assert.throws(()=>fs.readFileSync(${JSON.stringify(peer.home + "/.config/chromium/")}+file),e=>e.code==='EACCES');`);
     }
     summary.checks.push("peer_cookie_and_login_database_paths_denied_to_other_agent_user");
-    root(`import fs from 'node:fs';import assert from 'node:assert/strict';let workers=0,browsers=0;const outer=fs.readFileSync('/proc/1/uid_map','utf8').match(/[0-9]+/g).map(Number);for(const pid of fs.readdirSync('/proc').filter(n=>/^[0-9]+$/.test(n))){let s,c;try{s=fs.readFileSync('/proc/'+pid+'/status','utf8');c=fs.readFileSync('/proc/'+pid+'/cmdline','utf8').split(String.fromCharCode(0));}catch{continue;}const fields=Object.fromEntries(s.split(String.fromCharCode(10)).filter(l=>l.includes(':')).map(l=>[l.slice(0,l.indexOf(':')),l.slice(l.indexOf(':')+1).trim()]));const uid=Number(fields.Uid.split(String.fromCharCode(9))[0]);if(![${a.uid},${b.uid}].includes(uid))continue;if(c.some(x=>x.endsWith('/session-worker.mjs')))workers++;if(c.includes('--remote-debugging-pipe'))browsers++;assert.ok(!c.join(' ').includes('--remote-debugging-port'));const map=fs.readFileSync('/proc/'+pid+'/uid_map','utf8').match(/[0-9]+/g).map(Number);const cap=f=>BigInt('0x'+fields[f]);if(JSON.stringify(map)===JSON.stringify(outer)){for(const f of ['CapEff','CapPrm','CapInh','CapBnd','CapAmb'])assert.equal(cap(f),0n);}else{assert.ok(c[0]==='/opt/chromium/chrome-linux/chrome'||c[0].startsWith('/opt/chromium/chrome-linux/chrome --type='));assert.deepEqual(map,[uid,uid,1]);assert.equal(cap('CapInh'),0n);assert.equal(cap('CapAmb'),0n);assert.equal(cap('CapEff')&~0x200000n,0n);assert.equal(cap('CapPrm')&~0x200000n,0n);}assert.equal(fields.NoNewPrivs,'1');}assert.equal(workers,2);assert.equal(browsers,2);`);
+    root(`import fs from 'node:fs';import assert from 'node:assert/strict';let workers=0,browsers=0;const outer=fs.readFileSync('/proc/1/uid_map','utf8').match(/[0-9]+/g).map(Number);for(const pid of fs.readdirSync('/proc').filter(n=>/^[0-9]+$/.test(n))){let s,c;try{s=fs.readFileSync('/proc/'+pid+'/status','utf8');c=fs.readFileSync('/proc/'+pid+'/cmdline','utf8').split(String.fromCharCode(0));}catch{continue;}const fields=Object.fromEntries(s.split(String.fromCharCode(10)).filter(l=>l.includes(':')).map(l=>[l.slice(0,l.indexOf(':')),l.slice(l.indexOf(':')+1).trim()]));const uid=Number(fields.Uid.split(String.fromCharCode(9))[0]);if(![${a.uid},${b.uid}].includes(uid))continue;if(c.some(x=>x.endsWith('/session-worker.mjs')))workers++;if(c.includes('--remote-debugging-pipe'))browsers++;assert.ok(!c.join(' ').includes('--remote-debugging-port'));const map=fs.readFileSync('/proc/'+pid+'/uid_map','utf8').match(/[0-9]+/g).map(Number);const cap=f=>BigInt('0x'+fields[f]);if(JSON.stringify(map)===JSON.stringify(outer)){for(const f of ['CapEff','CapPrm','CapInh','CapBnd','CapAmb'])assert.equal(cap(f),0n);}else{assert.deepEqual(map,[uid,uid,1]);assert.equal(cap('CapInh'),0n);assert.equal(cap('CapAmb'),0n);if(c[0]==='/opt/chromium/chrome-linux/chrome'||c[0].startsWith('/opt/chromium/chrome-linux/chrome --type=')){assert.equal(cap('CapEff')&~0x200000n,0n);assert.equal(cap('CapPrm')&~0x200000n,0n);}else{for(const f of ['CapEff','CapPrm','CapBnd'])assert.equal(cap(f),0n);}}assert.equal(fields.NoNewPrivs,'1');}assert.equal(workers,2);assert.equal(browsers,2);`);
     summary.checks.push("peer_and_missing_xauthority_rejected_profiles_control_private_zero_capabilities_pipe_cdp");
     const workers = JSON.parse(root(`import fs from 'node:fs';const out=[];for(const p of fs.readdirSync('/proc').filter(n=>/^[0-9]+$/.test(n))){try{const c=fs.readFileSync('/proc/'+p+'/cmdline','utf8').split(String.fromCharCode(0));if(c[1]==='/opt/eclipse/desktop/session-worker.mjs')out.push({pid:Number(p),uid:fs.statSync('/proc/'+p).uid});}catch{}}console.log(JSON.stringify(out));`));
     for (const [self, peer] of [[a, b], [b, a]]) {
@@ -167,7 +170,7 @@ test("two real graphical agent sessions isolate displays/profiles and survive li
         assert.deepEqual(Object.keys(process.env).filter(n=>/SECRET|PASSWORD|DATABASE|ENCRYPTION|API_KEY|TOKEN/i.test(n)),[]);
         assert.throws(()=>fs.readFileSync('/proc/1/environ'),e=>['EACCES','EPERM'].includes(e.code));
         const tcp=(host,port)=>new Promise((resolve,reject)=>{const s=net.connect({host,port});s.setTimeout(2500,()=>{s.destroy();reject(Error('timeout'));});s.once('connect',()=>{s.destroy();resolve();});s.once('error',reject);});
-        await tcp('127.0.0.1',18765);
+        // Each exec gets a fresh namespace; the real browser reaching its own fixture is asserted above.
         await assert.rejects(tcp(${JSON.stringify(databaseIp)},5432));
         await assert.rejects(dns.lookup('postgres'));
         await assert.rejects(tcp('1.1.1.1',443));`);
@@ -185,7 +188,7 @@ test("two real graphical agent sessions isolate displays/profiles and survive li
     agent(A, `import fs from 'node:fs';import assert from 'node:assert/strict';const f=${JSON.stringify(snapshot)};const s=fs.lstatSync(f);assert.ok(s.isFile());assert.equal(s.uid,process.getuid());assert.equal(s.mode&0o777,0o600);const body=JSON.parse(fs.readFileSync(f,'utf8'));assert.equal(body.cookies.map(c=>c.name).sort().join(),'late,sess');assert.deepEqual(fs.readdirSync(${JSON.stringify(profileDirectory)}).filter(n=>n.startsWith('.eclipse-cookies')),[]);`);
     agent(B, `import fs from 'node:fs';import assert from 'node:assert/strict';assert.throws(()=>fs.readFileSync(${JSON.stringify(snapshot)}),e=>e.code==='EACCES');assert.throws(()=>fs.readdirSync(${JSON.stringify(profileDirectory)}),e=>e.code==='EACCES');`);
     summary.checks.push("session_cookie_snapshot_private_exact_and_unreadable_by_peer");
-    admin("session-start", A); navigate(A, sa.display, "http://127.0.0.1:18765/check"); await wait(() => title(A, sa.display).includes("Fixture A Cookie fixture=A"));
+    admin("session-start", A); startFixture(A); navigate(A, sa.display, "http://127.0.0.1:18765/check"); await wait(() => title(A, sa.display).includes("Fixture A Cookie fixture=A"));
     const restarted = title(A, sa.display);
     assert.ok(restarted.includes("sess=A") && restarted.includes("late=A") && restarted.includes("fixture=A"), `cookies after session restart: ${restarted}`);
     assert.ok(!restarted.includes("gone="), `a cookie deleted before stop stays deleted: ${restarted}`);
@@ -197,7 +200,7 @@ test("two real graphical agent sessions isolate displays/profiles and survive li
     for (const kind of ["corrupt", "oversized", "symlink", "loose_mode"]) {
       admin("session-stop", A); plant(kind);
       assert.equal(JSON.parse(admin("session-start", A)).state, "running", `session starts with a ${kind} snapshot`);
-      navigate(A, sa.display, "http://127.0.0.1:18765/check"); await wait(() => title(A, sa.display).includes("Fixture A Cookie fixture=A"));
+      startFixture(A); navigate(A, sa.display, "http://127.0.0.1:18765/check"); await wait(() => title(A, sa.display).includes("Fixture A Cookie fixture=A"));
       assert.ok(!title(A, sa.display).includes("sess="), `${kind} snapshot must not be restored: ${title(A, sa.display)}`);
     }
     const snapshotHas = (name) => agent(A, `import fs from 'node:fs';try{const f=${JSON.stringify(snapshot)};const b=JSON.parse(fs.readFileSync(f,'utf8'));console.log((fs.statSync(f).mode&0o777)===0o600&&b.cookies.some(c=>c.name===${JSON.stringify(name)}));}catch{console.log(false)}`).trim() === "true";
@@ -214,7 +217,7 @@ test("two real graphical agent sessions isolate displays/profiles and survive li
     await wait(() => JSON.parse(admin("session-status", A)).state === "failed"); admin("session-stop", A); assert.equal(noAgentProcesses(a.uid), "0");
     assert.equal(JSON.parse(admin("session-status", B)).state, "running");
     const snapshotState = () => agent(A, `import fs from 'node:fs';try{const b=JSON.parse(fs.readFileSync(${JSON.stringify(snapshot)},'utf8'));console.log('snapshot:'+b.cookies.map(c=>c.name).join('+')+' mode:'+(fs.statSync(${JSON.stringify(snapshot)}).mode&0o777).toString(8));}catch(e){console.log('snapshot:'+e.code)}`).trim();
-    const beforeRestart = snapshotState(); admin("session-start", A);
+    const beforeRestart = snapshotState(); admin("session-start", A); startFixture(A);
     navigate(A, sa.display, "http://127.0.0.1:18765/check"); await wait(() => title(A, sa.display).includes("Fixture A Cookie fixture=A"));
     const afterDisplayCrash = title(A, sa.display);
     assert.ok(afterDisplayCrash.includes("sess=A"), `a crashed display must not erase the saved session cookies (${beforeRestart}; after restart ${snapshotState()}): ${afterDisplayCrash}`);
@@ -226,16 +229,16 @@ test("two real graphical agent sessions isolate displays/profiles and survive li
     agent(A, "import fs from 'node:fs';for(const p of fs.readdirSync('/proc').filter(n=>/^[0-9]+$/.test(n))){try{const c=fs.readFileSync('/proc/'+p+'/cmdline','utf8').split(String.fromCharCode(0));if(fs.statSync('/proc/'+p).uid===process.getuid()&&c[1]==='/opt/eclipse/desktop/session-worker.mjs')process.kill(Number(p),'SIGKILL');}catch{}}");
     await wait(() => JSON.parse(admin("session-status", A)).state === "failed"); admin("session-stop", A); assert.equal(noAgentProcesses(a.uid), "0");
     agent(A, "import fs from 'node:fs';import assert from 'node:assert/strict';assert.equal(fs.readdirSync('/tmp').filter(n=>n.startsWith('ec-'+process.getuid()+'-')).length,0);");
-    assert.equal(JSON.parse(admin("session-status", B)).state, "running"); admin("session-start", A);
+    assert.equal(JSON.parse(admin("session-status", B)).state, "running"); admin("session-start", A); startFixture(A);
     navigate(A, sa.display, "http://127.0.0.1:18765/check"); await wait(() => title(A, sa.display).includes("Fixture A Cookie fixture=A"));
     const afterKill = title(A, sa.display);
     assert.ok(afterKill.includes("sess=A") && afterKill.includes("crashc=A"), `session cookies after a killed worker: ${afterKill}`);
     summary.checks.push("session_cookies_survive_killed_worker_through_periodic_save");
     summary.checks.push("killed_worker_same_uid_fallback_reaps_children_and_private_runtime");
     summary.phase = "recreate"; const original = container;
-    compose(["up", "-d", "--no-build", "--force-recreate", "desktop"]); container = compose(["ps", "-q", "desktop"]); assert.notEqual(container, original); await ready(); fixtureServer();
+    compose(["up", "-d", "--no-build", "--force-recreate", "desktop"]); container = compose(["ps", "-q", "desktop"]); assert.notEqual(container, original); await ready();
     for (const [id, value, display] of [[A, "A", sa.display], [B, "B", sb.display]]) {
-      assert.equal(JSON.parse(admin("session-status", id)).state, "stopped"); admin("session-start", id); navigate(id, display, "http://127.0.0.1:18765/check");
+      assert.equal(JSON.parse(admin("session-status", id)).state, "stopped"); admin("session-start", id); startFixture(id); navigate(id, display, "http://127.0.0.1:18765/check");
       await wait(() => title(id, display).includes(`Fixture ${value} Cookie fixture=${value}`));
       const afterRecreate = title(id, display);
       assert.ok(afterRecreate.includes(`sess=${value}`), `session cookie after container recreation (${value}): ${afterRecreate}`);
@@ -248,7 +251,7 @@ test("two real graphical agent sessions isolate displays/profiles and survive li
     summary.checks.push("container_recreation_preserves_private_cookie_storage_and_unrelated_data");
     summary.phase = "module_sandbox";
     const record = JSON.stringify(identity(A, a.uid));
-    const sandbox = JSON.parse(agent(A, `import assert from 'node:assert/strict';import{startSession,dispatchOperation}from'/opt/eclipse/desktop/session-worker.mjs';const s=await startSession(${record});try{const page=s.context.pages()[0];await page.goto('chrome://sandbox');const text=(await page.locator('body').innerText()).split(String.fromCharCode(9)).join(' ').split(String.fromCharCode(10)).join(' ');assert.match(text,/Layer 1 Sandbox +Namespace/);for(const label of ['PID namespaces','Network namespaces','Seccomp-BPF sandbox'])assert.match(text,new RegExp(label+' +Yes'));await page.goto('about:blank');await page.setContent('<input id="normal"><input id="password" type="password"><input id="otp" autocomplete="one-time-code">');await page.bringToFront();for(const selector of ['#password','#otp']){await assert.rejects(dispatchOperation(s,'browser.locator',{selector,action:'fill',text:'blocked'}),e=>e.code==='sensitive_target');await page.locator(selector).focus();await assert.rejects(dispatchOperation(s,'input.type',{text:'blocked'}),e=>e.code==='sensitive_target');assert.equal(await page.locator(selector).inputValue(),'');}await page.evaluate(()=>{const host=document.createElement('div');document.body.append(host);const closed=host.attachShadow({mode:'closed'});const input=document.createElement('input');input.type='password';closed.append(input);input.focus();});for(const[operation,params]of[['input.type',{text:'blocked'}],['input.key',{key:'Enter'}]])await assert.rejects(dispatchOperation(s,operation,params),e=>e.code==='sensitive_target');await page.evaluate(()=>{const outerHost=document.createElement('div');document.body.append(outerHost);const outer=outerHost.attachShadow({mode:'closed'});const innerHost=document.createElement('div');outer.append(innerHost);const inner=innerHost.attachShadow({mode:'closed'});const input=document.createElement('input');input.type='password';inner.append(input);input.focus();});for(const[operation,params]of[['input.type',{text:'blocked'}],['input.key',{key:'Enter'}]])await assert.rejects(dispatchOperation(s,operation,params),e=>e.code==='sensitive_target');await page.locator('#normal').focus();await dispatchOperation(s,'input.type',{text:'DesktopTyping42'});assert.equal(await page.locator('#normal').inputValue(),'DesktopTyping42');await page.locator('#normal').fill('');const maximumText='x'.repeat(4096);const typingStarted=Date.now();await dispatchOperation(s,'input.type',{text:maximumText});assert.ok(Date.now()-typingStarted<4000,'schema-maximum text completes within OPERATION_TIMEOUT_MS');assert.equal(await page.locator('#normal').inputValue(),maximumText);const full=await dispatchOperation(s,'capture.screenshot');assert.equal(full.width,1024);assert.equal(full.height,768);const crop=await dispatchOperation(s,'capture.screenshot',{crop:{x:10,y:15,width:80,height:60}});assert.equal(crop.width,80);assert.equal(crop.height,60);const pages=await dispatchOperation(s,'browser.pages');assert.equal(pages.source_tag,'tool');assert.equal(pages.untrusted,true);console.log(JSON.stringify({namespace:true,seccomp:true}));}finally{await s.close();}`));
+    const sandbox = JSON.parse(agent(A, `import assert from 'node:assert/strict';import{startSession,dispatchOperation}from'/opt/eclipse/desktop/session-worker.mjs';const s=await startSession(${record});try{const page=s.context.pages()[0];await page.goto('chrome://sandbox');const text=(await page.locator('body').innerText()).split(String.fromCharCode(9)).join(' ').split(String.fromCharCode(10)).join(' ');assert.match(text,/Layer 1 Sandbox +Namespace/);for(const label of ['PID namespaces','Network namespaces','Seccomp-BPF sandbox'])assert.match(text,new RegExp(label+' +Yes'));await page.goto('about:blank');await page.setContent('<input id="normal"><input id="password" type="password"><input id="otp" autocomplete="one-time-code">');await page.bringToFront();for(const selector of ['#password','#otp']){await assert.rejects(dispatchOperation(s,'browser.locator',{selector,action:'fill',text:'blocked'}),e=>e.code==='sensitive_target');await page.locator(selector).focus();await assert.rejects(dispatchOperation(s,'input.type',{text:'blocked'}),e=>e.code==='sensitive_target');assert.equal(await page.locator(selector).inputValue(),'');}await page.evaluate(()=>{const host=document.createElement('div');document.body.append(host);const closed=host.attachShadow({mode:'closed'});const input=document.createElement('input');input.type='password';closed.append(input);input.focus();});for(const[operation,params]of[['input.type',{text:'blocked'}],['input.key',{key:'Enter'}]])await assert.rejects(dispatchOperation(s,operation,params),e=>e.code==='sensitive_target');await page.evaluate(()=>{const outerHost=document.createElement('div');document.body.append(outerHost);const outer=outerHost.attachShadow({mode:'closed'});const innerHost=document.createElement('div');outer.append(innerHost);const inner=innerHost.attachShadow({mode:'closed'});const input=document.createElement('input');input.type='password';inner.append(input);input.focus();});for(const[operation,params]of[['input.type',{text:'blocked'}],['input.key',{key:'Enter'}]])await assert.rejects(dispatchOperation(s,operation,params),e=>e.code==='sensitive_target');await page.locator('#normal').focus();await dispatchOperation(s,'input.type',{text:'DesktopTyping42'});assert.equal(await page.locator('#normal').inputValue(),'DesktopTyping42');await page.locator('#normal').fill('');const maximumText='x'.repeat(4096);const typingStarted=Date.now();await dispatchOperation(s,'input.type',{text:maximumText}).catch(e=>{throw Error('max_type_'+e.code)});assert.ok(Date.now()-typingStarted<4000,'schema-maximum text completes within OPERATION_TIMEOUT_MS');assert.equal(await page.locator('#normal').inputValue(),maximumText);const full=await dispatchOperation(s,'capture.screenshot').catch(e=>{throw Error('screenshot_'+e.code)});assert.equal(full.width,1024);assert.equal(full.height,768);const crop=await dispatchOperation(s,'capture.screenshot',{crop:{x:10,y:15,width:80,height:60}}).catch(e=>{throw Error('crop_'+e.code)});assert.equal(crop.width,80);assert.equal(crop.height,60);const pages=await dispatchOperation(s,'browser.pages');assert.equal(pages.source_tag,'tool');assert.equal(pages.untrusted,true);console.log(JSON.stringify({namespace:true,seccomp:true}));}catch(e){console.error('SANDBOX_FAIL:'+(e?.code||e?.message));process.exitCode=1;}finally{await s.close();}`));
     assert.deepEqual(sandbox, { namespace: true, seccomp: true }); summary.checks.push("real_per_agent_sandbox_desktop_capture_crop_typing_and_sensitive_target_denials");
     const ownerSensitiveInput = JSON.parse(agent(A, `import assert from 'node:assert/strict';import{startSession,dispatchOperation}from'/opt/eclipse/desktop/session-worker.mjs';const s=await startSession(${record});try{const page=s.context.pages()[0];await page.goto('about:blank');await page.setContent('<input id="password" type="password">');await page.bringToFront();await page.locator('#password').focus();await assert.rejects(dispatchOperation(s,'input.type',{text:'agent-denied'}),e=>e.code==='sensitive_target');assert.equal(await page.locator('#password').inputValue(),'');await dispatchOperation(s,'input.type',{text:'OwnerSynthetic42'},true);assert.equal(await page.locator('#password').inputValue(),'OwnerSynthetic42');await dispatchOperation(s,'input.key',{key:'Enter'},true);assert.equal(await page.locator('#password').inputValue(),'OwnerSynthetic42');console.log(JSON.stringify({ownerSensitiveInput:true}));}finally{await s.close();}`));
     assert.deepEqual(ownerSensitiveInput, { ownerSensitiveInput: true }); summary.checks.push("trusted_owner_type_and_key_input_allowed_on_synthetic_sensitive_target");

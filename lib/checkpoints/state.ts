@@ -2,7 +2,7 @@ import { z } from "zod";
 
 import type { StepSummary } from "../agent/context";
 import type { Intent } from "../agent/intent";
-import { canonicalJson } from "../receipts/chain.mjs";
+import { canonicalJson, sha256Hex } from "../receipts/chain.mjs";
 
 // TASK-032. What a checkpoint remembers about the agent's run: exactly the information the model already sees (the owner's
 // task, the short step history, which documents were read) plus the loop's counters, so a later rewind (TASK-043) can resume
@@ -19,6 +19,9 @@ const summarySchema = z.object({
   chars: count.optional(),
   time: z.string().max(200).optional(),
   file: z.string().max(255).optional(),
+  tool: z.string().max(200).optional(),
+  program: z.string().max(64).optional(),
+  exit: z.number().int().min(-256).max(256).optional(),
   offset: count.optional(),
   code: z.string().max(64).optional(),
   result: z.enum(["executed", "invalid_output", "target_not_found", "failed"]),
@@ -45,6 +48,9 @@ export function safeIntentKey(intent: Intent | null): string | null {
   if (!intent) return null;
   const copy: Record<string, unknown> = { ...intent };
   if (intent.action === "type") copy.text = `[${[...intent.text].length} characters]`;
+  // TASK-072. Tool arguments are not kept; the hash is enough to tell a repeated call apart.
+  if (intent.action === "tool_call") copy.args = sha256Hex(Buffer.from(intent.args, "utf8"));
+  if (intent.action === "shell") copy.command = sha256Hex(Buffer.from(intent.command, "utf8"));
   return canonicalJson(copy).slice(0, 2000);
 }
 

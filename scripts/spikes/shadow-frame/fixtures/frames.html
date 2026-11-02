@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Frames</title>
+<script>window.__spikeClicks = []; window.__spikeClick = (name) => { window.__spikeClicks = [...(window.__spikeClicks || []), name]; };</script>
+<style>body { margin: 0; font: 14px sans-serif; } iframe { position: absolute; border: 0; }</style>
+</head>
+<body>
+<button style="position:absolute;left:20px;top:200px;width:200px;height:36px" onclick="__spikeClick('Top page button')">Top page button</button>
+<iframe src="/_frame-inside.html" style="left:10px;top:10px;width:300px;height:120px"></iframe>
+<iframe src="/_frame-deep-outer.html" style="left:320px;top:10px;width:300px;height:150px"></iframe>
+<iframe src="/_frame-scrolled.html" style="left:10px;top:260px;width:300px;height:200px"></iframe>
+<iframe src="/_frame-half.html" style="left:720px;top:40px;width:400px;height:140px"></iframe>
+</body>
+</html>

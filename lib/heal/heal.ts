@@ -32,7 +32,7 @@ export interface HealPorts {
 
 export type HealOutcome =
   | "not_healable" | "missing" | "stale" | "typed_step" | "pending" | "invalid_step" | "too_long"
-  | "no_model" | "unavailable" | "no_signing_key" | "busy" | "not_finished" | "unverified"
+  | "no_model" | "unavailable" | "no_signing_key" | "crew_stopped" | "busy" | "not_finished" | "unverified"
   | "uncompilable" | "invalid" | "conflict" | "proposed";
 
 const TEXT = {
@@ -86,7 +86,7 @@ export async function maybeHeal(
     agent: prepared.persona, task: task.task, provider, model: prepared.model, hardModel: prepared.hardModel, samConfig,
     desktop: prepared.desktop, skills: prepared.skills, timezone: prepared.timezone,
     receipts, evidence: prepared.evidence?.(), checkpoints: prepared.checkpoints?.(), costs,
-    canary: prepared.canary,
+    canary: prepared.canary, astra: prepared.astra, memory: prepared.memory,
     onSecurityStop: prepared.onSecurityStop
       ? (event) => prepared.onSecurityStop!({ ...event, runId: receipts.runId })
       : undefined,

@@ -5,7 +5,10 @@ import { useRouter } from "next/navigation";
 import { LoaderCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AgentForm } from "@/components/workspace/agent-form";
+import { AstraSettings } from "@/components/workspace/astra-settings";
+import { AgentSetup } from "@/components/workspace/agent-setup";
 import { ModalDialog } from "@/components/workspace/modal-dialog";
+import { AstraBadge } from "@/components/ui/astra-badge";
 import { useRemote } from "@/components/history/use-remote";
 import { classLabel } from "@/lib/agent/risk";
 import type { ActionClass } from "@/lib/agent/risk";
@@ -16,6 +19,7 @@ export type AgentSettingsData = {
   role: string;
   soulMd: string;
   status: "active" | "paused";
+  astraMode: boolean;
   dailyBudgetCents: number;
   monthlyBudgetCents: number;
   tools: string[];
@@ -66,6 +70,10 @@ export function AgentSettings({ agent, desktopRunning, csrfToken }: { agent: Age
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
             <h3 className="text-lg font-semibold tracking-tight">Agent settings</h3>
+            <p className="mt-1 flex min-w-0 flex-wrap items-center gap-1.5 text-sm text-muted-foreground">
+              <span className="min-w-0 truncate font-medium text-foreground">{agent.name}</span>
+              {agent.astraMode && <AstraBadge />}
+            </p>
             <p className="mt-1 text-sm text-muted-foreground">
               {agent.status === "paused" ? "Paused" : desktopRunning ? "Active · Desktop running" : "Active · Desktop stopped"} · Permissions are default deny.
             </p>
@@ -82,6 +90,8 @@ export function AgentSettings({ agent, desktopRunning, csrfToken }: { agent: Age
             onSaved={() => router.refresh()} />
         </div>
       </section>
+      <AstraSettings agentId={agent.id} agentName={agent.name} astraMode={agent.astraMode} csrfToken={csrfToken} />
+      <AgentSetup agentId={agent.id} actions={agent.actions} tools={agent.tools} domains={agent.domains} />
       <SavedApprovals agentId={agent.id} csrfToken={csrfToken} />
       <section className="rounded-lg border border-border bg-card p-4">
         <h3 className="text-sm font-semibold">Delete agent</h3>
@@ -90,6 +100,7 @@ export function AgentSettings({ agent, desktopRunning, csrfToken }: { agent: Age
       </section>
       <div className="flex flex-wrap gap-4">
         <Link href="/settings/models" className="text-sm underline underline-offset-4">Model settings</Link>
+        <Link href="/settings/connections" className="text-sm underline underline-offset-4">Connections</Link>
         <Link href="/settings/account" className="text-sm underline underline-offset-4">Account settings</Link>
       </div>
       {confirmingDelete && <DeleteAgentDialog agent={agent} csrfToken={csrfToken} onClose={() => setConfirmingDelete(false)} />}

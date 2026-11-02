@@ -6,6 +6,7 @@ import { verifyPassword } from "@/lib/auth/password";
 import { createSession } from "@/lib/auth/session";
 import { checkRateLimit, recordFailure, recordSuccess } from "@/lib/auth/rate-limit";
 import { readBoundedJson, requireTrustedOrigin, requireNoQuery, requestErrorResponse } from "@/lib/auth/request";
+import { recordAudit } from "@/lib/security/audit";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 const schema = z.object({ login: z.string().email().max(255), password: z.string().min(1).max(128) }).strict();
@@ -25,7 +26,9 @@ export async function POST(req: Request) {
       const rows = await tx.select().from(owner).where(eq(owner.login, parsed.data.login.toLowerCase())).limit(1);
       const user = rows[0];
       if (!user || !(await verifyPassword(user.passwordHash, parsed.data.password))) return false;
-      await createSession(user.id, tx);
+      const session = await createSession(user.id, tx);
+      // TASK-052. Last statement in the login transaction: the session and its audit entry commit together.
+      await recordAudit(tx, user.id, { kind: "login", ref: session.id });
       return true;
     });
     if (!loggedIn) {

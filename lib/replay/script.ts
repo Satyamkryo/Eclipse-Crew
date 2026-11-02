@@ -72,6 +72,8 @@ export function compileFromReceipts(receipts: readonly { idx: number; receipt: s
 
     if (!((receipt.result === "pass" || receipt.result === "executed") && receipt.executed === true)) { add(row.idx, "step_not_verified"); continue; }
     const action = receipt.action as { kind: string; keys?: unknown; direction?: unknown; chars?: unknown; from?: unknown; name?: unknown };
+    // TASK-054. A memory request is not a screen step; a replay skips it instead of failing to compile.
+    if (action.kind === "remember") continue;
     const expect = receipt.postcondition ?? "";
     const n = position + 1;
     let candidate: unknown;

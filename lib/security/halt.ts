@@ -4,11 +4,11 @@ import "server-only";
 // proxy or a failed log must never stop the agent from being marked paused. Ports are injected so the routes, the
 // tripwire and tests share one order without one of them owning the database.
 
-export const HALT_STEPS = ["latch_egress", "cancel_runs", "pause", "stop_session", "card"] as const;
+export const HALT_STEPS = ["latch_egress", "cancel_runs", "stop_session", "pause", "card"] as const;
 export type HaltStepName = (typeof HALT_STEPS)[number];
 
 export interface HaltStepResult { step: HaltStepName; ok: boolean }
-export interface HaltResult { ok: boolean; steps: HaltStepResult[] }
+export interface HaltResult { ok: boolean; desktopStopped: boolean; steps: HaltStepResult[] }
 
 export interface HaltPorts {
   // The egress proxy refuses this agent (TASK-045).
@@ -46,7 +46,7 @@ function withinBudget<Value>(work: Promise<Value>, deadline: number): Promise<Va
   ]).finally(() => { if (timer) clearTimeout(timer); });
 }
 
-// Order: latch the proxy, cancel live runs, mark paused, ask the desktop to stop, post one card. Later steps run even
+// Order: latch the proxy, cancel live runs, ask the desktop to stop, mark paused, post one card. Later steps run even
 // when an earlier one fails or hangs. `ok` means the pause landed, because that is what stops the next run.
 export async function haltAgent(ports: HaltPorts, options: HaltOptions): Promise<HaltResult> {
   const { ownerId, agentId } = options;
@@ -68,18 +68,18 @@ export async function haltAgent(ports: HaltPorts, options: HaltOptions): Promise
 
   await run("latch_egress", () => ports.latchEgress(ownerId, agentId));
   await run("cancel_runs", () => ports.cancelRuns(ownerId, agentId));
-  await run("pause", () => ports.markPaused(ownerId, agentId));
   let desktopStopped = true;
   if (ports.stopSession) {
     const stopped = await run("stop_session", () => ports.stopSession!(ownerId, agentId));
     desktopStopped = stopped.ok && stopped.value !== false;
   } else steps.push({ step: "stop_session", ok: true });
+  await run("pause", () => ports.markPaused(ownerId, agentId));
 
   const text = `${options.reason === "crew" ? CREW_STOPPED : AGENT_STOPPED}${desktopStopped ? "" : DESKTOP_NOT_STOPPED}`;
   if (ports.postCard) await run("card", () => ports.postCard!(ownerId, agentId, text));
   else steps.push({ step: "card", ok: true });
 
-  return { ok: steps.find((step) => step.step === "pause")?.ok === true, steps };
+  return { ok: steps.find((step) => step.step === "pause")?.ok === true, desktopStopped, steps };
 }
 
 export interface CrewPorts extends HaltPorts {
@@ -104,7 +104,7 @@ export async function stopCrew(ports: CrewPorts, ownerId: string, now: () => Dat
   const settled = await Promise.allSettled(agentIds.map((agentId) => haltAgent(ports, { ownerId, agentId, reason: "crew" })));
   const agents = settled.map((outcome, index) => ({
     agentId: agentIds[index],
-    result: outcome.status === "fulfilled" ? outcome.value : { ok: false, steps: [] },
+    result: outcome.status === "fulfilled" ? outcome.value : { ok: false, desktopStopped: false, steps: [] },
   }));
   return { ok: true, agents };
 }

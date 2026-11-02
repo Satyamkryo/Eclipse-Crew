@@ -1,12 +1,15 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
-import { sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { getDatabase } from "../../db/client";
+import { agents } from "../../db/schema";
 import { desktopCreateAgent, desktopDeleteAgent, desktopSession } from "../desktop/client";
 import { createAgentRecord, deleteAgentRecord, getAgentIdentity, setAgentStatus, updateAgentRecord } from "./data";
 import { clearAgentAttention, readBudgetStatus } from "../costs/store";
 import { clearTripwire } from "../security/tripwire";
 import { pushAgentPolicy, syncAgentEgress, clearAgentTrip } from "../egress/sync";
+import { recordAudit, type AuditExecutor } from "../security/audit";
+import { scheduleMirror } from "../memory/mirror";
 import type { AgentCreateInput, AgentUpdateInput } from "./schema";
 
 type Database = Awaited<ReturnType<typeof getDatabase>>;
@@ -26,11 +29,15 @@ export class AgentLifecycleError extends Error {
   }
 }
 
+// TASK-051. Set only through setAstraModeForOwner, never through the generic agent update route.
+
 export async function createAgentForOwner(
   database: Database, ownerId: string, input: AgentCreateInput, desktop: DesktopOperations = defaultDesktop,
 ) {
   const agentId = randomUUID();
-  await createAgentRecord(database, ownerId, input, agentId);
+  await createAgentRecord(database, ownerId, input, agentId, async (transaction) => {
+    await recordAudit(transaction as unknown as AuditExecutor, ownerId, { kind: "agent_created", agentId });
+  });
   try {
     await desktop.desktopCreateAgent(agentId, ownerId);
     const status = await desktop.desktopSession(agentId, ownerId, "session.start");
@@ -46,8 +53,13 @@ export async function createAgentForOwner(
 export async function updateAgentForOwner(
   database: Database, ownerId: string, agentId: string, input: AgentUpdateInput,
 ) {
-  const updated = await updateAgentRecord(database, ownerId, agentId, input);
+  const updated = await updateAgentRecord(database, ownerId, agentId, input, async (transaction, { permissionsChanged }) => {
+    await recordAudit(transaction as unknown as AuditExecutor, ownerId, {
+      kind: "agent_updated", agentId, code: permissionsChanged ? "permissions_changed" : "settings_changed",
+    });
+  });
   if (!updated) throw new AgentLifecycleError("agent_not_found");
+  void scheduleMirror(database, ownerId, agentId).catch(() => undefined);
   await syncEgress(() => syncAgentEgress(database, ownerId, agentId));
 }
 
@@ -59,6 +71,7 @@ export async function pauseAgentForOwner(
     if (!await setAgentStatus(transaction, ownerId, agentId, "paused")) {
       throw new AgentLifecycleError("agent_not_found");
     }
+    await recordAudit(transaction as unknown as AuditExecutor, ownerId, { kind: "agent_paused", agentId });
   });
   await syncEgress(() => syncAgentEgress(database, ownerId, agentId));
 }
@@ -81,10 +94,26 @@ export async function resumeAgentForOwner(
       throw new AgentLifecycleError("agent_not_found");
     }
     await clearAgentAttention(transaction, ownerId, agentId);
+    await recordAudit(transaction as unknown as AuditExecutor, ownerId, { kind: "agent_resumed", agentId });
   });
   clearTripwire(ownerId, agentId);
   await syncEgress(() => clearAgentTrip(database, ownerId, agentId));
   await syncEgress(() => syncAgentEgress(database, ownerId, agentId));
+}
+
+// TASK-051. The only way to change Astra Mode. The dedicated route and its acknowledgement keep it off generic updates.
+export async function setAstraModeForOwner(
+  database: Database, ownerId: string, agentId: string, enabled: boolean,
+): Promise<boolean> {
+  await withLockedAgent(database, ownerId, agentId, async (transaction) => {
+    const updated = await transaction.update(agents).set({ astraMode: enabled, updatedAt: new Date() })
+      .where(and(eq(agents.ownerId, ownerId), eq(agents.id, agentId))).returning({ agentId: agents.id });
+    if (!updated[0]) throw new AgentLifecycleError("agent_not_found");
+    await recordAudit(transaction as unknown as AuditExecutor, ownerId, {
+      kind: enabled ? "astra_enabled" : "astra_disabled", agentId,
+    });
+  });
+  return enabled;
 }
 
 export async function deleteAgentForOwner(
@@ -97,6 +126,7 @@ export async function deleteAgentForOwner(
     if (!await deleteAgentRecord(transaction, ownerId, agentId)) {
       throw new AgentLifecycleError("agent_not_found");
     }
+    await recordAudit(transaction as unknown as AuditExecutor, ownerId, { kind: "agent_deleted", agentId });
   });
   await syncEgress(() => pushAgentPolicy({ agentId, domains: [], blocked: true, canaryHashes: [] }));
 }

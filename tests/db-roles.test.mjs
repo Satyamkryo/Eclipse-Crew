@@ -117,6 +117,38 @@ test("isolated database provisioning and permissions", { timeout: 900000 }, asyn
     assert.notEqual(sql("INSERT INTO public.security_events(id,owner_id,agent_id,kind,source,source_ref) VALUES ('00000000-0000-0000-0000-000000000051','00000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000020','other','typed_text','typed_text:synthetic:2')", "eclipse_app").status, 0, "unknown security event kind is refused");
     assert.notEqual(sql("UPDATE public.security_events SET source='proxy_host'", "eclipse_app").status, 0, "runtime cannot rewrite security events");
     assert.notEqual(sql("DELETE FROM public.security_events", "eclipse_app").status, 0, "runtime cannot delete security events");
+    // TASK-052: the signed audit log is append-only for the runtime role.
+    checked(sql("INSERT INTO public.audit_log(id,owner_id,seq,kind,entry_json,entry_hash,prev_hash,signature,key_id) VALUES ('00000000-0000-0000-0000-000000000090','00000000-0000-0000-0000-000000000001',1,'login','{}',repeat('a',64),repeat('b',64),'synthetic-signature','sha256:'||repeat('c',64))", "eclipse_app"), "runtime appends an audit entry");
+    assert.notEqual(sql("INSERT INTO public.audit_log(id,owner_id,seq,kind,entry_json,entry_hash,prev_hash,signature,key_id) VALUES ('00000000-0000-0000-0000-000000000091','00000000-0000-0000-0000-000000000001',2,'unknown','{}',repeat('a',64),repeat('b',64),'s','sha256:'||repeat('c',64))", "eclipse_app").status, 0, "unknown audit kind is refused");
+    assert.notEqual(sql("UPDATE public.audit_log SET kind='login'", "eclipse_app").status, 0, "runtime cannot rewrite audit entries");
+    assert.notEqual(sql("DELETE FROM public.audit_log", "eclipse_app").status, 0, "runtime cannot delete audit entries");
+    // TASK-053/054: memory entry state is editable, the version log is append-only, requests are decided once.
+    checked(sql("INSERT INTO public.memory_entries(id,owner_id,doc,scope,title,body,author) VALUES ('00000000-0000-0000-0000-000000000092','00000000-0000-0000-0000-000000000001','user','global','Timezone','IST','owner')", "eclipse_app"), "runtime adds a memory entry");
+    checked(sql("UPDATE public.memory_entries SET body='IST (India)'", "eclipse_app"), "runtime edits a memory entry");
+    assert.notEqual(sql("DELETE FROM public.memory_entries", "eclipse_app").status, 0, "runtime cannot delete memory entries");
+    checked(sql("INSERT INTO public.memory_versions(id,owner_id,doc_key,seq,op,author) VALUES ('00000000-0000-0000-0000-000000000093','00000000-0000-0000-0000-000000000001','user',1,'add','owner')", "eclipse_app"), "runtime appends a memory version");
+    assert.notEqual(sql("UPDATE public.memory_versions SET op='edit'", "eclipse_app").status, 0, "runtime cannot rewrite memory versions");
+    checked(sql("INSERT INTO public.memory_changes(id,owner_id,agent_id,doc,scope,title,body,reason) VALUES ('00000000-0000-0000-0000-000000000094','00000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000020','memory','agent','Fact','Body','Why')", "eclipse_app"), "runtime proposes a memory change");
+    checked(sql("UPDATE public.memory_changes SET state='approved'", "eclipse_app"), "runtime decides a memory change once");
+    assert.notEqual(sql("DELETE FROM public.memory_changes", "eclipse_app").status, 0, "runtime cannot delete memory changes");
+    // TASK-070: connections are owner-managed, and the token ciphertext is the only secret in the row.
+    checked(sql(`INSERT INTO public.connections(id,owner_id,agent_id,preset,label,bindings,encrypted_token,token_hint) VALUES ('00000000-0000-0000-0000-000000000095','00000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000020','github','Work','[{"host":"api.github.com","scheme":"bearer"}]'::jsonb,'v1.synthetic','••••test')`, "eclipse_app"), "runtime adds a connection");
+    checked(sql("UPDATE public.connections SET label='Work 2'", "eclipse_app"), "runtime relabels a connection");
+    // TASK-072: a pinned MCP server references an owner-managed connection and is owner-managed itself.
+    checked(sql(`INSERT INTO public.mcp_servers(id,owner_id,agent_id,key,preset,url,connection_id,server_name,server_version,protocol_version,tools_hash,tools) VALUES ('00000000-0000-0000-0000-000000000097','00000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000020','github','github','https://api.githubcopilot.com/mcp/','00000000-0000-0000-0000-000000000095','Fake','1','2025-06-18',repeat('a',64),'[]'::jsonb)`, "eclipse_app"), "runtime pins an MCP server");
+    checked(sql("UPDATE public.mcp_servers SET status='changed'", "eclipse_app"), "runtime marks a changed pin");
+    assert.notEqual(sql(`INSERT INTO public.mcp_servers(id,owner_id,agent_id,key,preset,url,connection_id,server_name,server_version,protocol_version,tools_hash,tools) VALUES ('00000000-0000-0000-0000-000000000098','00000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000020','bad','gitlab','https://api.githubcopilot.com/mcp/','00000000-0000-0000-0000-000000000095','Fake','1','2025-06-18',repeat('b',64),'[]'::jsonb)`, "eclipse_app").status, 0, "unknown MCP preset is refused");
+    checked(sql("DELETE FROM public.mcp_servers WHERE id='00000000-0000-0000-0000-000000000097'", "eclipse_app"), "runtime removes an MCP server");
+    // TASK-075: the owner-level Composio key and per-agent connected accounts.
+    checked(sql("INSERT INTO public.composio_keys(id,owner_id,encrypted_key,key_hint) VALUES ('00000000-0000-0000-0000-000000000099','00000000-0000-0000-0000-000000000001','v1.synthetic','••••test')", "eclipse_app"), "runtime saves a Composio key");
+    checked(sql("UPDATE public.composio_keys SET injection_check = true", "eclipse_app"), "runtime toggles the injection check");
+    checked(sql("INSERT INTO public.composio_accounts(id,owner_id,agent_id,toolkit) VALUES ('00000000-0000-0000-0000-00000000009a','00000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000020','gmail')", "eclipse_app"), "runtime adds a Composio account");
+    checked(sql("UPDATE public.composio_accounts SET status='active'", "eclipse_app"), "runtime activates a Composio account");
+    assert.notEqual(sql(`INSERT INTO public.composio_accounts(id,owner_id,agent_id,toolkit) VALUES ('00000000-0000-0000-0000-00000000009b','00000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000020','Bad Toolkit')`, "eclipse_app").status, 0, "invalid Composio toolkit is refused");
+    checked(sql("DELETE FROM public.composio_accounts WHERE id='00000000-0000-0000-0000-00000000009a'", "eclipse_app"), "runtime removes a Composio account");
+    checked(sql("DELETE FROM public.composio_keys", "eclipse_app"), "runtime removes the Composio key");
+    assert.notEqual(sql(`INSERT INTO public.connections(id,owner_id,agent_id,preset,label,bindings,encrypted_token,token_hint) VALUES ('00000000-0000-0000-0000-000000000096','00000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000020','gitlab','Bad','[]'::jsonb,'v1.synthetic','••••test')`, "eclipse_app").status, 0, "unknown preset is refused");
+    checked(sql("DELETE FROM public.connections WHERE id='00000000-0000-0000-0000-000000000095'", "eclipse_app"), "runtime removes a connection");
     assert.notEqual(sql("UPDATE public.agents SET attention_reason='unknown'", "eclipse_app").status, 0, "unknown attention reason is refused");
     checked(sql("UPDATE public.agents SET attention_reason='budget_warning'", "eclipse_app"), "runtime stores budget attention");
     checked(sql("UPDATE public.agents SET attention_reason='security_stop'", "eclipse_app"), "runtime stores security attention");

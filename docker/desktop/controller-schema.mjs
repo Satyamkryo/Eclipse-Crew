@@ -26,6 +26,9 @@ const input = [
 ];
 const locator = { operation: z.literal("browser.locator"), selector: z.string().min(1).max(512).refine((v) => !/[\x00-\x1f\x7f]/.test(v)), pageId: uuid.optional(), action: z.enum(["inspect", "click", "fill"]), text: text.optional() };
 const fileName = z.string().min(1).max(255).refine((v) => !/[\u0000-\u001f\u007f-\u009f/\\]/.test(v) && !v.startsWith("."));
+// TASK-073. A shell command runs as the agent inside its namespace; cwd stays under the home.
+const shellCommand = z.string().min(1).max(4000).refine((value) => !value.includes("\0"));
+const shellCwd = z.string().min(1).max(255).refine((value) => value.split("/").every((part) => /^[A-Za-z0-9._-]+$/.test(part) && part !== "." && part !== ".."));
 export const OperationSchema = z.discriminatedUnion("operation", [
   ...input.map((v) => z.object(v).strict()),
   z.object({ operation: z.literal("capture.screenshot"), crop: crop.optional() }).strict(),
@@ -33,6 +36,7 @@ export const OperationSchema = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("page.snapshot"), pageId: uuid.optional() }).strict(),
   z.object({ operation: z.literal("page.verify"), predicate: verificationPredicate }).strict(),
   z.object({ operation: z.literal("file.open"), name: fileName }).strict(),
+  z.object({ operation: z.literal("shell.run"), command: shellCommand, cwd: shellCwd.optional(), timeout: z.number().int().min(1).max(600).optional() }).strict(),
   z.object(locator).strict().refine((v) => v.action !== "fill" || v.text !== undefined),
 ]);
 export const CommandSchema = z.discriminatedUnion("operation", [
@@ -44,6 +48,7 @@ export const CommandSchema = z.discriminatedUnion("operation", [
   z.object({ ...running, operation: z.literal("page.snapshot"), pageId: uuid.optional() }).strict(),
   z.object({ ...running, operation: z.literal("page.verify"), predicate: verificationPredicate }).strict(),
   z.object({ ...running, operation: z.literal("file.open"), name: fileName }).strict(),
+  z.object({ ...running, operation: z.literal("shell.run"), command: shellCommand, cwd: shellCwd.optional(), timeout: z.number().int().min(1).max(600).optional() }).strict(),
   z.object({ ...running, ...locator }).strict().refine((v) => v.action !== "fill" || v.text !== undefined),
 ]);
 const control = { ...running, sessionRef: z.string().regex(/^[0-9a-f]{64}$/), connectionId: uuid };
@@ -71,6 +76,7 @@ const snapshotElement = z.object({ ref: z.number().int().min(1).max(150), role: 
 const snapshot = z.object({ pageId: uuid, href: z.string().max(2048), title: z.string().max(1024), frames: z.number().int().min(0).max(64),
   elements: z.array(snapshotElement).max(150), ...tagged }).strict();
 const inspect = z.object({ tag: z.string().max(64), text: z.string().max(4096), boundingBox: box.nullable(), ...tagged }).strict();
+const shellResult = z.object({ exit: z.number().int().min(-256).max(256), signal: z.string().max(32).nullable(), timedOut: z.boolean(), stdout: z.string().max(16384), stderr: z.string().max(16384), truncated: z.boolean(), ...tagged }).strict();
 export const SessionResultSchema = z.object({ agentId: uuid, state: z.enum(["starting", "running", "stopping", "stopped", "failed"]), display: z.number().int().optional(), reason: z.string().max(64).optional(), generation: generation.optional(), vncPort: z.number().int().min(1).max(65535).optional(), vncReady: z.boolean().optional(), takenOver: z.boolean().optional() }).strict();
 export function operationFields(value) {
   const { ownerId: _o, agentId: _a, generation: _g, requestId: _r, sessionRef: _s, connectionId: _c, leaseId: _l, ...fields } = value;
@@ -92,8 +98,9 @@ export function resultFor(operation, result, params = {}) {
   if (operation === "page.snapshot") return snapshot.parse(result);
   if (operation === "page.verify") return pageVerificationResult.parse(result);
   if (operation === "browser.locator" && params.action === "inspect") return inspect.parse(result);
+  if (operation === "shell.run") return shellResult.parse(result);
   return ok.parse(result);
 }
-export const ResultSchema = z.union([SessionResultSchema, png, pages, snapshot, pageVerificationResult, inspect, ok]);
+export const ResultSchema = z.union([SessionResultSchema, png, pages, snapshot, pageVerificationResult, inspect, shellResult, ok]);
 export const parseCommand = (value) => CommandSchema.parse(value);
 export const parseResult = (value) => ResultSchema.parse(value);

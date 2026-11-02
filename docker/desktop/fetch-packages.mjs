@@ -3,7 +3,7 @@ import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-export const MANIFEST_SHA256 = "c8ceed5f88c318ffb130af97c47f613e97bae7042caad523860808751b979500";
+export const MANIFEST_SHA256 = "7f0a289be78f99081f38c289f5df1d290f175f95f251218c5f6fac465e607ff1";
 export function validateEntry(entry) {
   if (!entry || Object.keys(entry).sort().join(",") !== "architecture,bytes,filename,name,sha256,url,version" ||
       !/^[a-z0-9][a-z0-9+.-]+$/.test(entry.name) || !/^[0-9][a-zA-Z0-9.+:~\-]*$/.test(entry.version) ||
@@ -22,11 +22,11 @@ export function validateManifest(bytes) {
   const normalized = bytes.toString("utf8").replace(/\r\n/g, "\n");
   if (createHash("sha256").update(normalized).digest("hex") !== MANIFEST_SHA256) throw Error("package_manifest_hash_mismatch");
   const manifest = JSON.parse(normalized);
-  if (manifest.schema !== 1 || manifest.ubuntu !== "24.04" || manifest.architecture !== "amd64" || manifest.packages?.length !== 379)
+  if (manifest.schema !== 1 || manifest.ubuntu !== "24.04" || manifest.architecture !== "amd64" || manifest.packages?.length !== 388)
     throw Error("invalid_package_manifest");
   for (const entry of manifest.packages) validateEntry(entry);
-  if (new Set(manifest.packages.map((entry) => entry.filename)).size !== 379 ||
-      manifest.packages.reduce((sum, entry) => sum + entry.bytes, 0) !== 218769418) throw Error("invalid_package_manifest");
+  if (new Set(manifest.packages.map((entry) => entry.filename)).size !== 388 ||
+      manifest.packages.reduce((sum, entry) => sum + entry.bytes, 0) !== 232159408) throw Error("invalid_package_manifest");
   return manifest;
 }
 export async function fetchPackage(entry, directory, { fetchImpl = fetch, signal } = {}) {
@@ -84,8 +84,8 @@ async function main() {
     const manifest = validateManifest(await readFile(new URL("./ubuntu-packages.lock.json", import.meta.url)));
     await mkdir("/debs", { mode: 0o700 });
     const result = await fetchPackages(manifest.packages, "/debs", { signal: controller.signal,
-      onProgress: (verifiedPackages) => console.log(JSON.stringify({ verifiedPackages, totalPackages: 379 })) });
-    if (result.bytes !== 218769418) throw Error("locked_package_download_failed");
+      onProgress: (verifiedPackages) => console.log(JSON.stringify({ verifiedPackages, totalPackages: 388 })) });
+    if (result.bytes !== 232159408) throw Error("locked_package_download_failed");
     console.log(JSON.stringify({ ...result, manifestSha256: MANIFEST_SHA256 }));
   } finally { clearTimeout(timer); }
 }

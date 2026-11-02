@@ -112,6 +112,7 @@ test("desktop registry accepts deletion tombstones but rejects caller-chosen pat
     home: `/workspace/homes/${AGENT}`,
     downloads: `/workspace/.system/downloads/${AGENT}`,
     downloadsView: `/downloads/${AGENT}`,
+    ns: `/run/eclipse-ns/${AGENT}`,
   });
   for (const invalid of [
     { ...record, agentId: "../../root" },

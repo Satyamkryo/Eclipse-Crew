@@ -4,7 +4,7 @@ import { and, asc, desc, eq, gte, inArray, lt, or, sql, type SQL } from "drizzle
 import { z } from "zod";
 
 import type { getDatabase } from "../../db/client";
-import { approvals, costEntries, messages, runMeta, runs, steps } from "../../db/schema";
+import { agents, approvals, costEntries, messages, runMeta, runs, steps } from "../../db/schema";
 import { chatCardSchema } from "../chat/schema";
 import {
   decodeCursor, END_NOTE, encodeCursor, escapeLike, outcomeOf, rangeStart, readRunHeader, triggerOf,
@@ -31,10 +31,12 @@ const runColumns = {
   trigger: runMeta.trigger,
   routineId: runMeta.routineId,
   label: runMeta.label,
+  astraMode: agents.astraMode,
 };
 type RunJoinRow = {
   id: string; agentId: string; headerJson: string; startedAt: Date; endedAt: Date | null;
   status: string; signature: string | null; trigger: string | null; routineId: string | null; label: string | null;
+  astraMode: boolean | null;
 };
 
 async function buildRows(database: Database, ownerId: string, rows: RunJoinRow[], now: Date): Promise<JobRow[]> {
@@ -70,6 +72,7 @@ async function buildRows(database: Database, ownerId: string, rows: RunJoinRow[]
       runId: row.id,
       agentId: row.agentId,
       agentName: header.agentName || "Unknown agent",
+      astraMode: row.astraMode === true,
       routineId: row.routineId ?? null,
       label: row.label ?? task,
       trigger: triggerOf(row.trigger, header.task),
@@ -119,6 +122,7 @@ export async function listJobs(
     }
     const rows = await database.select(runColumns).from(runs)
       .leftJoin(runMeta, and(eq(runMeta.runId, runs.id), eq(runMeta.ownerId, ownerId)))
+      .leftJoin(agents, and(eq(agents.id, runs.agentId), eq(agents.ownerId, ownerId)))
       .where(and(...conditions))
       .orderBy(desc(runs.startedAt), desc(runs.id))
       .limit(SCAN_BATCH) as RunJoinRow[];
@@ -167,6 +171,7 @@ export async function listAttempts(database: Database, ownerId: string, runId: s
   if (ids.length < 2) return [];
   const rows = await database.select(runColumns).from(runs)
     .leftJoin(runMeta, and(eq(runMeta.runId, runs.id), eq(runMeta.ownerId, ownerId)))
+    .leftJoin(agents, and(eq(agents.id, runs.agentId), eq(agents.ownerId, ownerId)))
     .where(and(eq(runs.ownerId, ownerId), inArray(runs.id, ids))) as RunJoinRow[];
   const built = await buildRows(database, ownerId, rows, now);
   const order = new Map(ids.map((id, index) => [id, index]));
@@ -215,6 +220,7 @@ async function loadJobErrors(database: Database, ownerId: string, runId: string)
 export async function loadJob(database: Database, ownerId: string, runId: string, now = new Date()): Promise<JobDetailView | null> {
   const rows = await database.select(runColumns).from(runs)
     .leftJoin(runMeta, and(eq(runMeta.runId, runs.id), eq(runMeta.ownerId, ownerId)))
+    .leftJoin(agents, and(eq(agents.id, runs.agentId), eq(agents.ownerId, ownerId)))
     .where(and(eq(runs.ownerId, ownerId), eq(runs.id, runId))).limit(1) as RunJoinRow[];
   if (!rows[0]) return null;
   const [summary] = await buildRows(database, ownerId, rows, now);
@@ -239,6 +245,7 @@ export async function loadJob(database: Database, ownerId: string, runId: string
 export async function loadRunForAction(database: Database, ownerId: string, runId: string, now = new Date()) {
   const rows = await database.select(runColumns).from(runs)
     .leftJoin(runMeta, and(eq(runMeta.runId, runs.id), eq(runMeta.ownerId, ownerId)))
+    .leftJoin(agents, and(eq(agents.id, runs.agentId), eq(agents.ownerId, ownerId)))
     .where(and(eq(runs.ownerId, ownerId), eq(runs.id, runId))).limit(1) as RunJoinRow[];
   if (!rows[0]) return null;
   const [summary] = await buildRows(database, ownerId, rows, now);

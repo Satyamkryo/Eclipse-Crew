@@ -12,6 +12,7 @@ import { AgentPane, type AgentSummary } from "@/components/workspace/agent-pane"
 import { AgentSettings } from "@/components/workspace/agent-settings";
 import { WorkspacePanel } from "@/components/workspace/workspace-panel";
 import { HistoryPanel } from "@/components/history/history-panel";
+import { MemoryPanel } from "@/components/memory/memory-panel";
 import { owner } from "@/db/schema";
 import { resolveTimezone } from "@/lib/time/clock";
 import { eq } from "drizzle-orm";
@@ -63,7 +64,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ a
   }
   const mobileInitialView = liveAgentId ? "panel" : error ? "agents" : "chat";
   const chatAgent = selectedAgent
-    ? { id: selectedAgent.id, name: selectedAgent.name, status: selectedAgent.status }
+    ? { id: selectedAgent.id, name: selectedAgent.name, status: selectedAgent.status, astraMode: selectedAgent.astraMode }
     : undefined;
   // A bad MAX_UPLOAD_MB must not take the whole workspace down: the upload route reports it instead.
   let maxUploadBytes: number | undefined;
@@ -81,8 +82,9 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ a
       panel={(
         <WorkspacePanel
           settings={selectedAgent ? <AgentSettings agent={selectedAgent} desktopRunning={desktopRunning} csrfToken={session.csrfToken} /> : undefined}
-          desktop={liveAgentId ? <LiveView agentId={liveAgentId} agentName={selectedAgent?.name ?? "Agent desktop"} modelName={modelName} /> : undefined}
-          history={<HistoryPanel key={selectedAgent?.id ?? "no-agent"} agentId={selectedAgent?.id} timeZone={ownerTimeZone} csrfToken={session.csrfToken} />}
+          desktop={liveAgentId ? <LiveView agentId={liveAgentId} agentName={selectedAgent?.name ?? "Agent desktop"} astraMode={selectedAgent?.astraMode} modelName={modelName} /> : undefined}
+          history={<HistoryPanel key={selectedAgent?.id ?? "no-agent"} agentId={selectedAgent?.id} agentName={selectedAgent?.name} astraMode={selectedAgent?.astraMode} timeZone={ownerTimeZone} csrfToken={session.csrfToken} />}
+          memory={<MemoryPanel key={`memory-${selectedAgent?.id ?? "no-agent"}`} agentId={selectedAgent?.id} timeZone={ownerTimeZone} csrfToken={session.csrfToken} />}
         />
       )}
     />

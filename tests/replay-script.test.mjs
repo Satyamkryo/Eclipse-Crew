@@ -44,6 +44,7 @@ test("a run that cannot be replayed without a model is refused with the step and
     [[receipt(1, { result: "unknown" })], "1:step_not_verified"],
     [[receipt(1, { executed: false })], "1:step_not_verified"],
     [[receipt(1, { action: { kind: "read_document", name: "a.pdf", offset: 0 }, result: "executed" })], "1:step_not_replayable"],
+    [[receipt(1, { action: { kind: "tool_call", server: "github", tool: "get_me", args_sha256: "a".repeat(64), args_bytes: 2 } })], "1:step_not_replayable"],
     [[receipt(1, { action: { kind: "teleport" } })], "1:step_not_replayable"],
     [[receipt(1, { postcondition: "the page looks right" })], "1:postcondition_not_structural"],
     [[receipt(1, { postcondition: "object_visible: Download PDF" })], "1:postcondition_not_structural"],

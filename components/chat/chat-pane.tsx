@@ -5,6 +5,7 @@ import { FileText, LoaderCircle, MessageSquare, Paperclip, RefreshCw, X } from "
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { ChatCard } from "@/components/chat/chat-card";
+import { AstraBadge } from "@/components/ui/astra-badge";
 import {
   chatHistoryResponseSchema,
   chatMessageResponseSchema,
@@ -15,7 +16,7 @@ import { formatBytes, precheckFile, uploadErrorMessage, uploadFile, UploadError 
 
 type Upload = { key: string; file: File; loaded: number; state: "queued" | "uploading" | "error"; error?: string };
 const MAX_FILES_AT_ONCE = 10;
-type ChatAgent = { id: string; name: string; status: "active" | "paused" };
+type ChatAgent = { id: string; name: string; status: "active" | "paused"; astraMode: boolean };
 type LoadState = "idle" | "loading" | "ready" | "error";
 
 export function ChatPane({ agent, csrfToken, maxUploadBytes }: { agent?: ChatAgent; csrfToken: string; maxUploadBytes?: number }) {
@@ -277,7 +278,12 @@ export function ChatPane({ agent, csrfToken, maxUploadBytes }: { agent?: ChatAge
       )}
       <div className="flex h-12 shrink-0 items-center gap-3 border-b border-border px-6">
         <h2 className="text-lg font-semibold tracking-tight">Chat</h2>
-        {agent && <span className="min-w-0 truncate text-xs text-muted-foreground">{agent.name}</span>}
+        {agent && (
+          <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+            <span className="min-w-0 truncate">{agent.name}</span>
+            {agent.astraMode && <AstraBadge />}
+          </span>
+        )}
       </div>
 
       {!agent ? (

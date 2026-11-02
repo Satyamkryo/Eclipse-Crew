@@ -19,6 +19,8 @@ services:
         condition: service_healthy
     volumes:
       - artifacts:/var/eclipse/artifacts
+      # TASK-053. Host-visible Markdown mirror. Never mounted on the desktop or any other service.
+      - ./data/memory:/var/eclipse/memory
     networks:
       - database
       - desktop

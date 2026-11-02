@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Heavy</title>
+<script>window.__spikeClicks = []; window.__spikeClick = (name) => { window.__spikeClicks = [...(window.__spikeClicks || []), name]; };</script>
+<style>
+body { margin: 0; font: 10px sans-serif; }
+#grid { display: flex; flex-wrap: wrap; width: 1024px; }
+#grid button { width: 48px; height: 10px; margin: 0; padding: 0; overflow: hidden; }
+iframe { position: absolute; border: 0; width: 200px; height: 120px; }
+</style>
+</head>
+<body>
+<div id="grid"></div>
+<script>
+// 50 hosts x 10 open-shadow buttons = 500 controls the top-frame scanner must walk.
+const grid = document.getElementById("grid");
+for (let host = 0; host < 50; host++) {
+  const element = document.createElement("div");
+  grid.append(element);
+  const root = element.attachShadow({ mode: "open" });
+  root.innerHTML = Array.from({ length: 10 }, (_, button) => {
+    const name = host === 0 && button === 0 ? "Heavy first shadow" : `Load ${host}-${button}`;
+    return `<button style="display:block;width:48px;height:10px" onclick="__spikeClick('${name}')">${name}</button>`;
+  }).join("");
+}
+for (let frame = 0; frame < 5; frame++) {
+  const element = document.createElement("iframe");
+  element.src = "/_frame-heavy.html";
+  element.style.left = `${frame * 205}px`;
+  element.style.top = "300px";
+  document.body.append(element);
+}
+</script>
+</body>
+</html>

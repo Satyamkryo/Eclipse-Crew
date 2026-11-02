@@ -6,6 +6,7 @@ import type { getDatabase } from "../../db/client";
 import { approvals, permissionUses, permissions } from "../../db/schema";
 import type { ActionClass } from "../agent/risk";
 import { cleanText } from "../receipts/chain.mjs";
+import { recordAudit, type AuditExecutor } from "../security/audit";
 import type { ApprovalDecision, ApprovalState, ApprovalView } from "./types";
 
 type Database = Awaited<ReturnType<typeof getDatabase>>;
@@ -109,28 +110,34 @@ export async function expireApproval(database: Database, ownerId: string, id: st
 export async function decideApproval(
   database: Database, ownerId: string, id: string, decision: ApprovalDecision,
 ): Promise<DecideResult> {
-  const current = await getApproval(database, ownerId, id);
-  if (!current) return { ok: false, error: "not_found" };
-  if (current.state === "expired") return { ok: false, error: "expired" };
-  if (current.state !== "pending") return { ok: false, error: "already_decided" };
-  if (decision === "always_allow" && current.site.length === 0) return { ok: false, error: "site_unknown" };
+  return database.transaction(async (transaction) => {
+    const current = await getApproval(transaction as unknown as Database, ownerId, id);
+    if (!current) return { ok: false, error: "not_found" };
+    if (current.state === "expired") return { ok: false, error: "expired" };
+    if (current.state !== "pending") return { ok: false, error: "already_decided" };
+    if (decision === "always_allow" && current.site.length === 0) return { ok: false, error: "site_unknown" };
 
-  const updated = await database.update(approvals).set({ state: DECIDED_STATE[decision], decidedAt: new Date() })
-    .where(and(eq(approvals.ownerId, ownerId), eq(approvals.id, id), eq(approvals.state, "pending")))
-    .returning();
-  const row = updated[0];
-  if (!row) {
-    const after = await getApproval(database, ownerId, id);
-    if (!after) return { ok: false, error: "not_found" };
-    return { ok: false, error: after.state === "expired" ? "expired" : "already_decided" };
-  }
+    const updated = await transaction.update(approvals).set({ state: DECIDED_STATE[decision], decidedAt: new Date() })
+      .where(and(eq(approvals.ownerId, ownerId), eq(approvals.id, id), eq(approvals.state, "pending")))
+      .returning();
+    const row = updated[0];
+    if (!row) {
+      const after = await getApproval(transaction as unknown as Database, ownerId, id);
+      if (!after) return { ok: false, error: "not_found" };
+      return { ok: false, error: after.state === "expired" ? "expired" : "already_decided" };
+    }
 
-  if (decision === "always_allow") {
-    await createGrant(database, {
-      ownerId, agentId: row.agentId, site: row.site, actionClass: row.actionClass as ActionClass,
+    if (decision === "always_allow") {
+      await createGrant(transaction as unknown as Database, {
+        ownerId, agentId: row.agentId, site: row.site, actionClass: row.actionClass as ActionClass,
+      });
+    }
+    await recordAudit(transaction as unknown as AuditExecutor, ownerId, {
+      kind: decision === "deny" ? "approval_denied" : "approval_allowed",
+      agentId: row.agentId, runId: row.runId, code: decision,
     });
-  }
-  return { ok: true, approval: row as ApprovalRow };
+    return { ok: true, approval: row as ApprovalRow };
+  });
 }
 
 export async function findGrant(
@@ -178,10 +185,16 @@ export async function createGrant(
 }
 
 export async function revokeGrant(database: Database, ownerId: string, permissionId: string): Promise<boolean> {
-  const updated = await database.update(permissions).set({ revokedAt: new Date() })
-    .where(and(eq(permissions.ownerId, ownerId), eq(permissions.id, permissionId), isNull(permissions.revokedAt)))
-    .returning({ id: permissions.id });
-  return Boolean(updated[0]);
+  return database.transaction(async (transaction) => {
+    const updated = await transaction.update(permissions).set({ revokedAt: new Date() })
+      .where(and(eq(permissions.ownerId, ownerId), eq(permissions.id, permissionId), isNull(permissions.revokedAt)))
+      .returning({ id: permissions.id, agentId: permissions.agentId });
+    if (!updated[0]) return false;
+    await recordAudit(transaction as unknown as AuditExecutor, ownerId, {
+      kind: "permission_revoked", agentId: updated[0].agentId, ref: updated[0].id,
+    });
+    return true;
+  });
 }
 
 export async function listGrants(database: Database, ownerId: string, agentId: string): Promise<GrantRow[]> {

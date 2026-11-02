@@ -4,9 +4,11 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ChevronLeft, FileText, Hand, Loader2, Minimize2, Monitor, ShieldCheck, Timer, Cuboid } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { AstraBadge } from "@/components/ui/astra-badge";
 
 type Props = {
   agentName: string;
+  astraMode: boolean;
   status: "connecting" | "live" | "error";
   takenOver: boolean;
   busy: boolean;
@@ -42,7 +44,7 @@ function initials(name: string) {
 
 // The expanded desktop view (docs/DESIGN.md). It fills the app window, never uses the browser Fullscreen API, and holds
 // the same stream element as the inline view, so nothing reconnects and a takeover stays active.
-export function ExpandedView({ agentName, status, takenOver, busy, phone, modelName, connectedAt, error, slotRef, overlay, teachControls, onScreenKeyDown, onTakeOver, onHandBack, onExit }: Props) {
+export function ExpandedView({ agentName, astraMode, status, takenOver, busy, phone, modelName, connectedAt, error, slotRef, overlay, teachControls, onScreenKeyDown, onTakeOver, onHandBack, onExit }: Props) {
   const layer = useRef<HTMLDivElement>(null);
   const exitButton = useRef<HTMLButtonElement>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -95,6 +97,7 @@ export function ExpandedView({ agentName, status, takenOver, busy, phone, modelN
           <span aria-hidden="true" className="hidden h-6 w-px bg-border md:block" />
           <span aria-hidden="true" className="hidden size-8 shrink-0 items-center justify-center rounded-full border border-border text-xs font-semibold md:flex">{initials(agentName)}</span>
           <span className="hidden min-w-0 truncate text-sm font-semibold md:block">{agentName}</span>
+          {astraMode && <span className="hidden md:inline-flex"><AstraBadge /></span>}
           <span className="flex items-center gap-2 text-xs text-muted-foreground" role="status">
             <span aria-hidden="true" className={`size-2 rounded-full ${status === "live" ? "bg-foreground motion-safe:animate-pulse" : "bg-muted-foreground"}`} />{statusLabel}
           </span>

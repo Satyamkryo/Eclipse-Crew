@@ -19,7 +19,7 @@ const emptyCopy: Record<Exclude<TabId, "desktop" | "settings">, string> = {
   memory: "No memory entries yet.",
 };
 
-export function WorkspacePanel({ desktop, settings, history }: { desktop?: ReactNode; settings?: ReactNode; history?: ReactNode }) {
+export function WorkspacePanel({ desktop, settings, history, memory }: { desktop?: ReactNode; settings?: ReactNode; history?: ReactNode; memory?: ReactNode }) {
   const [active, setActive] = useState<TabId>("desktop");
   const buttons = useRef<Array<HTMLButtonElement | null>>([]);
 
@@ -40,13 +40,13 @@ export function WorkspacePanel({ desktop, settings, history }: { desktop?: React
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div role="tablist" aria-label="Workspace panel" className="flex h-12 shrink-0 items-center overflow-x-auto border-b border-border px-2">
+      <div role="tablist" aria-label="Workspace panel" className="grid h-12 shrink-0 grid-cols-6 items-center border-b border-border px-2">
         {tabs.map((tab, index) => (
           <button key={tab.id} ref={(element) => { buttons.current[index] = element; }} type="button"
             role="tab" id={`workspace-tab-${tab.id}`} aria-controls="workspace-panel-content"
             aria-selected={active === tab.id} tabIndex={active === tab.id ? 0 : -1}
             onClick={() => select(index, false)} onKeyDown={(event) => onKeyDown(event, index)}
-            className={cn("h-12 shrink-0 border-b-2 px-2 text-xs transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring",
+            className={cn("h-12 min-w-0 border-b px-1 text-xs transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring",
               active === tab.id ? "border-foreground text-foreground" : "border-transparent text-muted-foreground hover:text-foreground")}>
             {tab.label}
           </button>
@@ -64,12 +64,14 @@ export function WorkspacePanel({ desktop, settings, history }: { desktop?: React
             </div>
             <div className="flex flex-wrap gap-4">
               <Link href="/settings/models" className="text-sm underline underline-offset-4">Model settings</Link>
+              <Link href="/settings/connections" className="text-sm underline underline-offset-4">Connections</Link>
               <Link href="/settings/account" className="text-sm underline underline-offset-4">Account settings</Link>
             </div>
           </div>
         ))}
         {active === "history" && (history ?? <Empty title="History" body={emptyCopy.history} />)}
-        {active !== "desktop" && active !== "settings" && active !== "history" && <Empty title={tabs.find((tab) => tab.id === active)?.label ?? ""} body={emptyCopy[active]} />}
+        {active === "memory" && (memory ?? <Empty title="Memory" body={emptyCopy.memory} />)}
+        {active !== "desktop" && active !== "settings" && active !== "history" && active !== "memory" && <Empty title={tabs.find((tab) => tab.id === active)?.label ?? ""} body={emptyCopy[active]} />}
       </div>
     </div>
   );

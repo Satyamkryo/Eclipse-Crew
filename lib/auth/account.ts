@@ -3,6 +3,7 @@ import { and, desc, eq, gt, ne, sql } from "drizzle-orm";
 import { getDatabase } from "../../db/client";
 import { owner, sessions } from "../../db/schema";
 import { hashPassword, verifyPassword } from "./password";
+import { recordAudit, type AuditExecutor } from "../security/audit";
 
 type Database = Awaited<ReturnType<typeof getDatabase>>;
 const ACCOUNT_LOCK = 691016;
@@ -24,6 +25,7 @@ export async function changeOwnerPassword(
     if (!current || !(await verifyPassword(current.passwordHash, currentPassword))) return false;
     await transaction.update(owner).set({ passwordHash }).where(eq(owner.ownerId, ownerId));
     await transaction.delete(sessions).where(and(eq(sessions.ownerId, ownerId), ne(sessions.id, currentSessionId)));
+    await recordAudit(transaction as unknown as AuditExecutor, ownerId, { kind: "password_changed" });
     return true;
   });
 }
@@ -35,6 +37,7 @@ export async function changeOwnerEmail(
     const current = await lockedOwner(transaction, ownerId);
     if (!current || !(await verifyPassword(current.passwordHash, currentPassword))) return false;
     await transaction.update(owner).set({ login: login.toLowerCase() }).where(eq(owner.ownerId, ownerId));
+    await recordAudit(transaction as unknown as AuditExecutor, ownerId, { kind: "email_changed" });
     return true;
   });
 }
@@ -44,6 +47,7 @@ export async function revokeOtherSessions(
 ): Promise<void> {
   await database.transaction(async (transaction) => {
     await transaction.delete(sessions).where(and(eq(sessions.ownerId, ownerId), ne(sessions.id, currentSessionId)));
+    await recordAudit(transaction as unknown as AuditExecutor, ownerId, { kind: "sessions_revoked" });
   });
 }
 

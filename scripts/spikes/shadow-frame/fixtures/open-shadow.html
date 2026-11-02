@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Open shadow</title>
+<script>window.__spikeClicks = []; window.__spikeClick = (name) => { window.__spikeClicks = [...(window.__spikeClicks || []), name]; };</script>
+<style>body { margin: 0; font: 14px sans-serif; } x-panel { display: block; position: absolute; left: 20px; top: 20px; width: 280px; }</style>
+</head>
+<body>
+<x-panel>
+  <button slot="actions" onclick="__spikeClick('Slotted action')">Slotted action</button>
+  <p id="light-label">Cross label</p>
+</x-panel>
+<script>
+customElements.define("x-inner", class extends HTMLElement {
+  connectedCallback() {
+    if (this.shadowRoot) return;
+    const root = this.attachShadow({ mode: "open" });
+    root.innerHTML = `<button style="display:block;width:220px;height:36px" onclick="__spikeClick('Add to cart')">Add to cart</button>`;
+  }
+});
+customElements.define("x-panel", class extends HTMLElement {
+  connectedCallback() {
+    if (this.shadowRoot) return;
+    const root = this.attachShadow({ mode: "open" });
+    root.innerHTML = `
+      <style>button { display: block; width: 220px; height: 36px; margin: 0 0 8px; } label { display: block; margin: 0 0 8px; }
+      input { width: 140px; height: 24px; } p#light-label { display: none; }</style>
+      <button onclick="__spikeClick('Configure')">Configure</button>
+      <label>Postcode<input type="text" onclick="__spikeClick('Postcode')"></label>
+      <x-inner></x-inner>
+      <button aria-labelledby="light-label" onclick="__spikeClick('Cross label')"></button>
+      <slot name="actions"></slot>`;
+  }
+});
+</script>
+</body>
+</html>

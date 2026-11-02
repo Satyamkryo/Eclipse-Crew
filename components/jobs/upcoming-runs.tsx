@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { CalendarClock, Loader2, Pause, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { RoutineRunNow } from "@/components/chat/routine-run-now";
+import { AstraBadge } from "@/components/ui/astra-badge";
 import { cn } from "@/lib/utils";
 import type { PausedRoutine, RoutineCatchUp, UpcomingRoutine, UpcomingView } from "@/lib/jobs/view";
 
@@ -159,7 +160,11 @@ export function UpcomingRuns({ agent, csrfToken }: { agent: string; csrfToken: s
                     <span className="w-14 shrink-0 font-mono text-sm tabular-nums">{timeOnly(run.startAt, view.timezone)}</span>
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-sm">{run.label}</span>
-                      <span className="mt-0.5 block truncate text-xs text-text-subtle">{run.agentName} · {run.timezone}</span>
+                      <span className="mt-0.5 flex min-w-0 items-center gap-1 text-xs text-text-subtle">
+                        <span className="truncate">{run.agentName}</span>
+                        {run.astraMode && <AstraBadge />}
+                        <span className="shrink-0">· {run.timezone}</span>
+                      </span>
                     </span>
                     <span className="rounded-md bg-success/12 px-2 py-0.5 text-xs text-success">Active</span>
                   </button>
@@ -211,7 +216,11 @@ export function UpcomingRuns({ agent, csrfToken }: { agent: string; csrfToken: s
                       <span className="min-w-0 truncate text-sm">{routine.label}</span>
                       <span className="rounded-md border border-border bg-muted px-2 py-0.5 text-xs text-muted-foreground">Paused</span>
                     </span>
-                    <span className="mt-0.5 block truncate text-xs text-text-subtle">{routine.agentName} · {routine.schedule}</span>
+                    <span className="mt-0.5 flex min-w-0 items-center gap-1 text-xs text-text-subtle">
+                      <span className="truncate">{routine.agentName}</span>
+                      {routine.astraMode && <AstraBadge />}
+                      <span className="shrink-0">· {routine.schedule}</span>
+                    </span>
                   </button>
                 </li>
               ))}

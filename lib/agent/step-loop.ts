@@ -1,7 +1,7 @@
 import "server-only";
 import type { ProviderConnector, ProviderUsage } from "../providers/types";
 import { getTime } from "../time/clock";
-import { buildRequest, summarizeIntent, timeSummary, type AgentPersona, type AgentSkill, type ReadDocument, type StepSummary, MAX_DOCUMENT_WINDOWS } from "./context";
+import { buildRequest, summarizeIntent, timeSummary, type AgentPersona, type AgentSkill, type ReadDocument, type StepSummary, type ToolResultContext, MAX_DOCUMENT_WINDOWS } from "./context";
 import type { DeliveredFile, DesktopPort, ListedFile, PageSnapshot, Screenshot } from "./desktop-port";
 import { executeIntent, validPoint, type Grounder } from "./executor";
 import { createPageGrounder, suggestNames } from "./grounding";
@@ -12,6 +12,9 @@ import { labelFor, pickRoute, type RouteKind } from "./routing";
 import { checkTyped, deriveScope, hostFromUrl, type ScopeRule } from "./scope";
 import { classifyAction, type ActionClass, type RiskClass } from "./risk";
 import type { ApprovalGate } from "../approvals/types";
+import { classifyToolCall } from "../tools/risk";
+import { splitToolReference, type ToolPort } from "../tools/port";
+import { checkShellExpect, formatShellResult, type ShellPort } from "./shell-port";
 
 import { confidenceGate } from "./confidence-gate";
 import { createVisualVerifier } from "./visual-verifier";
@@ -23,6 +26,19 @@ import { actionFor, confidenceFor, methodsFor, screenshotHash, type ReceiptResul
 import type { EvidenceSink } from "../receipts/evidence";
 import type { CheckpointSink } from "../checkpoints/store";
 import type { BudgetCard, RunCostSink } from "../costs/types";
+
+// TASK-072. Tool arguments are checked as data: every string leaf is collected for the scope and canary checks.
+function argumentText(value: unknown): string {
+  const parts: string[] = [];
+  const visit = (node: unknown, depth: number) => {
+    if (depth > 8 || parts.length > 512) return;
+    if (typeof node === "string") parts.push(node.slice(0, 2000));
+    else if (Array.isArray(node)) node.forEach((item) => visit(item, depth + 1));
+    else if (node && typeof node === "object") Object.values(node as Record<string, unknown>).forEach((item) => visit(item, depth + 1));
+  };
+  visit(value, 0);
+  return parts.join("\n").slice(0, 12_000);
+}
 
 export const MAX_STEPS = 20;
 export const MAX_REPEATS = 3;
@@ -54,6 +70,12 @@ export interface RunResume {
 export type SecurityStopSignal = { step: number; cause: "typed_text" | "cancelled" };
 export type SecurityStopResult = "posted" | "duplicate" | "failed";
 
+// TASK-054. The agent may only ask; the owner decision writes memory later.
+export interface MemoryPort {
+  propose(input: { scope: "global" | "agent" | "private"; title: string; text: string; reason: string }):
+    Promise<{ ok: true; changeId: string; flags: string[] } | { ok: false; code: string; codes?: string[] }>;
+}
+
 export interface RunDeps {
   agent: AgentPersona & { id: string };
   task: string;
@@ -82,6 +104,14 @@ export interface RunDeps {
   allowedHosts?: readonly string[];
   // TASK-050. Risky actions wait here for the owner. Without it, a risky action fails closed.
   approvals?: ApprovalGate;
+  // TASK-051. Astra Mode skips only the approval prompt; scope, allowlists, budgets, tripwire and receipts still apply.
+  astra?: boolean;
+  // TASK-054. Add-only memory requests; absent means the remember action is refused.
+  memory?: MemoryPort;
+  // TASK-072. Pinned remote tool calls; absent means tool_call is refused.
+  tools?: ToolPort;
+  // TASK-073. Shell commands inside the agent namespace; absent means shell is refused.
+  shell?: ShellPort;
   onScopeBlocked?: (rule: ScopeRule, runId?: string) => void | Promise<void>;
   // Called once when a run stops for security. "posted" or "duplicate" means the tripwire owns the one card;
   // "failed" (or no hook) leaves the loop to post its fixed fallback card.
@@ -146,6 +176,8 @@ export function isAgentBusy(agentId: string): boolean {
 }
 
 const sameIntent = (a: Intent, b: Intent) => JSON.stringify(a) === JSON.stringify(b);
+// TASK-054. The summary promises a save without a memory request: append the fixed correction, never rewrite the text.
+const claimsMemorySave = (summary: string) => /\bi(?:'ll| will) remember\b|\bi(?:'ve| have) (?:saved|noted|remembered)\b|\bsaved (?:that )?to memory\b|\bnoted that\b/i.test(summary);
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const errorCode = (error: unknown) => (error as { code?: unknown } | null)?.code;
 
@@ -251,8 +283,12 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
   let previous: Intent | null = null;
   let hardDisabled = false;
   let hardTurns = 0;
+  let memoryQueued = 0;
   const documents: ReadDocument[] = [];
   const delivered: string[] = deps.resume ? [...deps.resume.delivered] : [];
+  // TASK-072. Tool results are loop-local and only the newest three are sent to the model.
+  const toolResults: ToolResultContext[] = [];
+  let toolRefusals = 0;
   const fileActionsOn = FILE_ACTIONS.some((action) => allowed.has(action)) && typeof deps.desktop.listFiles === "function";
   const stop = (next: RunOutcome, text?: RunCard) => { outcome = next; card = text ?? null; };
 
@@ -273,9 +309,11 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
   const emit = async (intent: Intent, info: ModelInfo, d: {
     result: ReceiptResult; executed: boolean; code?: string | null; target?: { role: string; name: string } | null;
     groundingMethod?: string | null; gate?: Evidence[]; verification?: Verification; before?: Screenshot | null; after?: Screenshot | null;
+    exit?: number | null; timeout?: boolean;
   }): Promise<boolean> => {
     if (!receipts) return true;
     const action = actionFor(intent);
+    if (action?.kind === "shell") { action.exit = d.exit ?? null; action.timeout = d.timeout === true; }
     if (!action) return true;
     const methods = methodsFor(d.gate, d.verification);
     const spent = usageNow();
@@ -375,6 +413,7 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
       const ask = (model: string) => deps.provider.generate({
         ...buildRequest({
           model, persona: deps.agent, task: deps.task, history, files, documents: documents.slice(-MAX_DOCUMENT_WINDOWS),
+          toolResults: toolResults.slice(-3),
           skills: deps.skills, screenshotBase64: shot.base64, snapshot, missedNames, untrustedContext: deps.untrustedContext,
           now: now(), timezone: deps.timezone,
         }),
@@ -426,7 +465,10 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
       if (intent.action === "finish") {
         // A final summary is still a model claim; only individual postconditions have evidence.
         const sent = delivered.length ? `\n\nFiles sent to you: ${delivered.join(", ")}` : "";
-        stop("finished", { type: "message", text: `${intent.summary}${sent}\n\n${steps.some((step) => step.verified) ? `${steps.filter((step) => step.verified).length} desktop step postcondition(s) passed verification. This summary is the agent's own report; external side effects are not independently proven.` : "This is the agent's own report. Nothing was verified automatically."}` });
+        const memoryNote = memoryQueued > 0
+          ? `\n\nWaiting for your approval: ${memoryQueued} memory request${memoryQueued === 1 ? "" : "s"}.`
+          : claimsMemorySave(intent.summary) ? "\n\nNo memory request was made in this run, so nothing was saved." : "";
+        stop("finished", { type: "message", text: `${intent.summary}${sent}${memoryNote}\n\n${steps.some((step) => step.verified) ? `${steps.filter((step) => step.verified).length} desktop step postcondition(s) passed verification. This summary is the agent's own report; external side effects are not independently proven.` : "This is the agent's own report. Nothing was verified automatically."}` });
         break;
       }
       if (intent.action === "ask_owner") {
@@ -474,6 +516,194 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
         steps.push({ index: steps.length + 1, intent, executed: true, groundingMethod: null, grounded: null, verified: false, ...modelInfo });
         history.push(summarizeIntent(currentTurn, intent));
         if (!(await emit(intent, modelInfo, { result: "executed", executed: true }))) { stop("receipt_error"); break; }
+        continue;
+      }
+
+      // TASK-054. A memory request is add-only and never writes memory: it queues one owner review. It never touches
+      // the screen, so refusals are reported to the model in history and the run continues.
+      if (intent.action === "remember") {
+        if (!allowed.has("remember")) {
+          stop("needs_owner", { type: "message", text: notAllowedText("remember") });
+          break;
+        }
+        if (!deps.memory) {
+          history.push(summarizeIntent(currentTurn, intent, "failed", "memory_unavailable"));
+          if (!(await emit(intent, modelInfo, { result: "blocked", executed: false, code: "memory_unavailable" }))) { stop("receipt_error"); break; }
+          continue;
+        }
+        let proposed;
+        try { proposed = await withinDeadline(deps.memory.propose({ scope: intent.scope, title: intent.title, text: intent.text, reason: intent.reason })); }
+        catch { proposed = { ok: false as const, code: "memory_unavailable" }; }
+        if (!proposed.ok) {
+          const code = /^[a-z_]{1,64}$/.test(proposed.code) ? proposed.code : "memory_unavailable";
+          history.push(summarizeIntent(currentTurn, intent, "failed", code));
+          steps.push({ index: steps.length + 1, intent, executed: false, groundingMethod: null, grounded: null, verified: false, ...modelInfo });
+          if (!(await emit(intent, modelInfo, { result: "blocked", executed: false, code }))) { stop("receipt_error"); break; }
+          continue;
+        }
+        memoryQueued += 1;
+        steps.push({ index: steps.length + 1, intent, executed: true, groundingMethod: null, grounded: null, verified: false, ...modelInfo });
+        history.push(summarizeIntent(currentTurn, intent));
+        if (!(await emit(intent, modelInfo, { result: "executed", executed: true, code: "queued" }))) { stop("receipt_error"); break; }
+        continue;
+      }
+
+      // TASK-072. Remote tool calls: allowlist, server grant, argument scope/canary, code-side risk, then approval and call.
+      // Results are untrusted data and never enter a receipt, checkpoint or history summary.
+      if (intent.action === "tool_call") {
+        if (!allowed.has("tool_call") || !deps.tools) {
+          stop("needs_owner", { type: "message", text: notAllowedText("tool_call") });
+          break;
+        }
+        const split = splitToolReference(intent.name);
+        const grantedServers = deps.agent.tools ?? [];
+        if (!split || !grantedServers.includes(split.serverKey)) {
+          steps.push({ index: steps.length + 1, intent, executed: false, groundingMethod: null, grounded: null, verified: false, ...modelInfo });
+          history.push(summarizeIntent(currentTurn, intent, "failed", "tool_not_granted"));
+          if (!(await emit(intent, modelInfo, { result: "blocked", executed: false, code: "tool_not_granted" }))) { stop("receipt_error"); break; }
+          toolRefusals += 1;
+          if (toolRefusals >= 2) {
+            stop("needs_owner", { type: "message", text: `I am not allowed to use the "${intent.name}" tool. Add the server key to this agent's Tools in its settings, and "tool_call" to its Actions.` });
+            break;
+          }
+          continue;
+        }
+
+        let args: Record<string, unknown>;
+        try {
+          const parsed = JSON.parse(intent.args);
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
+          args = parsed as Record<string, unknown>;
+        } catch {
+          history.push(summarizeIntent(currentTurn, intent, "failed", "tool_invalid_arguments"));
+          if (!(await emit(intent, modelInfo, { result: "blocked", executed: false, code: "tool_invalid_arguments" }))) { stop("receipt_error"); break; }
+          continue;
+        }
+        const text = argumentText(args);
+        const scope = deriveScope({ task: deps.task, allowedHosts: deps.allowedHosts, startHref });
+        const verdict = checkTyped(text, scope, null);
+        if (!verdict.ok) {
+          const code = verdict.rule === "recipient" ? "out_of_scope_recipient" : "out_of_scope_host";
+          steps.push({ index: steps.length + 1, intent, executed: false, groundingMethod: null, grounded: null, verified: false, ...modelInfo });
+          history.push(summarizeIntent(currentTurn, intent, "failed", "out_of_scope"));
+          if (!(await emit(intent, modelInfo, { result: "blocked", executed: false, code }))) { stop("receipt_error"); break; }
+          try { await deps.onScopeBlocked?.(verdict.rule ?? "host", receipts?.runId); } catch { /* the refusal stands */ }
+          scopeRefusals += 1;
+          if (scopeRefusals >= 2) { stop("scope_blocked"); break; }
+          continue;
+        }
+        if (deps.canary && containsCanary(text, deps.canary)) {
+          if (!(await emit(intent, modelInfo, { result: "blocked", executed: false, code: "canary_blocked" }))) { stop("receipt_error"); break; }
+          securityCause = "typed_text";
+          stop("security_stop");
+          break;
+        }
+
+        let tool: Awaited<ReturnType<ToolPort["prepare"]>>;
+        try { tool = await withinDeadline(deps.tools.prepare(intent.name, runSignal)); }
+        catch (error) {
+          if (stopIfStopped()) break;
+          const raw = errorCode(error);
+          const code = typeof raw === "string" && /^[a-z_]{1,64}$/.test(raw) ? raw : "tool_failed";
+          history.push(summarizeIntent(currentTurn, intent, "failed", code));
+          if (!(await emit(intent, modelInfo, { result: "blocked", executed: false, code }))) { stop("receipt_error"); break; }
+          continue;
+        }
+
+        const risky = classifyToolCall(tool.tool, tool.annotations);
+        let astraAllowed = false;
+        if (risky !== "none") {
+          if (!deps.approvals) {
+            history.push(summarizeIntent(currentTurn, intent, "failed", "approval_required"));
+            if (!(await emit(intent, modelInfo, { result: "blocked", executed: false, code: "approval_required" }))) { stop("receipt_error"); break; }
+            stop("needs_owner", { type: "message", text: "I stopped because this tool call needs your approval, and approvals are not available in this run." });
+            break;
+          }
+          pauseDeadline();
+          let answer;
+          try {
+            answer = await deps.approvals.request({
+              agentId: deps.agent.id, runId: receipts?.runId ?? null, actionClass: risky,
+              site: tool.host, controlName: `${tool.serverKey}.${tool.tool}`.slice(0, 120), signal: runSignal, astra: deps.astra === true,
+            });
+          } catch {
+            resumeDeadline(0);
+            if (!stopIfStopped()) stop("needs_owner", { type: "message", text: "I stopped because the approval request could not be completed." });
+            break;
+          }
+          resumeDeadline(answer.waitedMs);
+          if (answer.reason === "aborted") { stopIfStopped(); break; }
+          if (answer.decision === "deny") {
+            const code = answer.reason === "timeout" ? "approval_timeout" : "approval_denied";
+            history.push(summarizeIntent(currentTurn, intent, "failed", code));
+            if (!(await emit(intent, modelInfo, { result: "blocked", executed: false, code }))) { stop("receipt_error"); break; }
+            stop("needs_owner", { type: "message", text: answer.reason === "timeout"
+              ? "I stopped because this action was not approved in time."
+              : "I stopped because you denied this action." });
+            break;
+          }
+          astraAllowed = answer.reason === "astra";
+        }
+
+        try {
+          const result = await withinDeadline(tool.invoke(args, runSignal));
+          toolResults.push({ name: intent.name, is_error: result.isError, text: result.text });
+          if (toolResults.length > 3) toolResults.splice(0, toolResults.length - 3);
+          steps.push({ index: steps.length + 1, intent, executed: true, groundingMethod: null, grounded: null, verified: false, ...modelInfo });
+          history.push(summarizeIntent(currentTurn, intent));
+          const code = result.isError ? "tool_error" : astraAllowed ? "astra_allowed" : null;
+          if (!(await emit(intent, modelInfo, { result: "executed", executed: true, code }))) { stop("receipt_error"); break; }
+        } catch (error) {
+          if (stopIfStopped()) break;
+          const raw = errorCode(error);
+          const code = typeof raw === "string" && /^[a-z_]{1,64}$/.test(raw) ? raw : "tool_failed";
+          if (code === "canary_blocked") {
+            if (!(await emit(intent, modelInfo, { result: "blocked", executed: false, code }))) { stop("receipt_error"); break; }
+            securityCause = "typed_text";
+            stop("security_stop");
+            break;
+          }
+          history.push(summarizeIntent(currentTurn, intent, "failed", code));
+          if (!(await emit(intent, modelInfo, { result: "failed", executed: false, code }))) { stop("receipt_error"); break; }
+        }
+        continue;
+      }
+
+      // TASK-073. Shell commands run as the agent inside its private namespace. The command is canary-scanned and never
+      // stored in a receipt or checkpoint; output is untrusted and only reaches the model.
+      if (intent.action === "shell") {
+        if (!allowed.has("shell") || !deps.shell) {
+          stop("needs_owner", { type: "message", text: notAllowedText("shell") });
+          break;
+        }
+        if (deps.canary && containsCanary(intent.command, deps.canary)) {
+          if (!(await emit(intent, modelInfo, { result: "blocked", executed: false, code: "canary_blocked" }))) { stop("receipt_error"); break; }
+          securityCause = "typed_text";
+          stop("security_stop");
+          break;
+        }
+        let shellResult;
+        try {
+          shellResult = await withinDeadline(deps.shell.run({
+            command: intent.command,
+            ...(intent.cwd ? { cwd: intent.cwd } : {}),
+            ...(intent.timeout ? { timeout: intent.timeout } : {}),
+          }, runSignal));
+        } catch (error) {
+          if (stopIfStopped()) break;
+          const raw = errorCode(error);
+          const code = typeof raw === "string" && /^[a-z_]{1,64}$/.test(raw) ? raw : "shell_failed";
+          history.push(summarizeIntent(currentTurn, intent, "failed", code));
+          if (!(await emit(intent, modelInfo, { result: "failed", executed: false, code }))) { stop("receipt_error"); break; }
+          continue;
+        }
+        const expectation = checkShellExpect(intent.expect, shellResult);
+        const code = shellResult.timedOut ? "timeout" : shellResult.exit !== 0 ? "exit_nonzero" : expectation === "fail" ? "expect_failed" : null;
+        toolResults.push({ name: `shell:${intent.command.trim().split(/[ \t]+/)[0] ?? ""}`.slice(0, 200), is_error: shellResult.exit !== 0, text: formatShellResult(shellResult) });
+        if (toolResults.length > 3) toolResults.splice(0, toolResults.length - 3);
+        steps.push({ index: steps.length + 1, intent, executed: true, groundingMethod: null, grounded: null, verified: false, ...modelInfo });
+        history.push(summarizeIntent(currentTurn, intent, "executed", code ?? undefined));
+        if (!(await emit(intent, modelInfo, { result: "executed", executed: true, code, exit: shellResult.exit, timeout: shellResult.timedOut }))) { stop("receipt_error"); break; }
         continue;
       }
 
@@ -533,6 +763,8 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
         expect: "expect" in intent ? intent.expect : "",
       });
       let receiptBase = { target: record.grounded, groundingMethod: record.groundingMethod, before: shot };
+      // TASK-051. Set only for a step the approval gate auto-allowed, so its receipt says what ran unattended.
+      let astraAllowed = false;
       if (risky !== "none") {
         if (!deps.approvals) {
           steps.push(record);
@@ -547,6 +779,7 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
           answer = await deps.approvals.request({
             agentId: deps.agent.id, runId: receipts?.runId ?? null, actionClass: risky,
             site: hostFromUrl(snapshot?.href), controlName: record.grounded?.name ?? "this action", signal: runSignal,
+            astra: deps.astra === true,
           });
         } catch {
           resumeDeadline(0);
@@ -565,6 +798,7 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
             : "I stopped because you denied this action." });
           break;
         }
+        astraAllowed = answer.reason === "astra";
 
         // The answer can arrive long after the screenshot the request was based on. Read the page again and re-ground.
         let freshShot: Screenshot;
@@ -611,7 +845,8 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
         if (!gate.allowed) {
           steps.push(record);
           emitted = true;
-          if (!(await emit(intent, modelInfo, { ...receiptBase, gate: gate.evidence, result: "blocked", executed: false, code: gate.evidence[gate.evidence.length - 1]?.code ?? "blocked" }))) { stop("receipt_error"); break; }
+          const blockedCode = gate.evidence[gate.evidence.length - 1]?.code ?? "blocked";
+          if (!(await emit(intent, modelInfo, { ...receiptBase, gate: gate.evidence, result: "blocked", executed: false, code: astraAllowed ? "astra_allowed" : blockedCode }))) { stop("receipt_error"); break; }
           stop("needs_owner", { type: "message", text: "I stopped before input because independent target checks did not agree. Please take over this step." });
           break;
         }
@@ -629,7 +864,7 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
         // A page-structure check takes no screenshot; the receipt still needs the "after" picture.
         if (receipts && !afterShot) { try { afterShot = await deps.desktop.screenshot(); } catch { afterShot = null; } }
         emitted = true;
-        if (!(await emit(intent, modelInfo, { ...receiptBase, gate: record.gate, verification: record.verification, after: afterShot, result: record.verification.status, executed: true }))) { stop("receipt_error"); break; }
+        if (!(await emit(intent, modelInfo, { ...receiptBase, gate: record.gate, verification: record.verification, after: afterShot, result: record.verification.status, executed: true, code: astraAllowed ? "astra_allowed" : undefined }))) { stop("receipt_error"); break; }
         if (stopIfStopped()) break;
         if (usage.inputTokens + usage.outputTokens >= tokenLimit) { stop("token_limit"); break; }
         if (!record.verified) {
@@ -640,9 +875,10 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
         if (record.executed && !record.verification) record.verification = { status: "unknown", sam: services.samState, evidence: [] };
         if (receipts && !emitted) {
           const code = errorCode(error);
+          const safeCode = typeof code === "string" && /^[a-z_]{1,64}$/.test(code) ? code : "desktop_error";
           if (!(await emit(intent, modelInfo, { ...receiptBase, gate: record.gate, verification: record.verification, after: afterShot,
             result: record.executed ? record.verification?.status ?? "unknown" : "failed", executed: record.executed,
-            code: typeof code === "string" && /^[a-z_]{1,64}$/.test(code) ? code : "desktop_error" }))) { stop("receipt_error"); break; }
+            code: astraAllowed ? "astra_allowed" : safeCode }))) { stop("receipt_error"); break; }
         }
         if (stopForCost(error) || stopIfStopped()) break;
         if (errorCode(error) === "security") { securityCause = "cancelled"; stop("security_stop"); break; }

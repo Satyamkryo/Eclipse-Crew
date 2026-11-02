@@ -1,6 +1,7 @@
 import "server-only";
 
 import { encryptSecret } from "../security/encryption";
+import { keyHint } from "../security/key-hint";
 import { normalizeBaseUrl } from "../providers/transport";
 import type { ModelSettingsStore, StoredModelRole } from "./data";
 import { ModelSettingsError } from "./errors";
@@ -36,11 +37,6 @@ export type ModelSettings = {
   main: MainModelSettings;
   sam: SamModelSettings;
 };
-
-function keyHint(apiKey: string): string {
-  const characters = Array.from(apiKey);
-  return `••••${characters.length > 4 ? characters.slice(-4).join("") : ""}`;
-}
 
 function encryptedFields(apiKey: string | undefined) {
   if (!apiKey) return {};
