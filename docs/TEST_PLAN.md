@@ -66,6 +66,8 @@ Rules for AI agents:
 
 ## Workspace shell (TASK-018)
 
+- [ ] Nov 3 UI follow-up: check desktop header spacing, aligned pane headers, the thin divider with a 24 px drag target, six tabs fitting at 375/380 px, and slim dark scrollbars. Typecheck and focused ESLint passed in the working checkout; live browser verification pending.
+
 - [x] Real browser at 1280/1440 px shows the 260 px agent pane, flexible chat and 380 px–50% right panel; pointer and keyboard resizing stay in bounds, including after soft navigation
 - [x] All six right-panel tabs fit at 380 and 375 px, navigate by Arrow/Home/End, control the existing panel, and expose visible focus
 - [x] Tablet keeps a 56 px agent rail and opens accessible agent/panel sheets with trapped focus, Escape/close, and focus return; selecting an agent opens its live panel
