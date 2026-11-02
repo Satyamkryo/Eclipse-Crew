@@ -14,6 +14,8 @@ type MainSettings = {
   model: string;
   hasKey: boolean;
   keyHint: string | null;
+  routing: "fixed" | "auto";
+  hardModel: string | null;
 };
 
 type SamSettings = {
@@ -94,6 +96,7 @@ export function ModelSettings({ initial, csrfToken }: { initial: Settings; csrfT
   const router = useRouter();
   const [settings, setSettings] = useState(initial);
   const [mainKind, setMainKind] = useState<MainSettings["kind"]>(initial.main.kind);
+  const [routing, setRouting] = useState<MainSettings["routing"]>(initial.main.routing);
   const [samMode, setSamMode] = useState<SamSettings["mode"]>(initial.sam.mode);
   const [useMainKey, setUseMainKey] = useState(initial.sam.useMainKey || (!initial.sam.configured && initial.sam.canUseMainKey));
   const [action, setAction] = useState<{ card: Card; kind: "save" | "test" } | null>(null);
@@ -126,6 +129,8 @@ export function ModelSettings({ initial, csrfToken }: { initial: Settings; csrfT
         body: JSON.stringify({
           kind: mainKind,
           model: data.get("model"),
+          routing,
+          ...(routing === "auto" ? { hardModel: data.get("hardModel") } : {}),
           ...(mainKind === "openai-compatible" ? { baseUrl: data.get("baseUrl") } : {}),
           ...(apiKey ? { apiKey } : {}),
         }),
@@ -143,6 +148,7 @@ export function ModelSettings({ initial, csrfToken }: { initial: Settings; csrfT
       }
       setSettings(result as Settings);
       setMainKind((result as Settings).main.kind);
+      setRouting((result as Settings).main.routing);
       const keyInput = form.querySelector<HTMLInputElement>("input[name=apiKey]");
       if (keyInput) keyInput.value = "";
       setStatuses((current) => ({ ...current, main: "Main AI saved." }));
@@ -266,6 +272,27 @@ export function ModelSettings({ initial, csrfToken }: { initial: Settings; csrfT
             <input id="main-model" name="model" required maxLength={200} defaultValue={settings.main.model}
               spellCheck={false} autoComplete="off" className={cn(inputClass, "font-mono")} />
           </div>
+          <div className="flex flex-col gap-2">
+            <label htmlFor="main-routing" className="text-sm font-medium">Routing</label>
+            <select id="main-routing" name="routing" value={routing} onChange={(event) => setRouting(event.target.value as MainSettings["routing"])}
+              aria-describedby="main-routing-hint" className={inputClass}>
+              <option value="fixed">Fixed: always use this model</option>
+              <option value="auto">Auto: use a stronger model for hard steps</option>
+            </select>
+            <p id="main-routing-hint" className="text-xs text-muted-foreground">
+              Fixed never uses a second model. Auto switches only after a step fails or repeats, at most 5 times per run, and falls back to this model if the other one is unavailable.
+            </p>
+          </div>
+          {routing === "auto" && (
+            <div className="flex flex-col gap-2">
+              <label htmlFor="main-hard-model" className="text-sm font-medium">Hard-step model</label>
+              <input id="main-hard-model" name="hardModel" required maxLength={200} defaultValue={settings.main.hardModel ?? ""}
+                placeholder="muse-wonder-1.0" spellCheck={false} autoComplete="off" aria-describedby="main-hard-hint" className={cn(inputClass, "font-mono")} />
+              <p id="main-hard-hint" className="text-xs text-muted-foreground">
+                Uses the same provider and key. Muse Wonder has no Contributor mode, so any other model is billed at its standard rate and is not covered by Contributor pricing or data terms.
+              </p>
+            </div>
+          )}
           <div className="flex flex-col gap-2">
             <label htmlFor="main-api-key" className="text-sm font-medium">API key</label>
             <input id="main-api-key" name="apiKey" type="password" maxLength={16384} autoComplete="new-password"

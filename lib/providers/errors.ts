@@ -11,6 +11,7 @@ export type ProviderErrorCode =
   | "provider_unavailable"
   | "http_error"
   | "network_error"
+  | "aborted"
   | "timeout"
   | "response_too_large"
   | "invalid_response"
@@ -29,6 +30,7 @@ const messages: Record<ProviderErrorCode, string> = {
   provider_unavailable: "The provider is unavailable.",
   http_error: "The provider returned an HTTP error.",
   network_error: "The provider request failed.",
+  aborted: "The provider request was cancelled.",
   timeout: "The provider request exceeded its time limit.",
   response_too_large: "The provider response exceeded the size limit.",
   invalid_response: "The provider response was invalid.",

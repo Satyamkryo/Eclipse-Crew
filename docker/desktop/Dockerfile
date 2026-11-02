@@ -37,9 +37,10 @@ RUN curl --fail --location --proto '=https' --tlsv1.2 --max-time 300 \
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 HOME=/tmp
 WORKDIR /opt/eclipse/desktop
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund \
+RUN npm ci --omit=dev --omit=optional --ignore-scripts --no-audit --no-fund \
     && npm cache clean --force
-COPY check-tools.mjs smoke.mjs bootstrap.py agent-store.mjs agent-admin.mjs supervisor.mjs session-manager.mjs session-worker.mjs cookie-snapshot.mjs vnc-session.mjs rfb-bridge.mjs seccomp_profile.json controller-schema.mjs controller.mjs controller-channel.mjs ./
+COPY check-tools.mjs smoke.mjs bootstrap.py agent-store.mjs agent-admin.mjs supervisor.mjs session-manager.mjs session-worker.mjs cookie-snapshot.mjs vnc-session.mjs rfb-bridge.mjs seccomp_profile.json controller-schema.mjs controller.mjs controller-channel.mjs file-server.mjs inbox-writer.mjs outbox-reader.mjs file-tools.mjs checkpoint-tools.mjs checkpoint-restore.mjs page-snapshot.mjs teach-capture.mjs teach-safety.mjs ./
+COPY mock-vendor ./mock-vendor
 RUN cp /etc/passwd /opt/eclipse/desktop/base-passwd \
     && cp /etc/group /opt/eclipse/desktop/base-group \
     && mkdir -p /downloads \

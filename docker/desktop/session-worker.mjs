@@ -1,3 +1,5 @@
+import { TeachCapture } from "./teach-capture.mjs";
+import { TeachSchema } from "./controller-schema.mjs";
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtemp, mkdir, writeFile, readFile, lstat, readlink, unlink, readdir, realpath, rm, open } from "node:fs/promises";
@@ -8,10 +10,12 @@ import { setTimeout as delay } from "node:timers/promises";
 import { validateIds, validateRegistry } from "./agent-store.mjs";
 import { OperationSchema, WorkerOperationSchema, resultFor, validatePng } from "./controller-schema.mjs";
 import { fingerprint, readSnapshot, sessionCookies, writeSnapshot } from "./cookie-snapshot.mjs";
+import { checkOpenable } from "./outbox-reader.mjs";
+import { takeSnapshot, verifySnapshot } from "./page-snapshot.mjs";
 
 const COOKIE_SAVE_INTERVAL_MS = 30_000;
 const fail = (code) => { throw Error(code); };
-export const SESSION_FAILURES = new Set(["invalid_session_record", "agent_not_ready", "worker_identity_invalid", "worker_capabilities_invalid", "worker_security_invalid", "unsafe_session_path", "profile_busy_or_unsafe", "display_conflict", "xauthority_failed", "display_start_failed", "display_authentication_failed", "window_manager_start_failed", "browser_start_failed", "session_component_failed", "session_start_failed", "private_ipc_required"]);
+export const SESSION_FAILURES = new Set(["invalid_session_record", "agent_not_ready", "worker_identity_invalid", "worker_capabilities_invalid", "worker_security_invalid", "unsafe_session_path", "profile_busy_or_unsafe", "display_conflict", "xauthority_failed", "display_start_failed", "display_authentication_failed", "window_manager_start_failed", "browser_start_failed", "session_component_failed", "session_start_failed", "private_ipc_required", "egress_not_configured"]);
 export function runtimePrefix(uid) {
   if (!Number.isInteger(uid) || uid < 20000 || uid > 59999) fail("worker_identity_invalid");
   // Chromium adds its own directory and SingletonSocket; leave room below AF_UNIX's 108-byte limit.
@@ -74,8 +78,9 @@ async function cleanDisplay(record, tracked) {
   catch (e) { if (e.code !== "ENOENT") throw e; }
   await unlink(lock);
 }
-export async function startSession(input, { onFailure = () => {}, onRuntime = () => {} } = {}) {
+export async function startSession(input, { onFailure = () => {}, onRuntime = () => {}, egress = null } = {}) {
   const record = sessionRecord(input); const uid = process.getuid();
+  if (egress !== null && (typeof egress !== "string" || !/^[0-9a-f]{64}$/.test(egress))) fail("egress_not_configured");
   if (uid !== record.uid || process.getgid() !== record.gid || process.getgroups().some((group) => group !== record.gid)) fail("worker_identity_invalid");
   const status = await readFile("/proc/self/status", "utf8");
   for (const field of ["CapEff", "CapPrm", "CapInh", "CapAmb", "CapBnd"]) if (!new RegExp(`^${field}:\\s+0+$`, "m").test(status)) fail("worker_capabilities_invalid");
@@ -136,6 +141,9 @@ export async function startSession(input, { onFailure = () => {}, onRuntime = ()
     const { chromium } = await import("playwright-core");
     try { context = await chromium.launchPersistentContext(profile, { executablePath: "/opt/chromium/chrome-linux/chrome", chromiumSandbox: true,
       headless: false, viewport: null, env, downloadsPath: record.downloads, timeout: 15000,
+      // TASK-045: the token is Playwright's proxy password (Chromium answers the 407 in memory, never argv/env).
+      // Loopback bypass keeps the mock vendor fixture reachable; shared loopback is a TASK-071 limit.
+      ...(egress ? { proxy: { server: "http://egress-proxy:4321", username: record.agentId, password: egress, bypass: "localhost,127.0.0.1,[::1]" } } : {}),
       args: ["--window-position=0,0", "--window-size=1024,768", "--disable-dev-shm-usage", "--disable-background-networking", "--no-first-run"] }); }
     catch (cause) { throw Error("browser_start_failed", { cause }); }
     try {
@@ -145,7 +153,7 @@ export async function startSession(input, { onFailure = () => {}, onRuntime = ()
     try { savedCookies = fingerprint(sessionCookies(await context.cookies())); } catch { savedCookies = ""; }
     cookieTimer = setInterval(() => { void saveCookies(); }, COOKIE_SAVE_INTERVAL_MS); cookieTimer.unref();
     context.once("close", () => { if (!closing) onFailure("session_component_failed"); }); ready = true;
-    return { context, env, display: record.display, directory, close };
+    return { context, env, display: record.display, directory, home: record.home, close };
   } catch (e) { await close().catch(() => {}); throw e; }
 }
 
@@ -310,7 +318,13 @@ async function performOperation(session, command, signal, trustedOwnerInput) {
     if (!trustedOwnerInput && (operation === "input.type" || operation === "input.key")) await requireSafeFocus(session.context, signal);
     if (signal.aborted) throw operationError("uncertain_outcome");
     let args, input;
-    if (operation === "input.click") args = ["mousemove", "--sync", String(command.x), String(command.y), "click", "--clearmodifiers", "--repeat", command.button === "double" ? "2" : "1", "--delay", "100", command.button === "right" ? "3" : "1"];
+    // X11 preserves the move/click order. --sync would hang if the pointer is already here.
+    if (operation === "input.click") args = ["mousemove", String(command.x), String(command.y), "click", "--clearmodifiers", "--repeat", command.button === "double" ? "2" : "1", "--delay", "100", command.button === "right" ? "3" : "1"];
+    else if (operation === "input.drag") {
+      try { await desktopProcess(session, "xdotool", ["mousemove",String(command.x),String(command.y),"mousedown","1","mousemove",String(command.toX),String(command.toY)], {signal}); }
+      finally { await desktopProcess(session,"xdotool",["mouseup","1"]).catch(()=>{}); }
+      return {ok:true};
+    }
     else if (operation === "input.type") { args = ["type", "--clearmodifiers", "--delay", "0", "--file", "-"]; input = Buffer.from(command.text, "utf8"); }
     else if (operation === "input.key") args = ["key", "--clearmodifiers", "--delay", "0", command.key.split("+").map((key) => xKeys[key] ?? key).join("+")];
     else args = ["click", "--clearmodifiers", "--repeat", String(command.count), "--delay", "10", String({ up: 4, down: 5, left: 6, right: 7 }[command.direction])];
@@ -319,6 +333,18 @@ async function performOperation(session, command, signal, trustedOwnerInput) {
   }
   const pages = session.context.pages();
   if (pages.length > 32) throw operationError("too_many_pages");
+  if (operation === "file.open") {
+    // Only a plain, single-link outbox file of a kind the browser shows safely (see outbox-reader.mjs).
+    let entry;
+    try { entry = await checkOpenable(`${session.home}/outbox`, command.name); }
+    catch (cause) { throw operationError(cause?.code === "type_blocked" ? "forbidden_target" : "target_not_found"); }
+    if (signal.aborted) throw operationError("uncertain_outcome");
+    const page = await session.context.newPage();
+    try { await page.goto(`file://${session.home}/outbox/${encodeURIComponent(entry.name)}`, { timeout: OPERATION_TIMEOUT_MS, waitUntil: "commit" }); }
+    catch (cause) { if (!/ERR_ABORTED|Download is starting/.test(String(cause?.message))) { await page.close().catch(() => {}); throw operationError("operation_failed"); } }
+    await page.bringToFront().catch(() => {});
+    return { ok: true };
+  }
   if (operation === "browser.pages") return { pages: await Promise.all(pages.map(async (page) => ({
     pageId: pageId(page), href: safeHref(page.url()).slice(0, 2048), title: (await page.title()).slice(0, 1024),
   }))), source_tag: "tool", untrusted: true };
@@ -329,6 +355,15 @@ async function performOperation(session, command, signal, trustedOwnerInput) {
     for (const candidate of pages) if (await candidate.evaluate(() => document.hasFocus())) { page = candidate; break; }
   }
   if (!page) throw operationError("page_not_found");
+  if (operation === "page.snapshot" || operation === "page.verify") {
+    // --sync can wait forever when already at this point. takeSnapshot awaits the measured
+    // browser mouse event itself and tries another point when there was no movement.
+    const move = (x, y) => desktopProcess(session, "xdotool", ["mousemove", String(x), String(y)], { signal });
+    const snapshot = await takeSnapshot({ page, move, fail: operationError });
+    if (signal.aborted) throw operationError("uncertain_outcome");
+    if (operation === "page.verify") return { ...verifySnapshot(snapshot, command.predicate), source_tag: "tool", untrusted: true };
+    return { pageId: pageId(page), href: safeHref(snapshot.url).slice(0, 2048), title: snapshot.title, frames: snapshot.frames, elements: snapshot.elements, source_tag: "tool", untrusted: true };
+  }
   const locator = page.locator(command.selector);
   if (await locator.count() !== 1) throw operationError("ambiguous_locator");
   const target = await locator.elementHandle({ timeout: OPERATION_TIMEOUT_MS, signal });
@@ -353,7 +388,8 @@ export async function dispatchOperation(session, operation, params = {}, trusted
   const parsed = OperationSchema.safeParse({ ...params, operation });
   if (!parsed.success) throw operationError("invalid_operation");
   const command = parsed.data;
-  return boundedOperation(async (signal) => resultFor(operation, await performOperation(session, command, signal, trustedOwnerInput), command));
+  const run = () => boundedOperation(async (signal) => resultFor(operation, await performOperation(session, command, signal, trustedOwnerInput), command));
+  return trustedOwnerInput && session.teach ? session.teach.around(command, run) : run();
 }
 async function main() {
   if (process.argv[2] === "--terminate") {
@@ -387,11 +423,13 @@ async function main() {
   if (process.argv.length !== 3) fail("private_ipc_required");
   const { readFramed, writeFramed } = await import("./controller-channel.mjs");
   const record = JSON.parse(process.argv[2]); let session; let stopping = false;
+  const frames = readFramed(process.stdin);
   let vnc = null, vncStarting = null;
   const vncAbort = new AbortController();
   const closeVnc = async () => { try { await vnc?.close(); } catch { /* */ } vnc = null; };
   const finish = async () => {
     if (stopping) return; stopping = true;
+    session?.teach?.abort("session_stopped");
     vncAbort.abort();
     await vncStarting?.catch(() => {});
     await closeVnc();
@@ -406,10 +444,19 @@ async function main() {
 
   sessionRecord(record);
 
+  // TASK-045: the supervisor sends the per-agent egress token as the first frame, before any command.
+  const first = await frames.next();
+  const handshake = first.value;
+  if (first.done || !handshake || typeof handshake !== "object" || Array.isArray(handshake) ||
+      Object.keys(handshake).sort().join() !== "command,token" || handshake.command !== "egress" ||
+      !(handshake.token === null || (typeof handshake.token === "string" && /^[0-9a-f]{64}$/.test(handshake.token)))) fail("egress_not_configured");
+
   session = await startSession(record, {
+    egress: handshake.token,
     onRuntime: (directory) => { void sendMsg({ state: "runtime", directory }); },
     onFailure: () => { void sendMsg({ state: "failed", reason: "session_component_failed" }).then(() => finish()); },
   });
+  session.teach = new TeachCapture(session.context, {env:session.env});
   if (stopping) { await session.close(); return; }
 
   try {
@@ -429,9 +476,20 @@ async function main() {
 
   // Now listen for operation commands from supervisor via stdin
   try {
-    for await (const message of readFramed(process.stdin)) {
+    let work = Promise.resolve();
+    for await (const message of frames) {
+      if (message?.command === "teach-abort" && Object.keys(message).length === 1) { session.teach.abort("lease_lost"); continue; }
+      if (message?.command === "stop" && Object.keys(message).length === 1) { session.teach.abort("session_stopped"); void finish(); break; }
+      work = work.then(async () => {
       if (message?.command === "stop" && Object.keys(message).length === 1) {
-        void finish(); break;
+        void finish(); return;
+      } else if (message?.command === "teach-abort") {
+        session.teach.abort("lease_lost");
+      } else if (message?.command === "teach") {
+        const parsed = TeachSchema.safeParse(message.params);
+        if (!parsed.success || message.requestId !== parsed.data.requestId) throw operationError("invalid_frame");
+        try { await sendMsg({requestId:message.requestId,result:await session.teach.command(parsed.data)}); }
+        catch { await sendMsg({requestId:message.requestId,error:{code:"operation_failed",message:"operation_failed"}}); }
       } else if (message?.command === "operation") {
         const parsed = WorkerOperationSchema.safeParse(message);
         if (!parsed.success) throw operationError("invalid_frame");
@@ -440,12 +498,14 @@ async function main() {
           const result = await dispatchOperation(session, operation, params, ownerInput === true);
           await sendMsg({ requestId, result });
         } catch (err) {
-          const safeCodes = new Set(["invalid_operation", "uncertain_outcome", "desktop_command_failed", "desktop_result_too_large", "sensitive_target", "focused_target_unknown", "too_many_pages", "too_many_frames", "page_not_found", "ambiguous_locator", "target_not_found"]);
+          const safeCodes = new Set(["invalid_operation", "uncertain_outcome", "desktop_command_failed", "desktop_result_too_large", "sensitive_target", "focused_target_unknown", "too_many_pages", "too_many_frames", "page_not_found", "ambiguous_locator", "target_not_found", "grounding_unavailable"]);
           const code = safeCodes.has(err?.code) ? err.code : err?.name === "TimeoutError" ? "uncertain_outcome" : "operation_failed";
           await sendMsg({ requestId, error: { code, message: code } });
         }
       } else throw operationError("invalid_frame");
+      }).catch(() => { void finish(); });
     }
+    await work;
   } catch {
     // stdin ended or errored
     void finish();

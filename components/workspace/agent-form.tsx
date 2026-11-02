@@ -1,4 +1,5 @@
 "use client";
+import { KNOWN_ACTIONS } from "@/lib/agents/actions";
 import { useEffect, useRef, useState } from "react";
 import { LoaderCircle } from "lucide-react";
 import { useRouter } from "next/navigation";
@@ -230,15 +231,15 @@ export function AgentForm({ mode, agentId, csrfToken, initial, onSaved, onCancel
             aria-invalid={errors.tools ? true : undefined}
             aria-describedby={`${prefix}-tools-hint${errors.tools ? ` ${prefix}-tools-error` : ""}`} className={textareaClass} />
         </Field>
-        <Field id={`${prefix}-domains`} label="Domains" error={errors.domains} hint="Comma-separated hostnames, for example example.com. Empty denies every site.">
+        <Field id={`${prefix}-domains`} label="Domains" error={errors.domains} hint="Comma-separated hostnames, for example example.com. A name also covers its subdomains; empty denies every site.">
           <textarea id={`${prefix}-domains`} name="domains" rows={2} defaultValue={initial ? listText(initial.domains) : ""}
             onBlur={(event) => validateOnBlur(event, "domains")}
             aria-invalid={errors.domains ? true : undefined}
             aria-describedby={`${prefix}-domains-hint${errors.domains ? ` ${prefix}-domains-error` : ""}`} className={textareaClass} />
         </Field>
       </div>
-      <Field id={`${prefix}-actions`} label="Actions" error={errors.actions} hint="Comma-separated action types. Empty denies every action.">
-        <textarea id={`${prefix}-actions`} name="actions" rows={2} defaultValue={initial ? listText(initial.actions) : ""}
+      <Field id={`${prefix}-actions`} label="Actions" error={errors.actions} hint={`Comma-separated. Available: ${KNOWN_ACTIONS.join(", ")}. Empty denies every action.`}>
+        <textarea id={`${prefix}-actions`} name="actions" rows={2} defaultValue={initial ? listText(initial.actions) : KNOWN_ACTIONS.join(", ")}
           onBlur={(event) => validateOnBlur(event, "actions")}
           aria-invalid={errors.actions ? true : undefined}
           aria-describedby={`${prefix}-actions-hint${errors.actions ? ` ${prefix}-actions-error` : ""}`} className={textareaClass} />

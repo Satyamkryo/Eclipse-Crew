@@ -61,3 +61,32 @@ export function requireDesktopControlSecret(value: unknown): string {
     );
   return result.data;
 }
+
+export function requireEgressProxySecret(value: unknown = process.env.EGRESS_PROXY_SECRET): string {
+  const result = z.string().regex(/^[0-9a-f]{64}$/).safeParse(value);
+  if (!result.success)
+    throw new Error(
+      "EGRESS_PROXY_SECRET must be a 64-character lowercase hex string. Run npm run egress:secret to generate it.",
+    );
+  return result.data;
+}
+
+export function requireReceiptSigningKey(value: unknown = process.env.RECEIPT_SIGNING_KEY): string {
+  const result = z.string().regex(/^[0-9a-f]{64}$/).safeParse(value);
+  if (!result.success)
+    throw new Error(
+      "RECEIPT_SIGNING_KEY must be a 64-character lowercase hex string. Run npm run receipt-key to generate it.",
+    );
+  return result.data;
+}
+
+export const DEFAULT_MAX_UPLOAD_MB = 250;
+export const ABSOLUTE_MAX_UPLOAD_MB = 1024;
+export function requireMaxUploadBytes(value: unknown = process.env.MAX_UPLOAD_MB): number {
+  if (value === undefined || value === null || value === "") return DEFAULT_MAX_UPLOAD_MB * 1024 * 1024;
+  const result = z.string().regex(/^[1-9][0-9]{0,3}$/).safeParse(value);
+  const megabytes = result.success ? Number(result.data) : 0;
+  if (megabytes < 1 || megabytes > ABSOLUTE_MAX_UPLOAD_MB)
+    throw new Error(`MAX_UPLOAD_MB must be a whole number from 1 to ${ABSOLUTE_MAX_UPLOAD_MB}.`);
+  return megabytes * 1024 * 1024;
+}

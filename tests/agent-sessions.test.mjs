@@ -252,6 +252,60 @@ test("two real graphical agent sessions isolate displays/profiles and survive li
     assert.deepEqual(sandbox, { namespace: true, seccomp: true }); summary.checks.push("real_per_agent_sandbox_desktop_capture_crop_typing_and_sensitive_target_denials");
     const ownerSensitiveInput = JSON.parse(agent(A, `import assert from 'node:assert/strict';import{startSession,dispatchOperation}from'/opt/eclipse/desktop/session-worker.mjs';const s=await startSession(${record});try{const page=s.context.pages()[0];await page.goto('about:blank');await page.setContent('<input id="password" type="password">');await page.bringToFront();await page.locator('#password').focus();await assert.rejects(dispatchOperation(s,'input.type',{text:'agent-denied'}),e=>e.code==='sensitive_target');assert.equal(await page.locator('#password').inputValue(),'');await dispatchOperation(s,'input.type',{text:'OwnerSynthetic42'},true);assert.equal(await page.locator('#password').inputValue(),'OwnerSynthetic42');await dispatchOperation(s,'input.key',{key:'Enter'},true);assert.equal(await page.locator('#password').inputValue(),'OwnerSynthetic42');console.log(JSON.stringify({ownerSensitiveInput:true}));}finally{await s.close();}`));
     assert.deepEqual(ownerSensitiveInput, { ownerSensitiveInput: true }); summary.checks.push("trusted_owner_type_and_key_input_allowed_on_synthetic_sensitive_target");
+    summary.phase = "page_snapshot";
+    // Real Chromium: the snapshot lists only visible, unobstructed, non-secret controls, and the point it implies lands on the control
+    // wherever the window sits on the screen and however the page is scrolled.
+    const fixtureHtml = '<!doctype html><body style="margin:0;height:4000px">' +
+      '<button style="position:absolute;left:100px;top:100px;width:120px;height:40px" onclick="document.title=\'saved\'">Save</button>' +
+      '<a href="#" style="position:absolute;left:300px;top:100px;display:block;width:100px;height:30px" onclick="document.title=\'draft\';return false">Save draft</a>' +
+      '<button style="position:absolute;left:100px;top:200px;width:120px;height:40px" onclick="document.title=\'covered\'">Covered</button>' +
+      '<div style="position:absolute;left:90px;top:190px;width:140px;height:60px;background:#ddd"></div>' +
+      '<button style="position:absolute;left:100px;top:2000px;width:120px;height:40px" onclick="document.title=\'below\'">Far below</button>' +
+      '<input type="password" aria-label="Account password" style="position:absolute;left:100px;top:300px">' +
+      '<input autocomplete="one-time-code" aria-label="Sign in code" style="position:absolute;left:300px;top:300px">' +
+      '<input aria-label="Email address" value="private@example.com" style="position:absolute;left:100px;top:340px">' +
+      '<a href="#" style="position:absolute;left:100px;top:380px;display:block;width:150px;height:24px">Forgot password?</a>' +
+      '<iframe srcdoc="<button>Inner</button>" style="position:absolute;left:100px;top:430px;width:200px;height:60px"></iframe></body>';
+    const snapshotCheck = JSON.parse(agent(A, `import assert from 'node:assert/strict';import{spawnSync}from'node:child_process';import{startSession,dispatchOperation}from'/opt/eclipse/desktop/session-worker.mjs';
+      const s=await startSession(${record});const pause=(ms)=>new Promise((r)=>setTimeout(r,ms));
+      try{const page=s.context.pages()[0];await page.goto('about:blank');await page.setContent(${JSON.stringify(fixtureHtml)});await page.bringToFront();await pause(300);
+        let readCount=0;const read=async()=>{readCount++;const r=await dispatchOperation(s,'page.snapshot').catch(e=>{throw Error('snapshot_'+readCount+'_'+e.code);});assert.equal(r.source_tag,'tool');assert.equal(r.untrusted,true);return r;};
+        const names=(r)=>r.elements.map((e)=>e.name);
+        const clickNamed=async(r,name,expected)=>{const e=r.elements.find((x)=>x.name===name);assert.ok(e,'listed: '+name);await page.evaluate(()=>{document.title='none';});
+          await dispatchOperation(s,'input.click',{button:'left',x:e.x+Math.floor(e.width/2),y:e.y+Math.floor(e.height/2)});await pause(250);assert.equal(await page.title(),expected,'click on '+name);return e;};
+        const first=await read();
+        assert.deepEqual(names(first).sort(),['Email address','Forgot password?','Save','Save draft']);
+        assert.equal(first.frames,1);assert.ok(first.elements.every((e,i)=>e.ref===i+1));
+        assert.ok(!JSON.stringify(first).includes('private@example.com'),'no field value in the snapshot');
+        const verify=async(kind,value)=>dispatchOperation(s,'page.verify',{predicate:{kind,value}}).catch(e=>{throw Error('verify_'+kind+'_'+value+'_'+e.code);});
+        assert.equal((await verify('control_present','Save')).status,'pass');
+        assert.equal((await verify('control_present','Missing')).status,'fail');
+        for(const name of ['Covered','Far below','Account password','Sign in code','Inner']) assert.equal((await verify('control_present',name)).status,'fail',name+' excluded');
+        assert.equal((await verify('control_absent','Missing')).status,'pass');
+        await page.locator('input[aria-label="Email address"]').focus();
+        const focused=await read();assert.equal(focused.elements.find(e=>e.name==='Email address').focused,true);
+        assert.ok(!JSON.stringify(focused).includes('private@example.com'));
+        await page.locator('input[type="password"]').focus();
+        assert.ok(!(await read()).elements.some(e=>e.focused),'sensitive focus not exposed');
+        await page.evaluate(()=>{const duplicate=document.createElement('button');duplicate.textContent='Save';duplicate.style.cssText='position:absolute;left:500px;top:100px;width:100px;height:30px';duplicate.id='verify-duplicate';document.body.append(duplicate);});
+        assert.equal((await verify('control_present','Save')).status,'unknown');
+        await page.locator('#verify-duplicate').evaluate(el=>el.remove());
+
+        const save=await clickNamed(first,'Save','saved');await clickNamed(first,'Save draft','draft');
+        const origin={x:save.x-100,y:save.y-100};
+        const moved=spawnSync('xdotool',['getactivewindow','windowmove','61','37'],{env:s.env,encoding:'utf8',timeout:3000});assert.equal(moved.status,0,'window moved: '+moved.stderr);await pause(500);
+        const second=await read();const save2=second.elements.find((e)=>e.name==='Save');assert.ok(save2);
+        assert.notDeepEqual({x:save2.x-100,y:save2.y-100},origin,'the window really moved');
+        await clickNamed(second,'Save','saved');
+        await page.evaluate(()=>window.scrollTo(0,1900));await pause(300);
+        const third=await read();assert.ok(names(third).includes('Far below'));assert.ok(!names(third).includes('Save'));
+        await clickNamed(third,'Far below','below');
+        await page.evaluate(()=>window.scrollTo(0,0));
+        await page.evaluate(()=>{const lots=document.createElement('div');for(let i=0;i<200;i++){const b=document.createElement('button');b.textContent='Item '+i;b.style.cssText='position:absolute;left:'+(500+(i%4)*120)+'px;top:'+(10+Math.floor(i/4)*14)+'px;width:100px;height:12px';lots.append(b);}document.body.append(lots);});
+        const capped=await read();assert.ok(capped.elements.length<=150);
+        console.log(JSON.stringify({listed:names(first).length,origin,movedOrigin:{x:save2.x-100,y:save2.y-100},capped:capped.elements.length}));
+      }finally{await s.close();}`));
+    assert.ok(snapshotCheck.listed === 4 && snapshotCheck.capped <= 150, JSON.stringify(snapshotCheck)); summary.checks.push("page_snapshot_lists_only_visible_unobstructed_non_secret_controls_and_clicks_land_at_any_window_position_and_scroll_with_closed_postconditions_and_focus");
     summary.outcome = "passed"; summary.phase = "complete";
   } catch (error) { summary.reason = `failed_${summary.phase}`; throw error; }
   finally {

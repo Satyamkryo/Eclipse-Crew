@@ -78,6 +78,40 @@ if (process.argv.includes("--inside")) {
     await database.execute(sql`GRANT SELECT, INSERT ON public.messages TO eclipse_app`);
     await database.execute(sql`GRANT SELECT, INSERT, UPDATE, DELETE ON public.providers TO eclipse_app`);
     await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.model_roles TO eclipse_app`);
+    // Receipts are append-only: no UPDATE or DELETE on steps. The only UPDATE on runs is the one-time seal.
+    await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.runs TO eclipse_app`);
+    await database.execute(sql`GRANT SELECT, INSERT ON public.steps TO eclipse_app`);
+    // TASK-031: display evidence next to receipts, insert-only like steps.
+    await database.execute(sql`GRANT SELECT, INSERT ON public.step_evidence TO eclipse_app`);
+    // TASK-032: checkpoint pointers are append-only as well.
+    await database.execute(sql`GRANT SELECT, INSERT ON public.checkpoints TO eclipse_app`);
+    // TASK-034: spend history is append-only. Owners can update prices, never rewrite the ledger.
+    await database.execute(sql`GRANT SELECT, INSERT ON public.cost_entries TO eclipse_app`);
+    await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.model_prices TO eclipse_app`);
+    // TASK-041: saved replay scripts are immutable. The owner can list, create and delete them, never edit one.
+    await database.execute(sql`GRANT SELECT, INSERT, DELETE ON public.replay_scripts TO eclipse_app`);
+    // TASK-042: run metadata is written once when a run starts, then read by the Jobs page.
+    await database.execute(sql`GRANT SELECT, INSERT ON public.run_meta TO eclipse_app`);
+    // TASK-044: approved replay versions are append-only; proposals can only be decided (status and decided_at).
+    await database.execute(sql`GRANT SELECT, INSERT ON public.replay_script_versions TO eclipse_app`);
+    await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.replay_script_proposals TO eclipse_app`);
+    // TASK-038: owner confirmation inserts and updates routine schedules; the scheduler reads them later.
+    await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.routines TO eclipse_app`);
+    // TASK-039: pg-boss schemas are migrated in advance; runtime gets queue DML only, never DDL or ownership.
+    await database.execute(sql`GRANT USAGE ON SCHEMA pgboss TO eclipse_app`);
+    await database.execute(sql`GRANT USAGE ON TYPE pgboss.job_state TO eclipse_app`);
+    await database.execute(sql`GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA pgboss TO eclipse_app`);
+    await database.execute(sql`GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA pgboss TO eclipse_app`);
+    await database.execute(sql`GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA pgboss TO eclipse_app`);
+    await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.skills TO eclipse_app`);
+    await database.execute(sql`GRANT SELECT, INSERT ON public.skill_versions TO eclipse_app`);
+    // TASK-047: the canary is bait and config (planted_at is claimed once); security events are append-only.
+    await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.agent_canaries TO eclipse_app`);
+    await database.execute(sql`GRANT SELECT, INSERT ON public.security_events TO eclipse_app`);
+    // TASK-050: approvals are decided once; grants can be revoked; uses are append-only.
+    await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.approvals TO eclipse_app`);
+    await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.permissions TO eclipse_app`);
+    await database.execute(sql`GRANT SELECT, INSERT ON public.permission_uses TO eclipse_app`);
     console.log("Database migrations applied.");
   } catch {
     console.error(`Database ${stage} failed.`);

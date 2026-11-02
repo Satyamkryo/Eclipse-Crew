@@ -11,6 +11,7 @@
 !.env.example
 /data/
 /backups/
+/test-results/
 
 # Installed dependencies
 node_modules/

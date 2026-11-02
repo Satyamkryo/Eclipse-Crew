@@ -1,6 +1,6 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
-import { and, asc, desc, eq, gt, lt, or } from "drizzle-orm";
+import { and, asc, desc, eq, gt, lt, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDatabase } from "../../db/client";
 import { chatSessions, messages } from "../../db/schema";
@@ -12,9 +12,11 @@ import {
   chatSourceTagSchema,
   type ChatCard,
   type ChatHistoryQuery,
+  type ChatMessage,
   type ChatRole,
   type ChatSourceTag,
 } from "./schema";
+import { prepareRoutineCard, RoutineError } from "../routines/data";
 
 type Database = Awaited<ReturnType<typeof getDatabase>>;
 export type StoredChatMessage = {
@@ -26,14 +28,26 @@ export type StoredChatMessage = {
   createdAt: Date;
 };
 
+export function serializeMessage(message: StoredChatMessage): ChatMessage {
+  return {
+    id: message.id,
+    role: message.role,
+    card: message.card,
+    sourceTag: message.sourceTag,
+    runId: message.runId,
+    createdAt: message.createdAt.toISOString(),
+  };
+}
+
 export class ChatDataError extends Error {
   constructor(public code: "agent_not_found" | "agent_paused" | "invalid_card" | "invalid_cursor") {
     super(code);
   }
 }
 
+// An agent may only post outbox file cards; inbox cards come from the owner's own upload (appendUserFile).
 const agentCardInputSchema = z.object({
-  card: chatCardSchema,
+  card: chatCardSchema.refine((card) => card.type !== "file" || card.direction === "outbox"),
   sourceTag: z.enum(["agent", "tool", "system"]).default("agent"),
   runId: z.string().uuid().nullable().optional(),
 }).strict();
@@ -168,15 +182,89 @@ export async function appendUserMessage(database: Database, ownerId: string, age
   return insertMessage(database, ownerId, session.id, "user", card, "user", null);
 }
 
+export async function requireActiveAgent(database: Database, ownerId: string, agentId: string) {
+  const agent = await requireAgent(database, ownerId, agentId);
+  if (agent.status !== "active") throw new ChatDataError("agent_paused");
+}
+
+export async function appendUserFile(
+  database: Database, ownerId: string, agentId: string,
+  file: { name: string; size: number; kind: string; sha256: string },
+) {
+  await requireActiveAgent(database, ownerId, agentId);
+  const session = await getOrCreateSession(database, ownerId, agentId);
+  const parsed = chatCardSchema.safeParse({ type: "file", direction: "inbox", ...file });
+  if (!parsed.success) throw new ChatDataError("invalid_card");
+  return insertMessage(database, ownerId, session.id, "user", parsed.data, "user", null);
+}
+
 export async function appendAgentCard(
   database: Database, ownerId: string, agentId: string, input: unknown,
+  options: { now?: Date } = {},
 ): Promise<StoredChatMessage> {
   const parsed = agentCardInputSchema.safeParse(input);
   if (!parsed.success) throw new ChatDataError("invalid_card");
+  let card = parsed.data.card;
+  if (card.type === "routine") {
+    try {
+      card = prepareRoutineCard(card, { now: options.now ?? new Date() });
+    } catch (error) {
+      if (error instanceof RoutineError) throw new ChatDataError("invalid_card");
+      throw error;
+    }
+  }
   await requireAgent(database, ownerId, agentId);
   const session = await getOrCreateSession(database, ownerId, agentId);
   const role: ChatRole = parsed.data.sourceTag === "system" ? "system" : "agent";
   return insertMessage(
-    database, ownerId, session.id, role, parsed.data.card, parsed.data.sourceTag, parsed.data.runId ?? null,
+    database, ownerId, session.id, role, card, parsed.data.sourceTag, parsed.data.runId ?? null,
   );
+}
+
+type OutboxCard = Extract<ChatCard, { type: "file" }>;
+const MAX_OUTBOX_INDEX = 1000;
+
+// Name and size of every outbox file that already has a card, so the desktop only hashes new files.
+export async function listOutboxIndex(database: Database, ownerId: string, agentId: string) {
+  await requireAgent(database, ownerId, agentId);
+  const session = await findSession(database, ownerId, agentId);
+  if (!session) return [];
+  const rows = await database.select({ content: messages.content }).from(messages)
+    .where(and(eq(messages.ownerId, ownerId), eq(messages.sessionId, session.id), eq(messages.cardType, "file"), sql`${messages.content}->>'direction' = 'outbox'`))
+    .orderBy(desc(messages.createdAt)).limit(MAX_OUTBOX_INDEX);
+  return rows.flatMap((row) => {
+    const card = chatCardSchema.safeParse(row.content);
+    return card.success && card.data.type === "file" ? [{ name: card.data.name, size: card.data.size, sha256: card.data.sha256 }] : [];
+  });
+}
+
+// Outbox cards come only from the desktop scan result (never from model output). The file is the agent's, so the
+// card is an agent message tagged "tool": its name and contents are untrusted data.
+export async function appendOutboxFiles(
+  database: Database, ownerId: string, agentId: string, files: { name: string; size: number; kind: string; sha256: string }[],
+  runId: string | null = null,
+) {
+  const existing = await listOutboxIndex(database, ownerId, agentId);
+  const seen = new Set(existing.map((file) => `${file.name}\u0000${file.sha256}`));
+  const session = await getOrCreateSession(database, ownerId, agentId);
+  const created: StoredChatMessage[] = [];
+  for (const file of files) {
+    const key = `${file.name}\u0000${file.sha256}`;
+    if (seen.has(key)) continue;
+    const parsed = chatCardSchema.safeParse({ type: "file", direction: "outbox", ...file });
+    if (!parsed.success) continue;
+    seen.add(key);
+    created.push(await insertMessage(database, ownerId, session.id, "agent", parsed.data, "tool", runId));
+  }
+  return created;
+}
+
+export async function getOutboxFileCard(database: Database, ownerId: string, agentId: string, messageId: string): Promise<OutboxCard | null> {
+  await requireAgent(database, ownerId, agentId);
+  const session = await findSession(database, ownerId, agentId);
+  if (!session) return null;
+  const rows = await database.select({ content: messages.content }).from(messages)
+    .where(and(eq(messages.ownerId, ownerId), eq(messages.sessionId, session.id), eq(messages.id, messageId), eq(messages.cardType, "file"))).limit(1);
+  const card = chatCardSchema.safeParse(rows[0]?.content);
+  return card.success && card.data.type === "file" && card.data.direction === "outbox" ? card.data : null;
 }

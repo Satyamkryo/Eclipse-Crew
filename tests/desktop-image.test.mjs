@@ -29,7 +29,7 @@ function validateDesktop(value, { smoke = false, imageId } = {}) {
   assert.equal(Object.keys(value.NetworkSettings.Ports ?? {}).length, 0);
   assert.equal(value.HostConfig.Init, smoke); assert.equal(value.HostConfig.ShmSize, 134217728);
   assert.deepEqual(Object.keys(value.HostConfig.Tmpfs).sort(), ["/run", "/tmp"]);
-  assert.ok((value.Config.Env ?? []).every((entry) => /^(PATH|HOME|PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD|DESKTOP_CONTROL_SECRET)=/.test(entry)));
+  assert.ok((value.Config.Env ?? []).every((entry) => /^(PATH|HOME|PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD|DESKTOP_CONTROL_SECRET|EGRESS_DESKTOP_SECRET)=/.test(entry)));
   assert.ok(!value.HostConfig.Devices?.length); assert.ok(!value.HostConfig.DeviceRequests?.length);
   assert.ok((value.Mounts ?? []).every((mount) => mount.Type === "volume" && mount.Destination === "/workspace"));
   if (smoke) {
@@ -168,7 +168,7 @@ test("real pinned desktop image and isolated Compose smoke", { timeout: 1200000 
     const desktop = config.services.desktop;
     assert.equal(desktop.build.context, path.resolve("docker/desktop")); assert.equal(desktop.user, "0:0");
     assert.ok(!desktop.ports?.length && !desktop.secrets?.length);
-    assert.ok(!desktop.environment || (Object.keys(desktop.environment).length === 1 && "DESKTOP_CONTROL_SECRET" in desktop.environment));
+    assert.ok(!desktop.environment || (Object.keys(desktop.environment).sort().join(",") === "DESKTOP_CONTROL_SECRET,EGRESS_DESKTOP_SECRET"));
     assert.deepEqual(desktop.cap_drop, ["ALL"]); assert.deepEqual(desktop.cap_add.sort(), [...SETUP_CAPS].sort());
     assert.equal(desktop.init, false); assert.ok(config.networks.desktop.internal);
     assert.ok(desktop.security_opt.some((value) => value.startsWith("seccomp=")));

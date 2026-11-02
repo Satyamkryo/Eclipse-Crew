@@ -331,6 +331,7 @@ export function createMetaConnector(config: MetaProviderConfig, limits: RuntimeL
           method: "POST",
           headers: { Accept: "application/json", "Content-Type": "application/json" },
           body: JSON.stringify(buildBody(validated)),
+          signal: validated.signal,
         },
         limits,
       );
@@ -387,6 +388,7 @@ export function createMetaConnector(config: MetaProviderConfig, limits: RuntimeL
           method: "POST",
           headers: { Accept: "application/json", "Content-Type": "application/json" },
           body: JSON.stringify(body),
+          signal: request.signal,
         },
         limits,
       );

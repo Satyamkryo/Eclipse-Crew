@@ -11,6 +11,7 @@ import test from "node:test";
 const browserProgram = String.raw`
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import { chromium } from '/opt/eclipse/desktop/node_modules/playwright-core/index.mjs';
 const input=JSON.parse(fs.readFileSync(0,'utf8'));
 const base='http://127.0.0.1:8080';
@@ -20,7 +21,9 @@ try {
   await context.route('**/*',route=>new URL(route.request().url()).origin===base?route.continue():route.abort());
   const page=await context.newPage();
   page.on('pageerror',error=>console.error(JSON.stringify({pageError:error.name,message:error.message.slice(0,300),stack:error.stack?.split('\n').slice(0,4).join('\n').slice(0,1200)})));
-  page.on('console',message=>{if(['error','warning'].includes(message.type()))console.error(JSON.stringify({browserConsole:message.type(),message:message.text().slice(0,500)}));});
+  // Chromium's timing hint 'font preloaded but not used within a few seconds' is not an app error and fires at random under load; every other warning or error still fails the run.
+const benignHint=/was preloaded using link preload but not used within a few seconds/;
+page.on('console',message=>{if(['error','warning'].includes(message.type())&&!benignHint.test(message.text()))console.error(JSON.stringify({browserConsole:message.type(),message:message.text().slice(0,500)}));});
   let desktopSocketConnections=0;
   page.on('websocket',ws=>{if(ws.url().includes('/api/desktop/')&&ws.url().includes('/stream'))desktopSocketConnections++;let received=0,sent=0;ws.on('framereceived',event=>{if(++received<=8)console.error(JSON.stringify({rfbReceiveBytes:event.payload.length,firstByte:event.payload[0]}));});ws.on('framesent',event=>{if(++sent<=8)console.error(JSON.stringify({rfbSendBytes:event.payload.length,firstByte:event.payload[0]}));});ws.on('socketerror',()=>console.error('desktop_websocket_error'));ws.on('close',()=>console.error('desktop_websocket_closed'));});
   page.setDefaultTimeout(20000);
@@ -207,6 +210,7 @@ try {
       await dialog.getByLabel('Monthly budget (USD)',{exact:true}).fill(spec.monthly);
       await dialog.getByLabel('Tools',{exact:true}).fill(index?'web.fetch':'web.fetch, web.fetch');
       await dialog.getByLabel('Domains',{exact:true}).fill(spec.domain);
+      if(index===0) assert.equal(await dialog.getByLabel('Actions',{exact:true}).inputValue(),'click, type, key, scroll, wait, read_document, deliver_file','new agents start with the known actions visible');
       await dialog.getByLabel('Actions',{exact:true}).fill(spec.action);
       await dialog.getByRole('checkbox',{name:'agent',exact:true}).check();
       if(index===0){
@@ -463,7 +467,7 @@ try {
     await chat.locator('[data-card-type="tool_connection"]').getByText('Connect GitHub',{exact:true}).waitFor();
     const routine=chat.locator('[data-card-type="routine"]');
     await routine.getByText('Every weekday at 09:00',{exact:true}).waitFor();
-    assert.equal(await routine.getByRole('button').count(),0,'routine confirmation remains a later task');
+    await routine.getByRole('button',{name:'Confirm routine'}).waitFor();
     assert.equal(await chat.locator('[data-card-type="tool_connection"]').getByRole('button').count(),0,'tool connection remains a later task');
     await page.reload();
     await page.getByRole('region',{name:'Chat pane'}).getByText('Please prepare the synthetic brief.',{exact:true}).waitFor();
@@ -500,6 +504,259 @@ try {
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>document.documentElement.clientWidth),false,'chat fits at 375 px');
     const chatCapture=(await page.screenshot()).toString('base64');
     console.log(JSON.stringify({phase:'chat',checks:['chat_user_message_persists','chat_background_result_polls_live','chat_four_validated_cards_render','chat_route_origin_csrf_owner_and_input_denials','chat_history_isolated_per_agent','chat_paused_read_only','chat_mobile_no_overflow'],screenshot:chatCapture}));
+  } else if(input.phase==='history') {
+    // TASK-031: the History tab shows a signed run with real screenshots, the SAM outline, and a failing chain once a receipt is edited.
+    await page.setViewportSize({width:1440,height:900});
+    await page.goto(base+'/?agent='+input.agents[0]);
+    await page.getByRole('tab',{name:'History',exact:true}).click();
+    const panel=page.getByRole('tabpanel');
+    const runs=panel.getByRole('list',{name:'Runs'});
+    await runs.waitFor();
+    assert.equal(await runs.getByRole('listitem').count(),2,'both seeded runs are listed');
+    await runs.getByText('Running',{exact:true}).waitFor();
+    await runs.getByText('Needs you',{exact:true}).waitFor();
+    await runs.getByRole('button').filter({hasText:'Collect monthly invoices'}).click();
+    if(input.tampered){
+      const failed=panel.getByRole('alert').filter({hasText:'Chain check failed'});
+      await failed.waitFor();
+      const text=await failed.innerText();
+      assert.match(text,/receipt_hash_mismatch/);
+      assert.match(text,/step 2/);
+      assert.equal(await panel.getByText('Chain verified',{exact:true}).count(),0,'an edited receipt is never shown as verified');
+      console.log(JSON.stringify({phase:'history',checks:['history_edited_receipt_fails_chain_with_reason_and_step']}));
+    } else {
+      await panel.getByText('Chain verified',{exact:true}).waitFor();
+      const steps=panel.getByRole('list',{name:'Steps'});
+      await steps.waitFor();
+      const rows=steps.getByRole('listitem');
+      assert.equal(await rows.count(),3,'three recorded steps');
+      await page.waitForFunction(()=>{const images=[...document.querySelectorAll('ol[aria-label="Steps"] img')];return images.length===6&&images.every(image=>image.complete&&image.naturalWidth===1024);});
+      assert.ok(await panel.getByRole('link',{name:'Export'}).getAttribute('href').then(href=>/^\/api\/runs\/[0-9a-f-]{36}\/export$/.test(href??'')),'export link points at the run export');
+      await rows.nth(0).getByText('SAM off',{exact:false}).waitFor();
+      await rows.nth(1).getByText('SAM 3.1',{exact:false}).waitFor();
+      await rows.nth(2).getByText('Failed',{exact:true}).waitFor();
+      await rows.nth(0).getByRole('button').first().click();
+      assert.equal(await rows.nth(0).locator('span.border-corona').count(),0,'no outline without SAM');
+      await rows.nth(1).getByRole('button').first().click();
+      assert.equal(await rows.nth(1).locator('figure img').count(),2,'step 2 shows before and after');
+      assert.equal(await rows.nth(1).locator('span.border-corona').count(),1,'one SAM outline on the after image');
+      const outline=await rows.nth(1).locator('span.border-corona').evaluate(element=>({left:element.style.left,top:element.style.top,width:element.style.width,height:element.style.height}));
+      const expectedOutline={left:39.0625,top:39.0625,width:19.53125,height:7.8125};
+      assert.ok(Object.entries(expectedOutline).every(([key,value])=>outline[key].endsWith('%')&&Math.abs(parseFloat(outline[key])-value)<0.001),'outline is scaled from the stored box: '+JSON.stringify(outline));
+      await rows.nth(1).getByText('display annotation').waitFor();
+      const bigCapture=(await page.screenshot()).toString('base64');
+      const detail=await (await context.request.get(base+'/api/runs/'+input.sealedRunId)).json();
+      assert.equal(detail.chain.state,'verified');
+      assert.equal(detail.steps.length,3);
+      assert.equal(JSON.stringify(detail).includes('RECEIPT_SIGNING_KEY'),false);
+      const evidenceUrl=(hash,run)=>base+'/api/runs/'+(run??input.sealedRunId)+'/evidence/'+hash;
+      const image=await context.request.get(evidenceUrl(input.beforeHash));
+      assert.equal(image.status(),200);
+      assert.equal(image.headers()['content-type'],'image/png');
+      assert.equal(image.headers()['x-content-type-options'],'nosniff');
+      assert.equal(createHash('sha256').update(await image.body()).digest('hex'),input.beforeHash,'served bytes are the hashed screenshot');
+      assert.equal((await context.request.get(evidenceUrl('0'.repeat(64)))).status(),404,'a hash that is not this run evidence');
+      assert.equal((await context.request.get(evidenceUrl(input.beforeHash,crypto.randomUUID()))).status(),404,'an unknown run');
+      assert.equal((await context.request.get(evidenceUrl('not-a-hash'))).status(),400);
+      assert.equal((await context.request.get(base+'/api/runs/'+crypto.randomUUID())).status(),404);
+      const anonymous=await browser.newContext();
+      assert.equal((await anonymous.request.get(evidenceUrl(input.beforeHash))).status(),401,'evidence requires the owner session');
+      assert.equal((await anonymous.request.get(base+'/api/runs/'+input.sealedRunId)).status(),401);
+      assert.equal((await anonymous.request.get(base+'/api/agents/'+input.agents[0]+'/runs')).status(),401);
+      await anonymous.close();
+      assert.equal((await (await context.request.get(base+'/api/agents/'+input.agents[1]+'/runs')).json()).runs.length,0,'the peer agent has no runs of its own');
+      await page.setViewportSize({width:375,height:800});
+      await page.goto(base+'/?agent='+input.agents[0]);
+      await page.getByRole('navigation',{name:'Workspace panes'}).getByRole('button',{name:'Panel',exact:true}).click();
+      await page.getByRole('tab',{name:'History',exact:true}).click();
+      const phoneRuns=page.getByRole('tabpanel').getByRole('list',{name:'Runs'});
+      await phoneRuns.getByRole('button').filter({hasText:'Collect monthly invoices'}).click();
+      await page.getByRole('tabpanel').getByText('Chain verified',{exact:true}).waitFor();
+      await page.getByRole('tabpanel').getByRole('list',{name:'Steps'}).getByRole('listitem').nth(1).getByRole('button').first().click();
+      await page.waitForFunction(()=>[...document.querySelectorAll('ol[aria-label="Steps"] figure img')].length===2&&[...document.querySelectorAll('ol[aria-label="Steps"] figure img')].every(image=>image.complete&&image.naturalWidth>0));
+      assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>document.documentElement.clientWidth),false,'History fits at 375 px');
+      const phoneCapture=(await page.screenshot()).toString('base64');
+      console.log(JSON.stringify({phase:'history',checks:['history_lists_runs_with_live_status','history_signed_run_shows_chain_verified','history_before_after_images_load_from_owner_route','history_sam_outline_scaled_from_stored_box','history_no_outline_without_sam','history_evidence_route_owner_only_and_hash_scoped','history_fits_375px'],screenshots:{big:bigCapture,phone:phoneCapture}}));
+    }  } else if(input.phase==='files') {
+    await page.setViewportSize({width:1440,height:900});
+    const agent=input.agents[0];
+    await page.goto(base+'/?agent='+agent);
+    const chat=page.getByRole('region',{name:'Chat pane'});
+    await chat.getByLabel('Message',{exact:true}).waitFor();
+    const csrf=await (await context.request.get(base+'/api/auth/csrf')).json();
+    const cards=()=>chat.locator('[data-card-type="file"]');
+    const pdf=Buffer.concat([Buffer.from('%PDF-1.7\n'),Buffer.alloc(3000,65)]);
+    const pngBytes=size=>Buffer.concat([Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]),Buffer.alloc(size-8,7)]);
+    const input_=chat.locator('#chat-attachments');
+    assert.equal(await chat.getByRole('button',{name:'Attach files',exact:true}).isEnabled(),true);
+    await chat.getByText(/up to 16 MB each/).waitFor();
+    // 1. Button (file picker input).
+    const first=page.waitForResponse(r=>r.request().method()==='POST'&&new URL(r.url()).pathname==='/api/agents/'+agent+'/files');
+    await input_.setInputFiles({name:'brief.pdf',mimeType:'application/pdf',buffer:pdf});
+    assert.equal((await first).status(),201);
+    await cards().filter({hasText:'brief.pdf'}).getByText(/Saved to the agent's inbox/).waitFor();
+    // 2. Drag and drop.
+    const dropped=await page.evaluateHandle(bytes=>{const data=new DataTransfer();data.items.add(new File([new Uint8Array(bytes)],'dropped.png',{type:'image/png'}));return data;},[...pngBytes(5000)]);
+    await chat.getByLabel('Message',{exact:true}).dispatchEvent('drop',{dataTransfer:dropped});
+    await cards().filter({hasText:'dropped.png'}).waitFor();
+    // 3. Paste (a screenshot arrives with a generic name; a second paste must not overwrite the first).
+    for(const n of [1,2]){
+      await chat.getByLabel('Message',{exact:true}).evaluate((element,bytes)=>{const data=new DataTransfer();data.items.add(new File([new Uint8Array(bytes)],'image.png',{type:'image/png'}));element.dispatchEvent(new ClipboardEvent('paste',{clipboardData:data,bubbles:true,cancelable:true}));},[...pngBytes(3000+n)]);
+      await cards().filter({hasText:n===1?'image.png':'image (1).png'}).waitFor();
+    }
+    // 4. A 12 MB file passes through nginx and Next without being cut.
+    const big=pngBytes(12*1024*1024);
+    const bigResponse=page.waitForResponse(r=>r.request().method()==='POST'&&new URL(r.url()).pathname==='/api/agents/'+agent+'/files'&&r.request().postDataBuffer()?.length===big.length,{timeout:120000});
+    await input_.setInputFiles({name:'big.png',mimeType:'image/png',buffer:big});
+    assert.equal((await bigResponse).status(),201,'12 MB upload is accepted');
+    await cards().filter({hasText:'big.png'}).getByText('12 MB',{exact:false}).waitFor();
+    // 5. Early feedback in the browser: over the limit, blocked name, empty file; no request is sent for the first.
+    let uploadRequests=0; page.on('request',r=>{if(r.method()==='POST'&&r.url().endsWith('/files'))uploadRequests++;});
+    await input_.setInputFiles({name:'huge.bin',mimeType:'application/octet-stream',buffer:Buffer.alloc(17*1024*1024,1)});
+    await chat.getByRole('alert').filter({hasText:'over the 16 MB limit'}).waitFor();
+    assert.equal(uploadRequests,0,'the browser refuses an oversize file without sending it');
+    await chat.getByRole('button',{name:'Dismiss huge.bin'}).click();
+    await input_.setInputFiles({name:'tool.exe',mimeType:'application/octet-stream',buffer:Buffer.from('harmless text')});
+    await chat.getByRole('alert').filter({hasText:"isn't accepted"}).waitFor();
+    await chat.getByRole('button',{name:'Dismiss tool.exe'}).click();
+    assert.equal(await cards().count(),5,'refused files create no cards');
+    // 6. Server-side denials, sent directly so the browser checks cannot hide a gap.
+    const headers=(extra={})=>({Origin:base,'x-csrf-token':csrf.csrfToken,'Content-Type':'application/octet-stream','X-File-Name':'x.txt',...extra});
+    const upload=(options)=>context.request.post(base+'/api/agents/'+(options.agent??agent)+'/files',{headers:options.headers??headers(),data:options.data??Buffer.from('plain text'),failOnStatusCode:false,timeout:120000});
+    const answer=async response=>({status:response.status(),body:await response.json().catch(()=>null)});
+    const anonymous=await browser.newContext();
+    assert.equal((await anonymous.request.post(base+'/api/agents/'+agent+'/files',{headers:{Origin:base,'Content-Type':'application/octet-stream','X-File-Name':'x.txt'},data:Buffer.from('x')})).status(),401,'anonymous upload');
+    await anonymous.close();
+    assert.equal((await upload({headers:{...headers(),'x-csrf-token':'wrong'}})).status(),403,'wrong CSRF');
+    assert.equal((await upload({headers:{...headers(),Origin:'https://denied.example'}})).status(),403,'wrong Origin');
+    assert.equal((await upload({headers:{...headers(),'Content-Type':'application/json'}})).status(),415,'content type');
+    assert.deepEqual(await answer(await upload({headers:{Origin:base,'x-csrf-token':csrf.csrfToken,'Content-Type':'application/octet-stream'}})),{status:400,body:{error:'name_invalid'}});
+    assert.deepEqual(await answer(await upload({data:Buffer.alloc(17*1024*1024,1)})),{status:413,body:{error:'file_too_large'}});
+    assert.deepEqual(await answer(await upload({data:Buffer.concat([Buffer.from([0x7f,0x45,0x4c,0x46]),Buffer.alloc(2000)]),headers:headers({'X-File-Name':'notes.txt'})})),{status:415,body:{error:'type_blocked'}},'program renamed to .txt');
+    assert.deepEqual(await answer(await upload({data:Buffer.from('#!/bin/sh\nid\n'),headers:headers({'X-File-Name':'readme.txt'})})),{status:415,body:{error:'type_blocked'}},'shell script renamed to .txt');
+    assert.deepEqual(await answer(await upload({data:Buffer.from('echo'),headers:headers({'X-File-Name':'run.SH'})})),{status:415,body:{error:'type_blocked'}});
+    assert.deepEqual(await answer(await upload({data:Buffer.from('x'),headers:headers({'X-File-Name':'%E0%A4%A'})})),{status:400,body:{error:'name_invalid'}});
+    assert.equal((await upload({agent:'not-a-uuid'})).status(),400);
+    assert.equal((await upload({agent:crypto.randomUUID()})).status(),404,'unowned agent');
+    const traversal=await answer(await upload({data:Buffer.from('traversal test'),headers:headers({'X-File-Name':encodeURIComponent('../../../etc/evil.txt')})}));
+    assert.equal(traversal.status,201);
+    assert.equal(traversal.body.message.card.name,'evil.txt','path parts are dropped from the stored name');
+    // 7. A paused agent cannot receive files.
+    assert.equal((await context.request.post(base+'/api/agents/'+agent+'/pause',{headers:{Origin:base,'x-csrf-token':csrf.csrfToken},data:{}})).status(),200);
+    assert.deepEqual(await answer(await upload({})),{status:409,body:{error:'agent_paused'}});
+    await page.goto(base+'/?agent='+agent);
+    const paused=page.getByRole('region',{name:'Chat pane'});
+    await paused.getByText('Resume this agent to send a message.',{exact:true}).waitFor();
+    assert.equal(await paused.getByRole('button',{name:'Attach files',exact:true}).isDisabled(),true,'attach is off while paused');
+    assert.equal((await context.request.post(base+'/api/agents/'+agent+'/resume',{headers:{Origin:base,'x-csrf-token':csrf.csrfToken},data:{}})).status(),200);
+    // 8. Cards survive a reload, with only safe metadata.
+    await page.goto(base+'/?agent='+agent);
+    const reloaded=page.getByRole('region',{name:'Chat pane'}).locator('[data-card-type="file"]');
+    await reloaded.filter({hasText:'brief.pdf'}).waitFor();
+    const history=await (await context.request.get(base+'/api/agents/'+agent+'/messages')).json();
+    const fileCards=history.messages.filter(m=>m.card.type==='file');
+    assert.deepEqual(fileCards.map(m=>m.card.name).sort(),['big.png','brief.pdf','dropped.png','evil.txt','image (1).png','image.png']);
+    assert.ok(fileCards.every(m=>m.role==='user'&&m.sourceTag==='user'&&m.card.direction==='inbox'&&/^[0-9a-f]{64}$/.test(m.card.sha256)));
+    await page.setViewportSize({width:375,height:800});
+    await page.goto(base+'/?agent='+agent);
+    await page.getByRole('navigation',{name:'Workspace panes'}).getByRole('button',{name:'Chat',exact:true}).click();
+    await page.getByRole('region',{name:'Chat pane'}).getByRole('button',{name:'Attach files',exact:true}).waitFor();
+    await page.getByRole('region',{name:'Chat pane'}).locator('[data-card-type="file"]').first().waitFor();
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>document.documentElement.clientWidth),false,'attachments fit at 375 px');
+    const capture=(await page.screenshot()).toString('base64');
+    console.log(JSON.stringify({phase:'files',bigSha256:createHash('sha256').update(big).digest('hex'),checks:['files_button_drop_and_paste_upload','files_12mb_arrives_through_proxy','files_oversize_refused_in_browser_without_request','files_route_origin_csrf_owner_type_name_and_size_denials','files_paused_agent_refused','files_cards_persist_with_safe_metadata_only','files_mobile_no_overflow'],screenshot:capture}));  } else if(input.phase==='outbox') {
+    await page.setViewportSize({width:1440,height:900});
+    const agent=input.agents[0], peer=input.agents[1];
+    await page.goto(base+'/?agent='+agent);
+    const chat=page.getByRole('region',{name:'Chat pane'});
+    try{await chat.getByLabel('Message',{exact:true}).waitFor();}catch(error){console.error(JSON.stringify({outboxPageDiagnostic:page.url(),text:(await page.locator('body').innerText().catch(()=>'')).slice(0,400)}));throw error;}
+    const csrf=await (await context.request.get(base+'/api/auth/csrf')).json();
+    const card=name=>chat.locator('[data-card-type="file"]').filter({hasText:name});
+    for(const name of ['summary.pdf','notes.txt','chart.png','bundle.gz']) await card(name).first().waitFor({timeout:40000});
+    await card('notes.txt').getByText("From the agent's outbox",{exact:false}).waitFor();
+    // Scripts by name, symlinks and unknown binaries never become cards.
+    for(const name of ['cleanup.bat','alias.txt']) assert.equal(await card(name).count(),0,name+' is not carded');
+    // Repeat polls do not duplicate cards.
+    await page.waitForTimeout(12000);
+    for(const name of ['summary.pdf','notes.txt','chart.png','bundle.gz']) assert.equal(await card(name).count(),1,name+' has exactly one card');
+    assert.equal(await card('summary.pdf').getByRole('button',{name:"Open summary.pdf on the agent's desktop"}).count(),1);
+    assert.equal(await card('bundle.gz').getByRole('button').count(),0,'an archive is download-only');
+    assert.equal(await card('bundle.gz').getByRole('link',{name:'Download bundle.gz'}).count(),1);
+    const history=await (await context.request.get(base+'/api/agents/'+agent+'/messages')).json();
+    const ids=Object.fromEntries(history.messages.filter(m=>m.card.type==='file'&&m.card.direction==='outbox').map(m=>[m.card.name,m.id]));
+    const inboxId=history.messages.find(m=>m.card.type==='file'&&m.card.direction==='inbox').id;
+    assert.deepEqual(Object.keys(ids).sort(),['bundle.gz','chart.png','notes.txt','summary.pdf']);
+    const outboxCards=history.messages.filter(m=>m.card.type==='file'&&m.card.direction==='outbox');
+    assert.ok(outboxCards.every(m=>m.role==='agent'&&m.sourceTag==='tool'&&/^[0-9a-f]{64}$/.test(m.card.sha256)),'outbox cards are agent output tagged as tool data');
+    // Real browser download of a 12 MB file.
+    const [download]=await Promise.all([page.waitForEvent('download',{timeout:60000}),card('chart.png').getByRole('link',{name:'Download chart.png'}).click()]);
+    assert.equal(download.suggestedFilename(),'chart.png');
+    const hash=createHash('sha256'); let downloaded=0;
+    for await (const chunk of await download.createReadStream()){hash.update(chunk);downloaded+=chunk.length;}
+    // Download headers and bytes.
+    const text=await context.request.get(base+'/api/agents/'+agent+'/files/'+ids['notes.txt']);
+    assert.equal(text.status(),200);
+    assert.match(text.headers()['content-disposition'],/^attachment; filename="notes\.txt"; filename\*=UTF-8''notes\.txt$/);
+    assert.equal(text.headers()['content-type'],'application/octet-stream');
+    assert.equal(text.headers()['x-content-type-options'],'nosniff');
+    assert.match(text.headers()['content-security-policy'],/sandbox/);
+    assert.match(text.headers()['cache-control'],/no-store/);
+    assert.equal(await text.text(),'Quarterly notes\n');
+    // Denied paths.
+    const anonymous=await browser.newContext();
+    assert.equal((await anonymous.request.get(base+'/api/agents/'+agent+'/files/'+ids['notes.txt'])).status(),401,'anonymous download');
+    await anonymous.close();
+    const get=async(a,id)=>context.request.get(base+'/api/agents/'+a+'/files/'+id,{failOnStatusCode:false});
+    assert.equal((await get(agent,inboxId)).status(),404,'an inbox card is not an outbox download');
+    assert.equal((await get(peer,ids['notes.txt'])).status(),404,'another agent cannot fetch this card');
+    assert.equal((await get(agent,crypto.randomUUID())).status(),404);
+    assert.equal((await get(agent,'not-a-uuid')).status(),400);
+    const post=async(path,data,headers={})=>context.request.post(base+path,{headers:{Origin:base,'x-csrf-token':csrf.csrfToken,...headers},data,failOnStatusCode:false});
+    assert.equal((await post('/api/agents/'+agent+'/outbox/refresh',{},{'x-csrf-token':'wrong'})).status(),403,'refresh needs CSRF');
+    assert.equal((await post('/api/agents/'+agent+'/files/open',{messageId:ids['bundle.gz']})).status(),415,'an archive cannot be opened');
+    assert.equal((await post('/api/agents/'+agent+'/files/open',{messageId:inboxId})).status(),404,'an inbox card cannot be opened');
+    assert.equal((await post('/api/agents/'+agent+'/files/open',{messageId:ids['notes.txt'],extra:1})).status(),400);
+    assert.equal((await post('/api/agents/'+agent+'/files/open',{messageId:ids['notes.txt']},{'x-csrf-token':'wrong'})).status(),403);
+    // Open needs a running desktop: the peer's desktop was stopped by the test.
+    const peerRefresh=await post('/api/agents/'+peer+'/outbox/refresh',{});
+    assert.equal(peerRefresh.status(),200);
+    let peerCard=(await peerRefresh.json()).messages;
+    for(let n=0;n<10&&peerCard.length===0;n++){await page.waitForTimeout(2500);peerCard=(await (await post('/api/agents/'+peer+'/outbox/refresh',{})).json()).messages;}
+    assert.equal(peerCard.length,1,'the peer outbox file got its own card');
+    assert.deepEqual(await (async r=>({status:r.status(),body:await r.json()}))(await post('/api/agents/'+peer+'/files/open',{messageId:peerCard[0].id})),{status:409,body:{error:'session_not_running'}});
+    // Open on the agent's running desktop, from the card.
+    await card('notes.txt').getByRole('button',{name:"Open notes.txt on the agent's desktop"}).click();
+    await card('notes.txt').getByText("Opened in the agent's browser",{exact:false}).waitFor({timeout:20000});
+    const capture=(await page.screenshot()).toString('base64');
+    console.log(JSON.stringify({phase:'outbox',ids,peerCardId:peerCard[0].id,downloadSha256:hash.digest('hex'),downloadSize:downloaded,screenshot:capture,checks:['outbox_files_become_one_card_each_without_duplicates','outbox_scripts_symlinks_and_unknown_binaries_not_carded','outbox_real_browser_download_12mb','outbox_download_headers_attachment_sandbox_nosniff','outbox_download_and_open_denials_owner_agent_csrf_type','outbox_open_needs_running_desktop','outbox_open_from_card_in_agent_browser']}));
+  } else if(input.phase==='open-media') {
+    // Opens one real file from its card and reports what the card says; the host then inspects the agent's tabs and Downloads.
+    await page.setViewportSize({width:1440,height:900});
+    await page.goto(base+'/?agent='+input.agents[0]);
+    const chat=page.getByRole('region',{name:'Chat pane'});
+    await chat.getByLabel('Message',{exact:true}).waitFor();
+    const card=chat.locator('[data-card-type="file"]').filter({hasText:input.name});
+    await card.first().waitFor({timeout:40000});
+    if(input.expectNoOpen){
+      // Download-only file: the card offers Download and no Open button.
+      console.log(JSON.stringify({phase:'open-media',name:input.name,openButtons:await card.getByRole('button',{name:/^Open /}).count(),downloadLinks:await card.getByRole('link',{name:'Download '+input.name}).count()}));
+    } else {
+    await card.getByRole('button',{name:'Open '+input.name+" on the agent's desktop"}).click();
+    const answer=card.locator('[role="status"], [role="alert"]').first();
+    await answer.waitFor({timeout:20000});
+    await page.waitForTimeout(3000);
+    const live=page.getByRole('complementary',{name:'Workspace panel'});
+    console.log(JSON.stringify({phase:'open-media',name:input.name,role:await answer.getAttribute('role'),text:(await answer.innerText()).slice(0,200),screenshot:(await live.screenshot()).toString('base64')}));
+    }
+  } else if(input.phase==='outbox2') {
+    const agent=input.agents[0];
+    const get=async id=>{const r=await context.request.get(base+'/api/agents/'+agent+'/files/'+id,{failOnStatusCode:false});return {status:r.status(),body:r.status()===200?null:await r.json()};};
+    assert.deepEqual(await get(input.ids['summary.pdf']),{status:409,body:{error:'file_changed'}},'a file that changed after carding is refused');
+    assert.deepEqual(await get(input.ids['bundle.gz']),{status:404,body:{error:'file_not_found'}},'a symlink swapped in for a carded file is refused');
+    const fine=await context.request.get(base+'/api/agents/'+agent+'/files/'+input.ids['chart.png']);
+    assert.equal(fine.status(),200,'an untouched file still downloads');
+    assert.equal(fine.headers()['content-length'],String(12*1024*1024));
+    console.log(JSON.stringify({phase:'outbox2',checks:['outbox_changed_file_refused_before_any_byte','outbox_symlink_swap_refused']}));
   } else if(input.phase==='models') {
     const modelKey=input.modelKey;
     const anonymous=await browser.newContext();
@@ -534,6 +791,28 @@ try {
     await reloadedMain.getByText(/Saved key .*1234/).waitFor();
     assert.doesNotMatch(await page.locator('main').innerText(),new RegExp(modelKey),'saved key never returns to the browser');
     assert.doesNotMatch(await page.locator('main').innerText(),/v1\.[A-Za-z0-9_-]+\./,'page never exposes ciphertext');
+    // TASK-027: routing is Fixed by default; Auto asks for a hard-step model, persists, and never shows a key.
+    assert.equal(await reloadedMain.getByLabel('Routing').inputValue(),'fixed','routing defaults to Fixed');
+    assert.equal(await reloadedMain.getByLabel('Hard-step model').count(),0,'no hard-step field while Fixed');
+    await reloadedMain.getByLabel('Routing').selectOption('auto');
+    await reloadedMain.getByText(/Muse Wonder has no Contributor mode/).waitFor();
+    await reloadedMain.getByLabel('Hard-step model').fill('muse-wonder-1.0');
+    const routingSave=page.waitForResponse(response=>response.url()===base+'/api/models/roles/main'&&response.request().method()==='PUT');
+    await reloadedMain.getByRole('button',{name:'Save Main AI',exact:true}).click();
+    const routingBody=await (await routingSave).text();
+    assert.ok(!routingBody.includes(modelKey),'routing save never returns the key');
+    assert.equal(JSON.parse(routingBody).main.routing,'auto'); assert.equal(JSON.parse(routingBody).main.hardModel,'muse-wonder-1.0');
+    await page.reload();
+    await page.getByRole('heading',{name:'Models',exact:true}).waitFor();
+    const autoMain=page.getByRole('region',{name:'Main AI'});
+    assert.equal(await autoMain.getByLabel('Routing').inputValue(),'auto','Auto persists after reload');
+    assert.equal(await autoMain.getByLabel('Hard-step model').inputValue(),'muse-wonder-1.0');
+    await autoMain.getByLabel('Routing').selectOption('fixed');
+    const fixedSave=page.waitForResponse(response=>response.url()===base+'/api/models/roles/main'&&response.request().method()==='PUT');
+    await autoMain.getByRole('button',{name:'Save Main AI',exact:true}).click();
+    assert.equal(JSON.parse(await (await fixedSave).text()).main.routing,'fixed','back to Fixed');
+    await page.reload();
+    await page.getByRole('heading',{name:'Models',exact:true}).waitFor();
     const reloadedSam=page.getByRole('region',{name:'Vision precision (SAM 3.1)'});
     await reloadedSam.getByLabel('Mode').selectOption('meta');
     assert.equal(await reloadedSam.getByRole('checkbox',{name:/Use the same key as Main AI/}).isChecked(),true,'same-key defaults on');
@@ -555,14 +834,17 @@ try {
     await savedMain.getByText('7 ms',{exact:true}).waitFor();
     assert.equal(await savedMain.getByText('muse-wonder-1.0',{exact:true}).count(),1);
     await page.unroute('**/api/models/test');
+    // The real Test route now reaches the provider through the egress proxy; this stack must not call the internet, so the UI's fail-closed message is checked against a mocked 503.
+    await page.route('**/api/models/test',route=>route.fulfill({status:503,contentType:'application/json',body:JSON.stringify({error:'authenticated_transport_unavailable'})}));
     await savedSam.getByRole('button',{name:'Test',exact:true}).click();
     await savedSam.getByText('Live provider testing is not connected yet. Your saved settings are unchanged.',{exact:true}).waitFor();
+    await page.unroute('**/api/models/test');
     await page.setViewportSize({width:375,height:800});
     await page.reload();
     await page.getByRole('heading',{name:'Models',exact:true}).waitFor();
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>document.documentElement.clientWidth),false,'model settings fit at 375 px');
     const modelsCapture=(await page.screenshot()).toString('base64');
-    console.log(JSON.stringify({phase:'models',checks:['model_main_save_masked_encrypted','model_same_key_one_provider','model_saved_test_rendering','model_live_transport_unavailable','model_route_origin_csrf_owner_and_input_denials','model_mobile_no_overflow'],screenshot:modelsCapture}));
+    console.log(JSON.stringify({phase:'models',checks:['model_main_save_masked_encrypted','model_same_key_one_provider','model_saved_test_rendering','model_routing_fixed_default_auto_persists','model_live_transport_unavailable','model_route_origin_csrf_owner_and_input_denials','model_mobile_no_overflow'],screenshot:modelsCapture}));
   } else if(input.phase==='account') {
     await page.goto(base+'/settings/account');
     await page.getByRole('heading',{name:'Account',exact:true}).waitFor();
@@ -574,13 +856,28 @@ try {
     console.log(JSON.stringify({phase:'account',checks:['expired_and_unrelated_sessions_hidden']}));
   } else {
     await page.setViewportSize({width:375,height:800});
-    let streamRequests=0;
+    let streamRequests=0; let expandedPhoneCapture=''; let expandedCapture='';
     const countStream=request=>{if(request.url().includes('/api/desktop/')&&request.url().includes('/stream'))streamRequests++;};
     page.on('request',countStream);
     await page.goto(base+'/?agent='+input.agents[0]);
     await page.getByRole('complementary',{name:'Workspace panel'}).waitFor();
     await page.getByRole('status').filter({hasText:/^Live$/}).waitFor();
     assert.equal(streamRequests,1,'mobile agent selection opens exactly one live panel');
+    // TASK-068: on a phone the expanded view fills the window, is view-only and has no Take over.
+    const phoneSockets=desktopSocketConnections;
+    await page.getByRole('button',{name:'Full screen',exact:true}).click();
+    const phoneView=page.getByRole('dialog',{name:/desktop, full screen/});
+    await phoneView.waitFor();
+    assert.equal(await phoneView.getByRole('button',{name:'Take over'}).count(),0,'no Take over on phones');
+    await phoneView.getByText('view-only',{exact:true}).waitFor();
+    await phoneView.locator('[aria-label="Agent screen"] canvas').waitFor();
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>document.documentElement.clientWidth),false,'expanded view fits at 375 px');
+    assert.equal(await page.evaluate(()=>document.fullscreenElement===null),true);
+    await page.waitForTimeout(500);
+    expandedPhoneCapture=(await page.screenshot()).toString('base64');
+    await phoneView.getByRole('button',{name:'Exit full screen'}).click();
+    await phoneView.waitFor({state:'detached'});
+    assert.equal(desktopSocketConnections,phoneSockets,'phone open/close does not reconnect');
     await page.goto('about:blank');
     streamRequests=0;
     await page.setViewportSize({width:768,height:900});
@@ -619,12 +916,55 @@ try {
     assert.equal(desktopSocketConnections,socketsBeforeResize,'resize does not reconnect the desktop stream');
     assert.equal(await page.getByRole('status').filter({hasText:/Connecting/}).count(),0,'resize keeps the desktop connection live');
     assert.equal(await page.locator('[aria-label="Agent screen"] canvas').isVisible(),true);
+    // TASK-068: expanded view keeps the app header, never uses browser fullscreen, moves the same stream, traps focus and exits on Esc.
+    const socketsBeforeExpand=desktopSocketConnections;
+    await page.setViewportSize({width:1440,height:1000});
+    const fullButton=page.getByRole('button',{name:'Full screen',exact:true});
+    await fullButton.click();
+    const expandedView=page.getByRole('dialog',{name:/desktop, full screen/});
+    await expandedView.waitFor();
+    assert.equal(await page.evaluate(()=>document.fullscreenElement===null),true,'browser Fullscreen API is not used');
+    await expandedView.getByText('Eclipse Crew',{exact:true}).waitFor();
+    await expandedView.getByRole('button',{name:'Back to workspace'}).waitFor();
+    await expandedView.getByRole('button',{name:'Exit full screen'}).waitFor();
+    await expandedView.getByRole('heading',{name:'Current task'}).waitFor();
+    await expandedView.getByRole('heading',{name:'Control safety'}).waitFor();
+    assert.equal(await page.evaluate(()=>document.querySelector('main[aria-label="Eclipse Crew workspace"]').inert),true,'workspace behind is inert');
+    assert.equal(await page.locator('[aria-label="Agent screen"] canvas').count(),1,'one stream canvas, now inside the expanded view');
+    assert.equal(await expandedView.locator('[aria-label="Agent screen"] canvas').count(),1);
+    await page.waitForTimeout(400);
+    assert.ok((await pixelCounts()).red>10000,'the same live stream keeps painting inside the expanded view');
+    assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>document.documentElement.clientWidth),false,'expanded view fits at 1440 px');
+    expandedCapture=(await page.screenshot()).toString('base64');
+    for(let i=0;i<14;i++) await page.keyboard.press('Tab');
+    assert.equal(await page.evaluate(()=>Boolean(document.activeElement?.closest('[role="dialog"]'))),true,'Tab stays inside the expanded view');
+    await page.keyboard.press('Escape');
+    await expandedView.waitFor({state:'detached'});
+    assert.equal(await page.evaluate(()=>document.querySelector('main[aria-label="Eclipse Crew workspace"]').inert),false,'workspace is usable again');
+    assert.equal(await page.evaluate(()=>document.activeElement?.getAttribute('aria-label')),'Full screen','focus returns to the Full screen button');
+    assert.equal(desktopSocketConnections,socketsBeforeExpand,'open and Esc close do not reconnect the stream');
+    await page.setViewportSize({width:1280,height:720});
+    await liveStatus.waitFor();
     const metadata=await (await context.request.get(base+'/api/desktop/'+input.agents[0]+'/stream')).json();
     const denied=await context.request.post(base+'/api/desktop/'+input.agents[0]+'/takeover',{
       headers:{Origin:base,'x-owner-id':input.agents[1]},data:{generation:metadata.generation,connectionId:crypto.randomUUID()}});
     assert.equal(denied.status(),403);
     await page.getByRole('button',{name:'Take over',exact:true}).click();
     await page.getByRole('button',{name:'Hand back',exact:true}).waitFor();
+    // TASK-068: an active takeover stays active through the expanded view, and Esc goes to the desktop instead of exiting.
+    const socketsDuringTakeover=desktopSocketConnections;
+    await page.getByRole('button',{name:'Full screen',exact:true}).click();
+    const takeoverView=page.getByRole('dialog',{name:/desktop, full screen/});
+    await takeoverView.waitFor();
+    await takeoverView.getByText(/You're in control/).first().waitFor();
+    await takeoverView.getByRole('button',{name:'Hand back'}).waitFor();
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(400);
+    assert.equal(await takeoverView.count(),1,'Esc during a takeover does not exit the expanded view');
+    await takeoverView.getByRole('button',{name:'Exit full screen'}).click();
+    await takeoverView.waitFor({state:'detached'});
+    await page.getByRole('button',{name:'Hand back',exact:true}).waitFor();
+    assert.equal(desktopSocketConnections,socketsDuringTakeover,'takeover survives expand and exit without a new stream');
     // Find the synthetic white textarea against the red desktop content, then
     // click through the real scaled takeover overlay rather than DOM control.
     const canvas=page.locator('[aria-label="Agent screen"] canvas');
@@ -648,7 +988,7 @@ try {
     assert.equal(logout.status(),200);
     await page.getByRole('status').filter({hasText:/^Offline$/}).waitFor({timeout:7000});
     assert.equal((await context.request.get(base+'/api/auth/csrf')).status(),401);
-    console.log(JSON.stringify({phase:'desktop',checks:['two_real_rfb_canvas_frames','resize_preserves_live_desktop','takeover_csrf_denied','scaled_pointer_and_ordinary_text_input','route_leave_release','handback','logout_revokes_http_and_stream'],frames:[first,second],screenshot:liveCapture}));
+    console.log(JSON.stringify({phase:'desktop',checks:['two_real_rfb_canvas_frames','resize_preserves_live_desktop','takeover_csrf_denied','scaled_pointer_and_ordinary_text_input','route_leave_release','handback','logout_revokes_http_and_stream'],frames:[first,second],screenshot:liveCapture,expandedScreenshot:expandedCapture,expandedPhoneScreenshot:expandedPhoneCapture}));
   }
 } finally {await browser.close();}
 `;
@@ -662,6 +1002,13 @@ http.createServer((req,res)=>{
 }).listen(18766,'127.0.0.1');
 `;
 
+const pagesProbe = String.raw`
+import fs from 'node:fs';import{randomUUID}from'node:crypto';
+const {ownerId,agentId}=JSON.parse(fs.readFileSync(0,'utf8'));
+const request=async(operation,params={})=>(await fetch('http://desktop:4310/v1/agents/'+agentId+'/commands',{method:'POST',signal:AbortSignal.timeout(10000),headers:{'Content-Type':'application/json',Authorization:'Bearer '+process.env.DESKTOP_CONTROL_SECRET},body:JSON.stringify({ownerId,agentId,requestId:randomUUID(),operation,...params})})).json();
+const status=await request('session.status');
+console.log(JSON.stringify(await request('browser.pages',{generation:status.result.generation})));
+`;
 const primitiveProbe = String.raw`
 import assert from 'node:assert/strict';import fs from 'node:fs';import{randomUUID}from'node:crypto';
 const {ownerId,agentId}=JSON.parse(fs.readFileSync(0,'utf8'));
@@ -689,6 +1036,64 @@ for(const selector of ['#sensitive-password','#sensitive-code']){
 console.log(JSON.stringify({checks:['real_full_desktop_png','real_bounded_crop_png','dom_pages_tagged_untrusted','actual_password_and_otp_fields_denied']}));
 `;
 
+// TASK-031: seeds a signed run with real screenshots through the production recorders (receipts, evidence, blob store).
+const historyFixtureProbe = String.raw`
+import assert from 'node:assert/strict';
+import zlib from 'node:zlib';
+import { createHash, randomBytes } from 'node:crypto';
+const input=JSON.parse(process.argv[1]);
+const client=await import('./db/client.ts');const{getDatabase}=client.getDatabase?client:client.default;
+const store=await import('./lib/receipts/store.ts');const{createReceiptRecorder}=store.createReceiptRecorder?store:store.default;
+const signerModule=await import('./lib/receipts/signer.ts');const{loadReceiptSigner}=signerModule.loadReceiptSigner?signerModule:signerModule.default;
+const evidenceModule=await import('./lib/receipts/evidence.ts');const{createEvidenceRecorder}=evidenceModule.createEvidenceRecorder?evidenceModule:evidenceModule.default;
+const db=await getDatabase();
+const crcTable=(()=>{const table=[];for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xedb88320^(c>>>1):c>>>1;table[n]=c>>>0;}return table;})();
+const crc=(buffer)=>{let c=0xffffffff;for(const byte of buffer)c=crcTable[(c^byte)&255]^(c>>>8);return (c^0xffffffff)>>>0;};
+const chunk=(type,data)=>{const length=Buffer.alloc(4);length.writeUInt32BE(data.length);const body=Buffer.concat([Buffer.from(type),data]);const sum=Buffer.alloc(4);sum.writeUInt32BE(crc(body));return Buffer.concat([length,body,sum]);};
+const png=(width,height,paint)=>{
+  const row=width*3+1;const raw=Buffer.alloc(row*height);
+  for(let y=0;y<height;y++)for(let x=0;x<width;x++){const [r,g,b]=paint(x,y);const o=y*row+1+x*3;raw[o]=r;raw[o+1]=g;raw[o+2]=b;}
+  const head=Buffer.alloc(13);head.writeUInt32BE(width,0);head.writeUInt32BE(height,4);head[8]=8;head[9]=2;
+  return Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),chunk('IHDR',head),chunk('IDAT',zlib.deflateSync(raw)),chunk('IEND',Buffer.alloc(0))]);
+};
+const inButton=(x,y)=>x>=400&&x<600&&y>=300&&y<360;
+const before=png(1024,768,(x,y)=>inButton(x,y)?[90,90,90]:[28,28,32]);
+const after=png(1024,768,(x,y)=>inButton(x,y)?[63,185,80]:[28,28,32]);
+const sha=(bytes)=>createHash('sha256').update(bytes).digest('hex');
+const shot=(bytes)=>({base64:bytes.toString('base64'),width:1024,height:768});
+const signer=loadReceiptSigner(randomBytes(32).toString('hex'));
+const stepInput=(idx,extra)=>({idx,model:'muse-spark-1.3',model_label:'muse-spark-1.3',route:'main',action:{kind:'click',target:'Invoices'},target:{role:'link',name:'Invoices'},
+  grounding_method:'page_structure',methods:[{phase:'verify',method:'page_structure',status:'pass',code:'ok'}],sam:'off',confidence:'medium',
+  before_hash:sha(before),after_hash:sha(after),postcondition:'url_path: /invoices',result:'pass',code:null,executed:true,
+  usage:{input:100,output:10,cached:0,reasoning:0},cost_micro_usd:null,...extra});
+const usage={input:300,output:30,cached:0,reasoning:0};
+
+const sealed=createReceiptRecorder({database:db,ownerId:input.ownerId,agentId:input.agentId,agentName:'Audit A',task:'Collect monthly invoices',signer});
+const sealedEvidence=createEvidenceRecorder({database:db,ownerId:input.ownerId,runId:sealed.runId});
+await sealed.begin();
+const box={x1:400,y1:300,x2:600,y2:360,width:1024,height:768};
+const plan=[
+  [stepInput(1),null],
+  [stepInput(2,{action:{kind:'click',target:'Download PDF'},target:{role:'button',name:'Download PDF'},sam:'on',confidence:'high',postcondition:'object_visible: Download PDF',
+    methods:[{phase:'verify',method:'page_structure',status:'pass',code:'ok'},{phase:'verify',method:'sam',status:'pass',code:'unique_mask'}]}),box],
+  [stepInput(3,{action:{kind:'wait'},target:null,postcondition:'control_present: Done',result:'fail',confidence:'low',methods:[{phase:'verify',method:'page_structure',status:'fail',code:'control_missing'}]}),null],
+];
+for(const [index,[receipt,samBox]] of plan.entries()){
+  await sealed.step(receipt);
+  await sealedEvidence.record({idx:index+1,before:shot(before),after:shot(after),samBox});
+}
+await sealed.seal('needs_owner',usage);
+
+const open=createReceiptRecorder({database:db,ownerId:input.ownerId,agentId:input.agentId,agentName:'Audit A',task:'Check the dashboard',signer});
+const openEvidence=createEvidenceRecorder({database:db,ownerId:input.ownerId,runId:open.runId});
+await open.begin();
+await open.step(stepInput(1));
+await openEvidence.record({idx:1,before:shot(before),after:shot(after),samBox:null});
+
+assert.equal(sha(before)===sha(after),false);
+console.log(JSON.stringify({outcome:'passed',sealedRunId:sealed.runId,openRunId:open.runId,beforeHash:sha(before),afterHash:sha(after),keyId:signer.keyId}));
+process.exit(0);
+`;
 const chatFixtureProbe = String.raw`
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -830,7 +1235,7 @@ test("fresh Compose browser auth and two real desktop streams", { timeout: 18000
   const env = { ...process.env, ...(process.platform === "win32" ? { PATH: `E:\\Apps\\Docker\\resources\\bin;${process.env.PATH ?? ""}` } : {}), COMPOSE_PROJECT_NAME: project,
     COMPOSE_FILE: [path.resolve("docker-compose.yml"), override, ports].join(path.delimiter), COMPOSE_ENV_FILES: empty,
     POSTGRES_BOOTSTRAP_PASSWORD: bootstrap, POSTGRES_APP_PASSWORD: appPassword, POSTGRES_MIGRATOR_PASSWORD: migratorPassword,
-    DESKTOP_CONTROL_SECRET: controlSecret, ENCRYPTION_KEY: encryptionKey, APP_ORIGIN: "http://127.0.0.1:8080",
+    DESKTOP_CONTROL_SECRET: controlSecret, EGRESS_PROXY_SECRET: randomBytes(32).toString("hex"), ENCRYPTION_KEY: encryptionKey, APP_ORIGIN: "http://127.0.0.1:8080", MAX_UPLOAD_MB: "16",
     DATABASE_URL: `postgresql://eclipse_app:${appPassword}@postgres:5432/eclipse`,
     MIGRATION_DATABASE_URL: `postgresql://eclipse_migrator:${migratorPassword}@postgres:5432/eclipse` };
   const secrets = [bootstrap, appPassword, migratorPassword, controlSecret, encryptionKey, password, replacementPassword, modelApiKey];
@@ -849,7 +1254,7 @@ test("fresh Compose browser auth and two real desktop streams", { timeout: 18000
   let diagnostic;
   const desktopImages = [];
   try {
-    compose(["build", "app", "desktop"], "build disposable app/desktop images", { timeout: 900000 });
+    compose(["build", "app", "desktop", "egress-proxy"], "build disposable app/desktop/egress-proxy images", { timeout: 900000 });
     summary.phase = "start";
     saveSummary();
     compose(["up", "-d", "--no-build", "--wait"], "start five-service disposable stack", { timeout: 180000 });
@@ -879,8 +1284,8 @@ test("fresh Compose browser auth and two real desktop streams", { timeout: 18000
       "--tmpfs", "/tmp:rw,nosuid,size=536870912,mode=1777", desktopImage, "sleep", "infinity"], "start isolated browser");
     browserCreated = true;
     docker(["exec", "-i", browserName, "sh", "-c", "cat > /tmp/browser-program.mjs"], "install isolated browser program", { input: browserProgram });
-    const browser = (phase) => JSON.parse(docker(["exec", "-i", browserName, "node", "/tmp/browser-program.mjs"],
-      `real browser ${phase}`, { input: JSON.stringify({ phase, login: "audit-owner@example.test", password, replacementPassword, agents, modelKey: modelApiKey }), timeout: 180000 }));
+    const browser = (phase, extra = {}) => JSON.parse(docker(["exec", "-i", browserName, "node", "/tmp/browser-program.mjs"],
+      `real browser ${phase}`, { input: JSON.stringify({ phase, login: "audit-owner@example.test", password, replacementPassword, agents, modelKey: modelApiKey, ...extra }), timeout: 240000 }));
     summary.phase = "browser-auth";
     const authResult = browser("setup");
     assert.equal(authResult.phase, "setup");
@@ -935,7 +1340,40 @@ test("fresh Compose browser auth and two real desktop streams", { timeout: 18000
     summary.checks.push(...chatResult.checks, ...backgroundChat.checks);
     writeFileSync(path.join(evidence, "task022-chat.png"), Buffer.from(chatResult.screenshot, "base64"), { mode: 0o600 });
     saveSummary();
-    summary.phase = "browser-models";
+    summary.phase = "browser-history";
+    saveSummary();
+    const historySeed = JSON.parse(docker(["exec", "-i", app, "node", "--conditions=react-server", "--import", "tsx", "--input-type=module", "-e", historyFixtureProbe,
+      JSON.stringify({ ownerId, agentId: agents[0] })], "seed a signed run with screenshots through the production recorders", { timeout: 120000 }));
+    assert.equal(historySeed.outcome, "passed");
+    assert.equal(psql(`SELECT count(*) FROM public.step_evidence WHERE run_id='${historySeed.sealedRunId}'`), "3", "evidence rows stored next to the receipts");
+    const historyInput = { sealedRunId: historySeed.sealedRunId, beforeHash: historySeed.beforeHash };
+    const historyResult = browser("history", historyInput);
+    assert.equal(historyResult.phase, "history");
+    summary.checks.push(...historyResult.checks);
+    writeFileSync(path.join(evidence, "task031-history-1440.png"), Buffer.from(historyResult.screenshots.big, "base64"), { mode: 0o600 });
+    writeFileSync(path.join(evidence, "task031-history-375.png"), Buffer.from(historyResult.screenshots.phone, "base64"), { mode: 0o600 });
+    psql(`UPDATE public.steps SET receipt_json = replace(receipt_json, 'Download PDF', 'Download PDX') WHERE run_id='${historySeed.sealedRunId}' AND idx=2`);
+    const tamperedResult = browser("history", { ...historyInput, tampered: true });
+    summary.checks.push(...tamperedResult.checks);
+    saveSummary();    summary.phase = "browser-files";
+    const filesResult = browser("files");
+    assert.equal(filesResult.phase, "files");
+    summary.checks.push(...filesResult.checks);
+    writeFileSync(path.join(evidence, "task023-files.png"), Buffer.from(filesResult.screenshot, "base64"), { mode: 0o600 });
+    const agentIdentity = JSON.parse(admin("inspect", agents[0]));
+    const inboxDir = `/workspace/homes/${agents[0]}/inbox`;
+    const asRoot = (script, label) => docker(["exec", "--user", "0:0", desktop, "sh", "-c", script], label);
+    const stored = asRoot(`stat -c '%u|%a|%s|%n' ${inboxDir}/*`, "stat stored attachments").split("\n").map((line) => line.split("|"));
+    assert.equal(stored.length, 6, "six attachments are stored");
+    for (const [owner, mode] of stored) { assert.equal(owner, String(agentIdentity.uid), "stored as the agent's own Linux user"); assert.equal(mode, "600", "stored mode 600"); }
+    assert.equal(asRoot(`ls -A ${inboxDir} | grep -c '\\.part$' || true`, "look for partial files"), "0", "no partial file remains");
+    assert.equal(asRoot(`sha256sum ${inboxDir}/big.png | cut -d' ' -f1`, "hash the 12 MB file"), filesResult.bigSha256, "12 MB file is byte-identical");
+    assert.equal(asRoot(`ls -A /workspace/homes/${agents[1]}/inbox | wc -l`, "peer inbox"), "0", "peer inbox is untouched");
+    assert.notEqual(raw(["exec", "--user", "0:0", desktop, "python3", "/opt/eclipse/desktop/bootstrap.py", "--admin", "exec", ownerId, agents[1], "cat", `${inboxDir}/brief.pdf`]).status, 0, "peer agent cannot read an attachment");
+    assert.notEqual(raw(["exec", "--user", "0:0", desktop, "python3", "/opt/eclipse/desktop/bootstrap.py", "--admin", "exec", ownerId, agents[1], "ls", inboxDir]).status, 0, "peer agent cannot list the inbox");
+    assert.equal(asRoot(`stat -c '%a' ${inboxDir}`, "inbox mode"), "700");
+    summary.checks.push("files_stored_as_agent_uid_mode_600_no_partials_peer_cannot_read");
+    saveSummary();    summary.phase = "browser-models";
     const modelsResult = browser("models");
     assert.equal(modelsResult.phase, "models");
     summary.checks.push(...modelsResult.checks);
@@ -975,7 +1413,61 @@ test("fresh Compose browser auth and two real desktop streams", { timeout: 18000
     diagnostic = { app, ownerId, agentId: agents[0] };
     docker(["exec", "-d", "--user", "0:0", desktop, "node", "--input-type=module", "-e", desktopFixtureProgram], "start synthetic local desktop page");
     const displayByAgent = new Map();
-    for (const [index, id] of agents.entries()) {
+    summary.phase = "browser-outbox";
+    saveSummary();
+    const seed = (agentId, body) => admin("exec", agentId, ["node", "--input-type=module", "-e",
+      `import fs from 'node:fs';const dir='/workspace/homes/${agentId}/outbox/';${body}`]);
+    seed(agents[0], `fs.writeFileSync(dir+'summary.pdf',Buffer.concat([Buffer.from('%PDF-1.7\\n'),Buffer.alloc(5000,66)]));fs.writeFileSync(dir+'notes.txt','Quarterly notes\\n');fs.writeFileSync(dir+'cleanup.bat','del /q *');fs.writeFileSync(dir+'bundle.gz',Buffer.from([0x1f,0x8b,8,0,0,0,0,0,0,3,1,2,3,4,5,6,7,8]));fs.writeFileSync(dir+'chart.png',Buffer.concat([Buffer.from([0x89,0x50,0x4e,0x47,0x0d,0x0a,0x1a,0x0a]),Buffer.alloc(12*1024*1024-8,7)]));fs.symlinkSync('/etc/hostname',dir+'alias.txt');`);
+    seed(agents[1], `fs.writeFileSync(dir+'peer.txt','peer only\\n');`);
+    // Only the first agent has a running desktop here; the second one must answer "session_not_running" for Open.
+    admin("session-start", agents[0]);
+    admin("session-stop", agents[1]);
+    const outboxResult = browser("outbox");
+    assert.equal(outboxResult.phase, "outbox");
+    summary.checks.push(...outboxResult.checks);
+    writeFileSync(path.join(evidence, "task023b-outbox.png"), Buffer.from(outboxResult.screenshot, "base64"), { mode: 0o600 });
+    const outboxDir = `/workspace/homes/${agents[0]}/outbox`;
+    assert.equal(outboxResult.downloadSize, 12 * 1024 * 1024, "the downloaded file has the full size");
+    assert.equal(docker(["exec", "--user", "0:0", desktop, "sh", "-c", `sha256sum ${outboxDir}/chart.png | cut -d' ' -f1`], "hash the outbox file"), outboxResult.downloadSha256, "the browser download is byte-identical");
+    const openedPages = JSON.parse(docker(["exec", "-i", app, "node", "--input-type=module", "-e", pagesProbe], "list the agent's browser tabs", { input: JSON.stringify({ ownerId, agentId: agents[0] }), timeout: 30000 }));
+    assert.equal(openedPages.outcome, "ok");
+    assert.ok(openedPages.result.pages.some((page) => page.href.endsWith(`/outbox/notes.txt`)), "Open showed notes.txt in a new tab of the agent's own browser");
+    summary.checks.push("outbox_open_tab_confirmed_in_agent_browser");
+    // Real PDF, PNG, WebM and MP4 from the card to the agent's Chromium: see what really happens.
+    const mediaSeed = `import{spawnSync}from'node:child_process';const out={};const run=(name,color,opts)=>{const r=spawnSync('ffmpeg',['-y','-loglevel','error','-f','lavfi','-i','color=c='+color+':s=64x64:d=1',...opts,dir+name]);out[name]=r.status===0;};fs.writeFileSync(dir+'real.pdf','%PDF-1.4\\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 200]>>endobj\\ntrailer<</Root 1 0 R/Size 4>>\\n%%EOF\\n');out['real.pdf']=true;run('real.png','red',['-frames:v','1']);run('real.webm','blue',['-c:v','libvpx','-pix_fmt','yuv420p']);run('real.mp4','green',['-c:v','libx264','-pix_fmt','yuv420p']);console.log(JSON.stringify(out));`;
+    const media = JSON.parse(seed(agents[0], mediaSeed).trim().split("\n").pop());
+    assert.equal(media["real.png"] && media["real.webm"], true, "the desktop's ffmpeg can make a PNG and a WebM for the Open check");
+    const countDownloads = () => Number(docker(["exec", "--user", "0:0", desktop, "sh", "-c", `ls -A /downloads/${agents[0]} | wc -l`], "count the agent's downloads"));
+    summary.openCheck = {};
+    for (const name of ["real.png", "real.webm", "real.pdf", "real.mp4"]) {
+      if (!media[name]) { summary.openCheck[name] = { generated: false }; continue; }
+      if (name === "real.mp4") {
+        // MP4 cannot be shown by the agent's Chromium, so its card is download-only (no Open button).
+        const card = browser("open-media", { name, expectNoOpen: true });
+        summary.openCheck[name] = { generated: true, openButtons: card.openButtons, downloadLinks: card.downloadLinks };
+        continue;
+      }
+      const before = countDownloads();
+      const opened = browser("open-media", { name });
+      writeFileSync(path.join(evidence, `open-${name}.png`), Buffer.from(opened.screenshot, "base64"), { mode: 0o600 });
+      const tabs = JSON.parse(docker(["exec", "-i", app, "node", "--input-type=module", "-e", pagesProbe], "list tabs after Open", { input: JSON.stringify({ ownerId, agentId: agents[0] }), timeout: 30000 })).result.pages;
+      summary.openCheck[name] = { generated: true, cardSaid: opened.text, tabForFile: tabs.some((tab) => tab.href.endsWith(`/outbox/${name}`)), tabs: tabs.length, newDownloads: countDownloads() - before };
+    }
+    saveSummary();
+    console.error(JSON.stringify({ openCheck: summary.openCheck }));
+    for (const name of ["real.png", "real.webm"]) {
+      assert.equal(summary.openCheck[name].tabForFile, true, `${name} opens as a tab in the agent's browser`);
+      assert.equal(summary.openCheck[name].newDownloads, 0, `${name} does not turn into a download`);
+    }
+    if (summary.openCheck["real.mp4"].generated) {
+      assert.deepEqual([summary.openCheck["real.mp4"].openButtons, summary.openCheck["real.mp4"].downloadLinks], [0, 1], "an MP4 card is download-only");
+    }
+    summary.checks.push("outbox_open_png_and_webm_show_in_agent_browser_without_download_and_mp4_is_download_only");    admin("session-stop", agents[0]);
+    seed(agents[0], `fs.writeFileSync(dir+'summary.pdf',Buffer.concat([Buffer.from('%PDF-1.7\\n'),Buffer.alloc(5000,67)]));fs.unlinkSync(dir+'bundle.gz');fs.symlinkSync('/etc/hostname',dir+'bundle.gz');`);
+    const changedResult = browser("outbox2", { ids: outboxResult.ids });
+    assert.equal(changedResult.phase, "outbox2");
+    summary.checks.push(...changedResult.checks);
+    saveSummary();    for (const [index, id] of agents.entries()) {
       const identity = JSON.parse(admin("inspect", id));
       const status = JSON.parse(admin("session-start", id));
       const display = status.display ?? (identity.uid - 19900);
@@ -1020,6 +1512,8 @@ test("fresh Compose browser auth and two real desktop streams", { timeout: 18000
     summary.checks.push(...result.checks);
     summary.frames = result.frames;
     writeFileSync(path.join(evidence, "task018-workspace-live.png"), Buffer.from(result.screenshot, "base64"), { mode: 0o600 });
+    writeFileSync(path.join(evidence, "task068-expanded-1440.png"), Buffer.from(result.expandedScreenshot, "base64"), { mode: 0o600 });
+    writeFileSync(path.join(evidence, "task068-expanded-375.png"), Buffer.from(result.expandedPhoneScreenshot, "base64"), { mode: 0o600 });
     summary.outcome = "passed";
     saveSummary();
   } catch (error) {

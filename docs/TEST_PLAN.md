@@ -44,6 +44,8 @@ Rules for AI agents:
 - [x] TASK-009: nine offline guard/lifecycle tests pass; real run 68cb4301-90ea-4b9d-b191-3d91327f7447 verifies non-root users, no effective capabilities/sudo, read-only root, no network/ports/host mounts/secrets, scoped cleanup and unchanged existing resources.
 - [x] Setup scripts (`npm run desktop:secret`, `npm run encryption-key`) share `scripts/lib/env-secret.mjs`: they create a mode-600 `.env`, are idempotent, never print a value, keep CRLF/LF endings, and never rotate or duplicate a valid key. They refuse duplicate, padded, invalid, `export`ed or symlinked entries without changing the file, and a failed write leaves `.env` intact with no temp file (`test:desktop-secret` 9/9 on Linux, `test:encryption` 9 pass + 1 symlink skip on Windows).
 
+- [ ] **Open, retest later:** the full `npm run test:auth-desktop-e2e` (fresh Compose stack, real Chromium, all phases) must pass again. On 2026-11-02 it stopped in its **agents** phase, before the chat, files, models, outbox and desktop phases: resuming a new agent returned 503 (`service_unavailable`) and the live view never reached "Live". The cause was not found and was not traced to TASK-031/032 (the same phase passed five times on 2026-11-01, before TASK-029-035 and the checkpoint/History changes landed). Also confirm that the app image builds (`docker compose build app` failed on `scripts/mock-vendor` type errors at the time). Until this passes, the History phase added for TASK-031 has only run in a trimmed copy of the suite (setup, then History), not inside the full run.
+
 ## Owner account
 
 - [x] First visit opens setup; owner account is created with email + Eclipse Crew password
@@ -84,9 +86,12 @@ Rules for AI agents:
 
 - [x] Owner can create, edit, pause and delete an agent (name, role, persona, permissions, budget)
 - [x] Each agent gets its own Linux user, `700` home, screen and Chromium profile (TASK-011/012 local administration verified; TASK-019 product CRUD verified)
-- [x] Agent A cannot read Agent B's files, browser profile or cookies (TASK-011/012 files and profile denials; run `7b47dde4-ffbe-476e-9a66-05b9307ef705` adds: each agent's window shows only its own persistent and session cookie, and the peer's `Cookies`/`Login Data` paths return EACCES)
-- [ ] Agent A cannot read Agent B's saved credentials: no credential store exists yet; test it when one is built
-- [x] Agents have no sudo and cannot read the database, `.env` or host folders (run `7b47dde4-ffbe-476e-9a66-05b9307ef705`, both agent users: `sudo` not installed and `su` refused, no secret-like environment variables, `/proc/1/environ` unreadable, a real Postgres in the stack unreachable by IP and DNS, no outbound internet, loopback control works, no `.env*` file in the desktop filesystem, only the `/workspace` volume mounted)
+- [x] Agent A cannot read Agent B's files, browser profile or cookies (TASK-011/012 files and profile denials; run `7b47dde4-ffbe-476e-9a66-05b9307ef705` adds: each agent's window shows only its own persistent and session cookie, and the peer's `Cookies`/`Login Data` paths return EACCES; TASK-048 run `2d73f472-1af7-4f0d-9c72-4dd7a0e0ab25` extends this in both directions: peer home/Downloads/`.system` and checkpoint paths denied, `/proc` environ/mem/maps/fd/cwd/root return EACCES, no readable command line or environment carries a secret, `kill`/SIGTERM/ptrace/`process_vm_readv` return EPERM, peer `/tmp` runtime and X lock/socket cannot be listed, opened, unlinked or renamed, and a peer-created display lock refuses start without being removed)
+- [ ] Agent A cannot read Agent B's saved credentials: no credential store exists yet; test it when one is built (TASK-048 recorded this as not testable; TASK-070)
+- [x] Agents have no sudo and cannot read the database, `.env` or host folders (run `7b47dde4-ffbe-476e-9a66-05b9307ef705`, both agent users: `sudo` not installed and `su` refused, no secret-like environment variables, `/proc/1/environ` unreadable, a real Postgres in the stack unreachable by IP and DNS, no outbound internet, loopback control works, no `.env*` file in the desktop filesystem, only the `/workspace` volume mounted; TASK-048 run `2d73f472-1af7-4f0d-9c72-4dd7a0e0ab25` re-runs the boundary with two live agents: no direct public, Docker-gateway or egress-proxy-IP egress, and the proxy is unreachable by name from the desktop network)
+- [x] Compose posture: only `ingress` publishes `127.0.0.1:3000`; no privileged/host-network/Docker-socket/`.env` mounts; desktop mounts only `workspace`; secrets stay in their owning services; `app` drops all capabilities and sets no-new-privileges (`npm run test:posture`, including negative fixture configs and live non-root identities)
+- Known limit (TASK-048): shared desktop loopback is authenticated, not network-isolated until TASK-071. A peer's x11vnc is reachable to the RFB handshake but refuses an empty password, and the controller/file listeners answer `403 source_denied`; `/proc/*/cmdline` and process names are visible to peers. Per-agent egress-proxy tokens cannot be tested until TASK-045.
+- Known issue (TASK-048): a peer-created display lock refuses the start and is retained, but the refusal is reported as `session_cleanup_failed` instead of `display_conflict`; fixing the error masking is outside TASK-048.
 - [x] Logins stored as persistent cookies persist in an agent's browser profile across session restart and container recreation (same run)
 - [x] Logins stored as session cookies (no expiry, the common case for real sites) also survive pause/resume, container recreation and a killed worker: the worker snapshots them to a private file and restores them after launch (run `ce7251bc-68b9-4a1e-a7f5-6119e5ef8252`: graceful stop/start, a cookie deleted before stop stays deleted, killed worker after the 30 s periodic save, container recreation, peer agent denied, snapshot mode 600 and exact contents; corrupt, oversized, symlinked and group-readable snapshots are ignored without blocking start; a killed display keeps the last saved cookies; `test:cookie-snapshot` 9/9 on Linux)
 - Known limit: a crash loses at most the session-cookie changes made since the last 30 s save
@@ -98,9 +103,12 @@ Rules for AI agents:
 - [x] Replies render as the four card types: message, clarification, tool connection, routine (TASK-022 real browser plus escaped card rendering)
 - [x] Invalid model output is rejected and never executed (TASK-022 schema and append-boundary checks)
 - [x] Chat history persists per agent; background run results appear in the timeline (TASK-022 reload, polling, isolation and background-append checks)
-- [ ] Files can be attached by button, drag-and-drop and paste; they land in that agent's `inbox/`
-- [ ] Files over the size limit (default 250 MB) are rejected
-- [ ] Files the agent writes to `outbox/` appear as file cards with Download and Open on the agent's desktop
+- [x] Files can be attached by button, drag-and-drop and paste; they land in that agent's `inbox/` (browser run: all three paths; stored as the agent's own Linux user, mode 600, byte-identical for a 12 MB file through nginx and Next, no partial file left, the peer agent cannot read or list them; unit suites `test:inbox-writer`, `test:files-route`)
+- [x] Files over the size limit (default 250 MB) are rejected (browser run with `MAX_UPLOAD_MB=16`: refused in the browser without a request, and 413 from the route when sent directly)
+- [x] Denied paths: anonymous 401, wrong CSRF or Origin 403, paused agent 409, unowned agent 404, program or shell script renamed to `.txt` 415, path parts in a name dropped, leading-dot and reserved names refused
+- [x] Files the agent writes to `outbox/` appear as file cards with Download and Open on the agent's desktop (browser run: one card per file with no duplicates over repeat polls; scripts, symlinks and unknown binaries are not carded; a real 12 MB browser download is byte-identical; attachment, sandbox and nosniff headers; Open shows the file in a new tab of the agent's own browser, confirmed in its tab list)
+- [x] Open in the agent's real Chromium (run `712cabe0-4208-4820-b608-e4ea905f469c`, screenshots `open-*.png`): PNG, WebM and PDF open as a tab with no stray download and display (PDF in the built-in viewer); an H.264 MP4 opened a blank player, so MP4, MOV and MKV are download-only by design (card shows Download and no Open; the desktop refuses a direct Open)
+- [x] Denied paths: anonymous 401, wrong CSRF 403, an inbox card, another agent's card or an unknown id 404, an archive or HTML cannot be opened (415), Open with a stopped desktop 409 `session_not_running`, a file changed after carding 409 `file_changed` with no bytes sent, a symlink swapped in for a carded file 404 (unit suites `test:outbox-reader`, `test:inbox-writer`, `test:files-route`)
 
 ## Desktop image foundation
 
@@ -109,6 +117,7 @@ Rules for AI agents:
 - [x] TASK-010: run 0d69e5bc-7966-4ef3-8e5f-40035b2e00e0 verifies non-root Xauthority/Openbox, accepted/rejected VNC authentication, noVNC WebSocket, 1024x768 PNG and three-frame video; cleanup complete.
 - [x] TASK-010: run c66f0dda-e890-428b-8f58-a1df20c978fa passes genuine Playwright and xdotool clicks in graphical Chromium; chrome://sandbox reports namespace/PID/network and Seccomp-BPF active. Parent has zero capabilities/no-new-privileges and ordinary chroot remains denied.
 - [x] TASK-010: desktop Compose health and runtime isolation settings pass; both five-service http-security tests pass after the package and ADR-025 sandbox revisions.
+- Known issue (2026-11-02): `npm run test:http-security`'s fresh-database stack returns 500 for the authenticated home page; the app role lacks `SELECT` on `teach_recordings` (`42501`) because role provisioning is stale (see `docs/MEMORY.md`). Independent of TASK-048; the app's cap-drop/no-new-privileges posture does not change the result.
 
 ## Persistent agent identities (TASK-011)
 
@@ -140,56 +149,144 @@ Rules for AI agents:
 - [x] Revoked/replaced sessions close native streams within five seconds; silent peers and application shutdown release streams (behavioral bridge tests)
 - [x] Real browser logout revokes HTTP and the live stream; real takeover blocks agent capture/input until release
 - [x] Agent-directed typing/key input is denied on actual password/OTP controls, including inside single and nested closed shadow roots; ordinary focused text input still works (TASK-012 run 01331fe8-87b7-4535-b598-375fa9aec997)
-- [x] Trusted owner takeover marker is manager-generated, rejected on browser input, and allows manual type/key input on a synthetic sensitive field; no recording is enabled.
+- [x] Trusted owner takeover marker is manager-generated, rejected on browser input, and allows manual type/key input on a synthetic sensitive field; recording stays off until the owner presses Record (TASK-036).
 - [x] Pinned noVNC package normalization preserves awaited feature detection and fails on changed bytes/version; real x11vnc true-colour flag 255 is accepted with view-only filtering retained
 - [x] Interrupted session startup cannot deadlock supervisor shutdown; uncertain sessions can be explicitly stopped
 - [ ] Agent stops at login walls, CAPTCHAs, OTPs and payment checks and asks the owner
-- [x] Agent screenshot dispatch is blocked during takeover; teach recording/Record integration remains a later task
-- [ ] Every step shows the model that did it
+- [x] Agent screenshot dispatch is blocked during takeover; teach Record now opts in separately (TASK-036 managed browser)
+- [x] Full screen opens the expanded view inside the app window: the app header stays and the browser does not enter fullscreen (TASK-068; real browser at 1440 px, `document.fullscreenElement` stays null, workspace behind is inert)
+- [x] Opening and closing Full screen does not reconnect the stream, and an active takeover stays active; Esc goes to the desktop during a takeover (same single WebSocket count before and after, Esc exits only without a takeover, Tab stays inside, focus returns to the Full screen button)
+- [x] On phones (375 px) the expanded view is view-only (no Take over, no horizontal overflow, no reconnect)
+- [x] Default Actions: the create form pre-fills the seven known actions (browser run), API creates without actions still have none, the stop text names the action and where to change it, and migration 0008 on a throwaway Postgres adds the file actions to non-empty lists only and is idempotent (`npm run test:actions-migration`); provisioning and upgrade tests pass with 9 migrations.
+- [x] TASK-027 mocked: 4 routing unit tests and 4 loop tests pass (Fixed never escalates; Auto escalates after a failed or repeated turn; capped at 5; hard-model error falls back to Main and ends escalation; each step carries model, label and route); settings round trip and validation; browser: Routing defaults to Fixed, Auto persists after reload, key never returned; database upgrade tests pass with migration 0007.
+- [ ] Every step shows the model that did it (data recorded by TASK-027; visible label needs TASK-031)
 
 ## Perception and proof receipts
 
 - [ ] Model output is an intent `{action, target, expect}`, never raw coordinates
-- [ ] Targets are found from page structure on normal websites
+- [x] TASK-024 mocked: strict intent schema rejects coordinates, selectors and unknown fields; exactly one `next_step` call is accepted; two invalid or non-completed outputs in a row stop the run with nothing executed.
+- [x] TASK-024 mocked: valid steps run in order through the guarded desktop port; one card per run; the model's `finish` is shown as its own unverified report; default-deny action allowlist, takeover (`takeover_active`), 20-step cap, 3x repeat stop, provider errors and cancellation all stop without further input.
+- [x] TASK-026 mocked (`test:clock`, `test:agent-step-loop`): clock block in the §19 format, rounded to the minute, correct across zones and daylight saving; invalid owner timezone falls back to UTC; exactly one clock block, last in `instructions`, stable text before it identical across calls; `get_time` for the owner zone and another zone, unknown or hostile zones never echoed, no desktop call, no run step, repeat limit applies.
+- [x] TASK-024 mocked: owner task is the only `user`-tagged content, screenshot is `web`, history is `agent`; typed text is never replayed; clock block follows the persona; one run per agent, other agents in parallel, lock released after a failed card post. 13 tests.
+- [x] TASK-025 real Chromium (`test:agent-sessions`): the snapshot lists only visible, unobstructed controls; password, one-time-code and field values, off-screen, covered and iframe controls are left out; clicking the returned point hits the control at the default window position, after moving the window, and after scrolling.
+- [x] TASK-025 mocked (`test:agent-grounding`, `test:agent-step-loop`): exact, partial, role-word, tie, weak and injection-named controls; no coordinates reach the model; the control list is `web`-tagged; the first miss gives one correction turn with visible names, a second miss or an unreadable page hands off with one card; the frames hint appears only when frames exist.
+- [ ] TASK-024 live: a real model produces valid steps and a click lands on a grounded target. TASK-046 transport exists; authorized real-provider acceptance remains pending.
+- [ ] Targets are found from page structure on normal websites (live run with a real model; not yet verified)
 - [ ] With SAM on, targets are located and verified with SAM masks; with SAM off, receipts say "SAM off"
 - [ ] Irreversible actions (send, delete, purchase, payment hand-off) ask when two methods don't agree
 - [ ] Adding a model detects its capabilities (tool calling, vision, computer use)
-- [ ] Every step writes a receipt (before/after hashes, target, method, confidence, result, cost, `prev_hash`)
-- [ ] `eclipse-crew verify run.json` passes on an untouched export
-- [ ] `verify` fails if any step is altered, removed or reordered
-- [ ] History shows before/after thumbnails and pass/fail per step
+- [ ] Every step writes a receipt (before/after hashes, target, method, confidence, result, cost, `prev_hash`). TASK-029: mocked step-loop tests (`test:receipts`, 23) and a real Postgres container pass; a live run with your saved model key is still to be done.
+- [x] TASK-029: the chain, signature and seal are canonical, deterministic and match the RFC 8032 Ed25519 test vector; typed text, file contents and credentials never appear in a receipt; SAM off/on/unavailable is stated per receipt
+- [x] TASK-029 (cannot): no signing key means no run (fixed card naming `npm run receipt-key`); a failed start or a failed receipt write stops the run with `receipt_error` and no further input; the app role cannot UPDATE or DELETE `steps` or DELETE `runs`; a seal rewritten through the app role fails verification; another owner's run exports as 404
+- [x] `eclipse-crew verify run.json` passes on an untouched export (TASK-030: `test:verify-cli` 9 pass + 1 skipped symlink on Windows; `test:run-export-route` against a disposable Compose stack passes, including the `docker exec` stdin form, a symlink launcher and `key-id` inside the app container)
+- [x] `verify` fails if any step is altered, removed or reordered (also swapped signature, other key under a pin, unsealed, changed header, wrong step count; unreadable or oversized input exits 2; a crafted file cannot print escape codes; a receipt edited in the real database is caught)
+- [x] History shows before/after thumbnails and pass/fail per step (TASK-031: real Chromium on a signed run seeded through the production recorders, 1440 and 375 px; screenshots `data/spikes/audit-repairs/fec106dc-76fc-45e2-b985-fc7046afc5dd/task031-history-{1440,375}.png`)
+- [x] TASK-031: the SAM outline appears only on the "after" image and only when SAM passed (scaled from the stored box); with SAM off the step says "Page structure (SAM off)" and has no outline; the outline is labelled a display annotation
+- [x] TASK-031: "Chain verified" comes from re-checking the stored receipts on load; editing one stored receipt shows `receipt_hash_mismatch` at the right step; an open run shows "not sealed yet" (`test:history` against Postgres, and in the browser)
+- [x] TASK-031 (cannot): the evidence route needs the owner session (401 otherwise); a hash that is not before/after evidence of that owner's run, an unknown run and a malformed hash are refused (404/400); served bytes re-hash to the signed receipt hash; the peer agent lists no runs; the app role cannot UPDATE or DELETE `step_evidence` (`db-roles`)
+- [x] TASK-031: a stored receipt that cannot be read becomes a placeholder row; a missing screenshot shows "screenshot not stored"; a failing evidence store never stops a run (`test:history`, `test:agent-step-loop`)
 - [ ] ≥ 95% of steps on the demo routine are verified
+
+### TASK-028 verification acceptance
+
+- [x] Mocked: closed expectation grammar; supported DOM failure cannot be overridden; bounded local polling; model fallback only when needed; SAM off makes zero SAM requests; unavailable and missing-confidence states remain explicit.
+- [x] Mocked: independent target agreement before click/type/Enter; mismatch, changed target, unreadable page and missing focus stop before input; takeover during verification pauses without another action. No model coordinates or selectors execute.
+- [x] Mocked: strict visual verdicts reject invalid/incomplete/safety-review output; source tags and clock included; 512-token caps, no retries; token usage includes verification. SAM decoder validates allocations, dimensions, actual masks and confidence.
+- [x] Disposable Chromium (`test:agent-verification-desktop`): consecutive page.verify reads, exact visible controls, missing/covered/off-screen/sensitive/iframe exclusions, duplicate-name unknown, focused-control metadata without field values, and calibrated/repeated clicks after window movement/scroll. Evidence: `data/spikes/task-028/3ca5ba56-9a78-4982-83f7-2b7cafe195c1/result.json`; disposable resources cleaned.
+- [x] Full desktop/session lifecycle regression (`test:agent-sessions`): 5/5, including page verification checks; evidence `data/spikes/task-012/17bf5160-809c-4360-b7a7-3af447db7399/result.json`, cleanup complete. Controller/takeover tests: 25/25. Mocked provider/runtime/settings/clock suites: 108/108. Existing SAM spike tests: 10/10.
+- [ ] Real Main/SAM provider acceptance and end-to-end chat verification, including cost/latency on the demo routine (not run automatically; requires separately authorized usage).
+- Receipt-specific SAM-off labels, signatures and persisted proof are TASK-029 (done; see above). Earlier TASK-024 unverified execution tests are superseded by the conservative TASK-028 gate and injected verification fixtures; pure chat summaries remain model reports.
 
 ## Teach from video
 
-- [ ] Take over → Record → do a task → Stop captures video, events, targets, before/after shots and narration
-- [ ] Passwords and OTPs are masked in the capture and never appear in the skill
-- [ ] A draft `SKILL.md` is generated with steps, inputs and a check per step
-- [ ] The skill shows how it was learned (e.g. "Learned from video + steps")
-- [ ] After approval the skill is callable in chat and schedulable
-- [ ] After approval the recording is deleted and one reference screenshot per step is kept
+- [x] TASK-036 (managed browser) Take over → Record → do a task → Stop captures video, events, targets, before/after shots and narration. Disposable run `caf2116a449bfa36`: 59 frames, 4 accepted events, synthetic mic narration, ordinary takeover recorded zero events/bytes, and disconnect aborts. Privacy pauses covered password, OTP, CAPTCHA, iframe/shadow-root and unsupported-scheme surfaces. Native desktop/terminal capture is owner-deferred for v1.
+- [x] TASK-036 (managed browser, cannot): stale leases, cross-owner IDs, arbitrary artifacts, oversized uploads, bad WAV/turns, duplicate sequences and encoder/storage failures fail closed with no raw capture retained. Fresh Postgres run `624d57b01c1fdf2f` passed 16 migrations, owner-only routes, cross-owner 404s, idempotent Stop, append-only audio ledger and discard cleanup; artifact symlink/hard-link cases pass in the disposable Linux container.
+- [x] TASK-036 (managed browser) Passwords and OTPs are masked in the capture: sentinel text/pixels are absent from decoded video, shots, manifest/events, audio/transcript fixtures, API/error/log responses and encoder inputs across sensitive transitions. Exclusion from the generated skill is covered by TASK-037.
+- [x] TASK-036 (live owner stack): rebuilt/recreated app+desktop, created one temporary owner-scoped session and agent, and recorded the mock invoice page through a real takeover lease. Stop returned `complete` with 1 event and 5.474 s active; the saved-recording list returned the capture, review returned 200, the 36,959-byte WebM artifact returned 200, and Discard emptied the list. Cleanup removed the agent, session, capture row, artifacts and vendor process. Narration stayed off (`narrationAllowed:false`) and ASR was not called because the live DB has no Meta provider with a stored key.
+- [x] A draft `SKILL.md` is generated with steps, inputs and a check per step (TASK-037: structured model output, deterministic renderer, validation/route/retention tests; real-provider generation pending)
+- [x] The skill shows how it was learned (TASK-037: "Learned from steps + screenshots"; video path pending)
+- [x] After approval the skill enters later chat context and can be referenced by a routine confirmation (execution awaits TASK-039)
+- [x] After approval the recording is deleted and one reference screenshot per step is kept (copy/cleanup invariants tested; live approval with a real capture pending)
 
 ## Rewind and branch
 
-- [ ] Rewinding to step N restores the agent's state and files at that step
-- [ ] A correction continues the run as a new branch without re-running earlier steps
-- [ ] The original branch stays visible in History
-- [ ] The UI states that external side effects (sent emails, orders) are not undone
+- [x] Rewinding to step N restores the agent's state and files at that step (`test:rewind`, real Postgres: changed/missing files written back, later files moved to `.rewound`, unchanged files kept)
+- [x] TASK-032: a checkpoint is saved before the first step and after every receipt; state and file manifest are content-addressed blobs; an unchanged file is fetched and stored once across the run, a changed file gets a new blob (`test:checkpoints` against Postgres)
+- [x] TASK-032: the stored state never holds typed text, screenshots, document contents, keys or tokens, and a state with unknown fields or over 256 KiB is refused on read (`test:checkpoints`)
+- [x] TASK-032 (cannot): the desktop tool refuses `..`, absolute paths, symlinked files and directories, FIFOs, hard-linked and hidden files, wrong hashes and files over 4 MiB, and never reads a peer agent's home (`test:checkpoint-tools`, the real desktop image as root, and the real listener with two agents in `test:inbox-writer`)
+- [x] TASK-032: a transient failure is retried once and the checkpoint stays complete; a persistent failure, a body that does not match its hash, a port without file support and a capture over the time bound each give a `partial` checkpoint with a fixed reason, the state is still saved, and the run continues; History shows "Can't rewind to this step"
+- [x] TASK-032 (cannot): the app role cannot UPDATE or DELETE `checkpoints`; a checkpoint index cannot repeat in a run; provisioning rejects an altered `checkpoints` schema or an extra grant (`db-roles`)
+- [x] A correction continues the run as a new branch without re-running earlier steps (`test:rewind`: saved history/documents and the correction reach the first model call, step numbers continue, new steps start at 1; no earlier desktop action is executed)
+- [x] The original branch stays visible in History (`test:rewind`: the original export is byte-identical and still verifies; History lists the branch and the branch reads `branch_of`/`branch_at` from the signed header)
+- [x] TASK-043 (cannot): a partial checkpoint, missing/tampered blob, unsealed or chain-failed run, another owner's run, a step above `step_count`, a paused agent, takeover, a missing model/key and a busy agent are refused with nothing written and no run; a mid-restore failure starts no run and a second request finishes the restore (`test:rewind`)
+- [x] TASK-043 (cannot): the restore tool refuses `..`, absolute, hidden and odd paths, symlinked files/directories, hard links, wrong hashes, bodies over the limit and a non-UUID bucket; `aside` never overwrites (`test:checkpoint-restore` 10/10 in the rebuilt desktop image as root; the two authenticated listener routes are covered by `test:inbox-writer`)
+- [x] TASK-043: an ordinary run header stays byte-identical; a branch export verifies offline and carries signed `branch_of`/`branch_at` (`test:rewind`)
+- [ ] The UI states that external side effects (sent emails, orders) are not undone (text is in the rewind dialog; live browser check pending)
+- [ ] TASK-043 live browser at 1440/375: seed a signed run, open the rewind dialog, create a branch on a real desktop, and verify both exports
 
 ## Routines and jobs
 
-- [ ] A routine created in chat shows a routine card; confirming saves it
+- [x] Scheduler startup failure logs that scheduled routines are paused without preventing app registration; normal startup and runtime/build guards remain intact (`tests/instrumentation.test.mjs`, 2 tests).
+- [x] A routine created in chat shows a routine card; confirming saves it (TASK-038: live browser confirmation, reload persistence and duplicate-row check at 1440/375 px)
+- [x] Skill-only routine records and confirmation responses accept zero steps; routines without a skill require steps, and all steps retain their length and count limits (`test:routines`).
+- [x] Scheduled and Run Now executions pass canary, approvals, allowed hosts and security/scope hooks into the step loop, with the run ID on security stops (`test:scheduler`, mocked wiring; `test:agent-step-loop` covers denied paths).
 - [ ] Once, daily, weekly, monthly, custom weekdays and cron schedules fire at the right local time
 - [ ] Run Now starts it immediately with live step status
-- [ ] A duplicate scheduler tick does not run a routine twice
-- [ ] One agent runs one job at a time; different agents run in parallel
-- [ ] After the stack was down, missed runs follow the catch-up policy (run once / skip / run all)
+- [x] A duplicate scheduler tick does not run a routine twice (TASK-039: live pg-boss duplicate enqueue returned `false`; real second tick queued zero jobs; deterministic execution id + `SKIP LOCKED`)
+- [x] One agent runs one job at a time; different agents run in parallel (TASK-039: queue `groupConcurrency: 1`, worker `localConcurrency: 4`, existing agent lock tests)
+- [x] After the stack was down, missed runs follow the catch-up policy (run once / skip / run all) (TASK-039: policy matrix tests plus live run-once catch-up advanced `next_run_at`; live full-stack outage check pending)
 - [ ] Second run of a verified routine with no site change makes no model calls ($0.00 model cost)
-- [ ] When the mock portal layout changes, the check fails, the agent self-heals and proposes a skill diff
-- [ ] Approving the skill diff updates the skill; the next run uses it
-- [ ] Jobs dashboard lists runs with status, agent, trigger, duration and cost
-- [ ] Run detail shows the step timeline, receipts, errors and retry history
-- [ ] Run now, Cancel, Retry and Pause/Resume work from the dashboard
+- [x] TASK-044: on a site-change mismatch the agent self-heals and proposes a diff (`test:heal`: scripted repair run with real signed receipts/Postgres; live mock-portal repair pending)
+- [x] Self-heal repair preparation supplies the `heal` trigger and `Self-heal repair` label for Jobs metadata (`tests/heal-ports.test.mjs`: mocked production wiring).
+- [x] TASK-044: approving the diff updates the saved replay; the next run uses it (`test:heal`: approval appends v2 and `getScript`/`listScripts` resolve it)
+- [x] TASK-042 Part A: Jobs dashboard lists runs with status, agent, trigger, duration and cost (`test:jobs`: owner scope, all outcome filters, 24h/7d/30d/all ranges, agent filter, cost, keyset paging)
+- [x] TASK-042 Part A: Run detail shows the step timeline, receipts, errors and retry history (`test:jobs`: summary, signed input, final output, delivered files, failed step codes, retry chain, existing timeline route)
+- [x] Run now, Cancel, Retry and Pause/Resume work from the dashboard (Part A: Cancel, Retry for chat and routine Pause/Resume pass in `test:jobs`; Part B: Upcoming and Crew actions mount TASK-040's Run now with live execution status, a scheduled run retries through the routine queue with `retry_of`, and runs with no routine or replay/branch/heal triggers are refused; a live signed model/desktop step remains TASK-040's pending item)
+- [x] TASK-039: pg-boss starts under the runtime role, duplicate enqueue is idempotent, and the worker settles jobs (`test:scheduler`; live app-role queue/idempotency/settlement pass)
+- [x] TASK-040: Run Now is owner/CSRF/rate limited and returns a pollable execution (`test:scheduler`; live 401/403/404/202 and queued→retrying status pass)
+- [ ] TASK-040: a signed Run Now step appears live in the routine card (no disposable provisioned desktop was used; synthetic agent correctly retried `unavailable`)
+- [x] TASK-042 Part A: search treats `%` and `_` literally; cursor paging returns every run once; another owner's runs never appear (`test:jobs`)
+- [x] TASK-042 Part A: outcomes map every `runs.status`, and an unsealed run is Running only inside 15 minutes (`test:jobs`)
+- [x] TASK-042 Part A: Cancel aborts a live run, seals it `aborted`, and refuses a finished run with 409; Retry refuses Verified, Running, already-retried, replay and busy-agent runs (`test:jobs`)
+- [x] TASK-042 Part A: Upcoming runs are correct for Asia/Kolkata and across the America/New_York DST change; paused routines and the agent filter behave (`test:jobs`)
+- [x] TASK-042 Part B: a routine job exposes its `routineId`; a scheduled retry queues `run_now` with `retry_of` and the routine id; a scheduled run without a routine is refused (`test:jobs`)
+- [x] TASK-042 Part A (cannot): anonymous calls are 401; wrong Origin and CSRF are 403; bad ids, unknown query keys and an oversized body are 400/413; `run_meta` is insert-only for the app role (`test:jobs`)
+- [x] TASK-042 Part A live browser at 1440 and 375 px on a disposable Postgres and local production build: 8 seeded runs, list/detail with a chain-verified timeline, search `100%`, agent filter, Failed tab, Upcoming runs with schedule details, routine Pause/Resume, and the cancel confirmation plus its 409 message; no horizontal overflow at either width
+
+## Deterministic replay (TASK-041)
+
+- [x] A run that is sealed, `finished`, chain-verified and has only pass/executed steps compiles to numbered steps (click, type, key, scroll, wait, deliver_file); a click stores the grounded control's role and exact name, never the model's wording, a coordinate or typed text; compiling the same run again returns the same script (`test:replay`: script, store)
+- [x] Refused with a step number and a fixed code: a run that stopped or is unsealed, a tampered chain, a failed or unknown step, `read_document`, a prose or `object_visible` postcondition, a click with no recorded control, no steps, more than 20 steps (`test:replay`)
+- [x] Replaying a script makes no model call: the deps have no provider, every receipt says model `none`, zero usage and 0 micro-USD, the run cost receipt shows 0 calls and `cost_entries` has no rows, the run is sealed, appears in History as Verified and `verifyRunExport` passes with the pinned key (`test:replay` against Postgres with the real recorders)
+- [x] Same order as the step loop: checkpoint 0, then receipt, evidence and checkpoint per step, then the seal; a failed receipt stops the run, a failed evidence or checkpoint write does not (`test:replay`: runner)
+- [x] Each click, type and key step needs exactly one visible control with the recorded role and name (or exactly one focused text field), read again before input; a type step into a button or with two focused fields is refused; scroll and wait have no target (`test:replay`: runner)
+- [x] A postcondition is retried three times (500 ms apart) and then stops the run before the next step; `unknown`, a missing verifier and a non-structural check are mismatches, never passes (`test:replay`: runner)
+- [x] (cannot) On a changed site (mock-portal layout B has no "Download PDF") the first click stops with no input, a `blocked` receipt, a "Needs you" run and a fixed card; that run can't be saved as a replay (`test:replay`: Postgres)
+- [x] (cannot) Takeover (`paused_by_owner`), an action removed from the agent's allowlist, abort, the wall clock (also a hung desktop call), a missing typed value and a busy agent all stop without further input; a chat run and a replay on one agent can't overlap in either order (`test:replay`: runner)
+- [x] Typed text reaches the desktop once and appears in no receipt, checkpoint, card, evidence row or database row (`test:replay`)
+- [x] (cannot) Routes deny anonymous calls, a wrong Origin, a wrong CSRF token, bad ids, extra or oversized fields and a missing or extra input value, and a paused agent gets 409; another owner's run or script looks like "not found"; nothing is created by a denied call (`test:replay`: store)
+- [x] (cannot) The app role can insert, read and delete `replay_scripts`, never update or truncate them; a second script for one run is refused; deleting a script leaves its run and receipts; a damaged stored script is never replayed (`test:replay`: store)
+- [x] With no `RECEIPT_SIGNING_KEY` a replay explains itself in chat instead of acting (`test:replay`: store)
+- [ ] Live: save a verified mock-portal run in a browser at 1440 and 375 px, replay it on the real desktop, change the layout and replay again (needs the owner stack rebuilt and a live agent run)
+
+## Self-healing (TASK-044)
+
+- [x] Only site-change codes heal (`target_missing`, `ambiguous_target`, `target_changed`, `unsupported_focus`, `postcondition_failed`, `postcondition_unknown`); typed remaining steps, a pending proposal, no Main model, a busy agent, a stale version, takeover and limits never start a repair (`test:heal`)
+- [x] The repair instruction is fixed; saved step labels are quoted, bounded and sent only in a `web`-tagged block; typed text never enters the task, header or proposal (`test:heal`)
+- [x] A sealed, finished, chain-verified repair compiles into a pending proposal; the diff is computed against the base version, approval appends v2 and the next replay resolves it; reject leaves v1 (`test:heal`)
+- [x] A second decision, a stale base, another owner, wrong Origin/CSRF, extra body keys and bad ids are denied; versions are insert-only and the app role cannot delete proposals (`test:heal`)
+- [x] Deleting a script cascades versions and proposals without touching runs or receipts; a damaged version is never replayed (`test:heal`)
+- [ ] Live: mock portal A → B, replay, repair with a real model, review at 1440/375 and approve; a replay on B then makes zero model calls
+
+## Mock vendor portal (TASK-035)
+
+- [x] `node --test tests/mock-vendor.test.mjs`: five HTTP/PDF/lifecycle guard tests. Month filters, empty/clear, A/B/reset, identical PDF bytes, text/byte-correct xref and fixed names verified. Wrong Host/Origin/CSRF/method/content type, unknown/duplicate fields (including escaped duplicate JSON keys), invalid month/ID and oversized body are denied without mutation; no external resource URLs or raw file access.
+- [x] Final disposable desktop run `99f43513539b2b87`, `node --test tests/mock-vendor-desktop.test.mjs`: rebuilt image, Compose up/healthy ps, real unprivileged Chromium and a downloaded sample invoice. PDF.js extracts matching ID/amount and renders it in Chromium; page/PDF screenshots inspected. Evidence: `data/spikes/task035/99f43513539b2b87/report.json` and sibling PNG/PDF files.
+- [x] A-specific Download PDF links disappear in B; Get invoice succeeds with unchanged data. Keyboard Tab/Shift+Tab/Enter, visible focus, reset, filter-empty, clear, injected failed-control request and recovery pass. Both layouts fit 375/768/1280/1440 px without page overflow. Browser observed no external requests.
+- [x] Start is idempotent; status/start/stop/restart succeed, stopped URL refuses connections and restart resets A. Symlinked state is refused. A peer UID receives EACCES on a live fixture's private state; UID/birth/executable/argument guards reject foreign process identities. Original profiles/downloads are not used. Test container, network, volume and image cleanup is independently checked.
+- [x] `npm run mock-vendor:check`: eleven generated assets match source. Five offline desktop image/package/privilege regressions pass. TASK-035 file lint and whitespace checks pass.
+- Final global checks: typecheck reports unrelated BigInt/ES2017 errors in concurrent `lib/costs/pricing.ts`; lint reports two set-state-in-effect errors in concurrent `components/workspace/agent-pane.tsx` (31, 78). TASK-035 file-scoped lint passes. These files were not changed for TASK-035; refresh global checks as concurrent work lands.
+- [ ] Actual owner-stack fixture launch after rebuilding/recreating its desktop image (not performed; disposable acceptance is complete). Agent teaching/replay/self-healing remains in its existing unchecked acceptance items.
 
 ## Models and keys
 
@@ -205,7 +302,7 @@ Rules for AI agents:
 - [x] TASK-007 diagnostics live: corrected reader accepted an empty valid check list; native screenshot-only action was identified and replayed offline as observation_requested. The historical safety flag did not recur, so its discarded reason remains unknown.
 - [x] TASK-007 live transport: owner-selected Contributor model accepts the real screenshot and returns a completed computer call.
 - [x] TASK-007 read-only live proof: Contributor returned a single left-click proposal at (659, 471) for the real placeholder PNG; field/bounds checks and owner review confirmed View project status. Evidence remains marked safety_review_required; no input or provider acknowledgement was sent.
-- [ ] TASK-007 full acceptance (owner reopened for actual-click test): obtain a genuine validated action with no unresolved provider checks, execute only the authorized local button click and verify closed→open plus visible Project status. No automatic acknowledgements or paid retries.
+- [x] TASK-007 full acceptance (owner reopened for actual-click test; met by the fixture live run below): obtain a genuine validated action with no unresolved provider checks, execute only the authorized local button click and verify closed→open plus visible Project status. No automatic acknowledgements or paid retries.
 - [x] TASK-007 actual-click offline: native click and optional unchanged stateless replay, two-request/token/time budgets, unsafe/malformed response stops, private warning redaction and credential-free browser request policy pass.
 - [x] TASK-007 actual-click local browser: fresh Firefox (latest continuation; earlier Chromium checks also passed) rejected wrong/stale targets, executed one coordinate click, verified closed→open and visible status, and rejected a second click without using Meta credits.
 - [x] TASK-007 reviewed flow offline: 1024/3072 output budget and three-request ceiling; exact check/receipt/history replay after specific approval; wrong-target/denial/stale/timeout paths never input or acknowledge. Nonce-bound stdin review is explicit, abortable and single-use; review wait is excluded from active model time.
@@ -213,6 +310,8 @@ Rules for AI agents:
 - [x] TASK-007 image contract: original detail on initial/observation/acknowledgement images, unchanged bytes/replay, and geometry mismatch rejection before model usage/input; 22 live-driver tests pass including real isolated Firefox.
 - [ ] TASK-007 original-detail live: Original-detail run 3e06d19f-8460-4162-968a-7ea98b134318 verified 1280x800/DPR1 and the unchanged screenshot hash, but returned (359,483), below the button ending y=466. One Contributor request used 3559 input / 670 output tokens (584 reasoning); wrong_target stopped before review/input/acknowledgement. Original detail did not resolve the miss; no token cap was reached.
 - [ ] TASK-007 reviewed flow live: d1395501-fc64-4938-bb4e-676bd3e3fef0 completed the genuine observation/replay exchange in Firefox, then returned (359,483), outside the button ending at y=466 on the same reference-image hash. Driver stopped wrong_target before review/input/acknowledgement. Two Contributor requests used 8532 input / 367 output (191 and 176), 229 reasoning; caps were not reached. Actual Meta-driven click remains unverified.
+- [x] TASK-007 fixture: the driver serves a self-contained loopback fixture (GET `/` only, favicon 204, everything else 404/405), no longer needs the app, and closes the server on exit; 23 live-driver tests pass including real headless Firefox at 1862x946/DPR1. Fixture button box (571,456)-(746,488) matches the earlier hit screenshot.
+- [x] TASK-007 fixture live: Run 21c0933d-7e35-4ec4-be42-a784ab4ec56d (fixture, 1862x946/DPR1): after one screenshot observation the model proposed (657,471) inside the button (571,456)-(746,488); owner approved the specific point; one Firefox click opened the section (closed->open, Project status visible, after.png inspected); the reviewed acknowledgement was accepted and no further action executed. 3 Contributor requests, 21354 input / 527 output tokens (338 reasoning), 15.9 s model time, no caps reached. The earlier 1280x800 misses at (359,483) are historical; the viewport size, not original detail, is the likely cause (one run, not proven).
 - [ ] TASK-007 actual-click live: dce29060-5365-4bb3-93e8-7b9c5f757350 returned a completed click proposal with computer_action_requires_confirmation; exact sanitized reason retained. Output 369/512, so no token cutoff. Independent no-input Firefox comparison reproduced the exact screenshot hash and measured button x=280..456.35/y=434..466; model point (359,478) misses. No click/acknowledgement executed. TASK-007 remains open.
 - [x] TASK-007 bounded loop offline: text-only first turn, unchanged genuine replay/call correlation, static PNG only on matching tool output, strict post-image click acceptance and two-request ceiling. Missing/invalid receipts, premature clicks, repeat observations, safety checks, credential replay and inconsistent/excess usage stop safely.
 - [x] TASK-007 deadlines offline: simulated 30-second request timeout aborts a non-cooperating transport without retries; a 45-second total overrun stops before continuation.
@@ -220,7 +319,14 @@ Rules for AI agents:
 - [x] TASK-065: missing or malformed master keys are rejected; encrypted values round-trip correctly and reject tampering or the wrong key without leaking plaintext or keys (AES-256-GCM, private idempotent setup, app-only Compose exposure and Linux symlink refusal pass).
 - [x] TASK-021 offline: 16 mocked-transport tests pass for keyless Meta/OpenAI requests, bounded safe failures, model lists, text/image/tool normalization, exact source-tag framing, Meta safety/replay binding, no automatic acknowledgement, hybrid capability probes and unknown-versus-unsupported handling.
 - [x] TASK-021 offline: a model that returns a valid completion without the forced probe tool is rejected with `tool_calling_unsupported`; failed, rejected or incomplete probes remain `tool_calling_unknown`.
-- [ ] TASK-021 live integration: authenticated provider transport must inject saved credentials at the egress proxy before real model lists, Settings Test latency or provider calls are accepted.
+- [x] TASK-046 proxy: 12 tests pass (blocklist, target rules, single key injection, redaction, limits, auth, transport, Test button). Compose: proxy healthy; from `app` a fake key gets the real upstream 401 through the proxy; metadata IP, `http://` and `localhost` targets and a wrong secret are refused; desktop cannot reach the proxy or the internet; `app` has no direct internet.
+- [x] TASK-067 mocked: 11 desktop-tool tests (also run in the real container, incl. docx and symlinks) and 8 loop tests pass: windows exact, three kept, injection stays data, default-deny, delivery card hook and named final message, fixed failure codes, 4,000-character answers.
+- [x] TASK-067 real stack: through the 4311 listener as the agent's own user, list/read (offset)/deliver work, a script renamed .pdf is refused, delivered files are mode 600 with a numbered suffix, a real text-layer PDF reads offline.
+- [ ] TASK-067 live: attach a PDF, ask a question about it; ask the agent to download a file and send it (owner check; needs your key and a model that follows the delivery rule).
+- [x] TASK-069 mocked: 4 tests pass (one run and one card per message, busy card once without a second run, missing model/desktop fixed cards, errors never leak details).
+- [ ] TASK-069 live: send `What time is it?` to an agent; an answer card appears without a refresh (owner check; needs a saved real key).
+- [x] TASK-046 live: with the project Meta key, a call through the proxy to api.meta.ai/v1/models returned 200 and 9 models, and the key was not echoed (agent check, 2026-11-01).
+- [ ] TASK-021/046 live: the Settings Test button with a saved key (needs your login).
 - [x] TASK-020 offline: 17 model tests pass for owner-safe settings, AES-GCM persistence, short-key masking, provider-change key clearing, same-key reuse, the serialized same-key invariant, CSRF/Origin/owner denials, bounded mocked Test output and independent rate limiting.
 - [x] TASK-020 browser: run `cc8ffafe-25fe-4fe2-afa1-58fea2d5375e` saved Main AI with a synthetic key, reloaded to a masked hint only, shared one encrypted provider with SAM same-key, rendered a mocked bounded model/latency Test response, showed honest live-Test unavailability, denied unauth/Origin/CSRF/unknown/oversized inputs and fit at 375 px (6 model checks plus encrypted-at-rest database assertion).
 - [ ] Main AI accepts a Meta Model API key; Test shows models and latency
@@ -232,23 +338,50 @@ Rules for AI agents:
 
 ## Approvals, permissions and Astra Mode
 
-- [ ] Anything not in an agent's permissions is denied
-- [ ] Risky actions prompt Allow once / Always allow / Deny
-- [ ] Always allow is stored per agent + site + action (+ limit) and doesn't apply to other agents or sites
-- [ ] An action over a saved limit asks again
+- [x] Anything not in an agent's permissions is denied (`test:agent-step-loop`: the default-deny action allowlist stops before any input; TASK-050 keeps it first)
+- [x] Risky actions prompt Allow once / Always allow / Deny (`test:agent-step-loop`: allow executes after a page re-check; deny executes nothing; a missing approval service fails closed; a changed page is `approval_stale`)
+- [x] Approval attention preserves existing budget and security attention, and clears only approval attention (`tests/approval-attention.test.mjs`: conditional SQL and disposable Postgres checks).
+- [x] Always allow is stored per agent + site + action (+ limit) and doesn't apply to other agents or sites (`test:approvals` real-Postgres: exact host only, subdomain/other class/other agent denied; revoke removes it at once)
+- [x] An action over a saved limit asks again (`test:approvals`: a grant with one use allows once, then creates a new approval and the run waits)
 - [ ] Enabling Astra Mode needs the warning modal; the red ASTRA MODE badge shows everywhere
 - [ ] In Astra Mode, receipts, audit log, budgets, tripwire and key isolation still work
 
 ## Security
 
-- [ ] Agents can only reach domains on their allowlist
-- [ ] Requests to `169.254.169.254` and private network ranges are blocked
+- [x] Agents can only reach domains on their allowlist (TASK-045: offline registry/proxy checks plus disposable real-Docker run `4a002910-58ca-4ca0-b83f-cfceae57723f`; real Chromium loaded `example.com` and refused `iana.org`)
+- [x] Requests to `169.254.169.254` and private network ranges are blocked (TASK-045: CONNECT to `169.254.169.254`, `10.0.0.1` and an HTTP request to `169.254.169.254` refused; see the TASK-045 subsection)
 - [ ] Credentials are injected by the egress proxy; the model never sees them
-- [ ] An agent's canary secret leaving the machine kills the session and logs a security event
-- [ ] A malicious page instructing the agent to send data elsewhere does not change the task
+- [x] An agent's canary secret leaving the machine kills the session and logs a security event (`test:canary` 4/4, `test:tripwire` 5/5, `test:egress-tripwire` 7/7, `test:agent-step-loop` 43/43). Limits: no TLS interception, so HTTPS bodies/paths, chat text, owner takeover typing and provider calls are not inspected; the proxy sees `CONNECT` hosts and plain-HTTP request lines/headers, and the app sees `type` text before execution.
+- [x] A malicious page instructing the agent to send data elsewhere does not change the task (TASK-049 offline: `test:agent-scope` 8/8 covers hosts, emails, look-alikes, userinfo tricks, page rule and hostile input; `test:agent-step-loop` proves no desktop input, unchanged task and text-free receipts. Live hostile page pending TASK-055)
 - [ ] Stop agent halts one agent immediately; Stop crew halts all of them
 - [ ] Security Center lists tripwire events and blocked actions
 - [ ] Audit log is append-only and signed
+
+### TASK-071 network namespace spike (2026-11-02 IST)
+
+- Reproduce: `node scripts/spikes/network-namespace.mjs`. A non-passing candidate exits 1; cleanup is reported separately. The spike does not complete TASK-045 or TASK-071.
+- Final run `3d2616f6d171d52fffbfc2c4`: [sanitized report](../test-results/network-namespace/3d2616f6d171d52fffbfc2c4/report.json), 36.1 seconds, Docker 29.9.2 Linux amd64, desktop image `sha256:8568856aa703d782be2168e12634f0c641292717a3078ff56f12470046d4a92d`. Earlier runs retain preflight/parser diagnostics; this is the final evidence.
+- [x] 72 Linux probe assertions pass. Supervisor effective/permitted/bounding capabilities reduce from `0x2001c3` to `0x1c3`; inherited filter remains active. Both synthetic agent users have zero capability sets and no-new-privileges. New user/network namespaces are created after reduction; temporary namespace-local capabilities are dropped before agent/browser work.
+- [x] Two distinct agents bind the same localhost port and read their own markers; restarting the first agent creates a third distinct namespace while the second remains active. Outer network-namespace creation without a user namespace is denied; all synthetic sessions exit and are reaped.
+- [x] Shared IPv4/IPv6 loopback is unreachable. Direct TCP, DNS-like UDP, QUIC-like UDP and IPv6 documentation-address probes return no route. Only loopback exists; no IPv4 routes exist. These are controlled topology tests, not live probes against metadata or LAN machines.
+- [x] The inherited socket inventory contains only the intended AF_UNIX bridge endpoint, not a pre-opened TCP/UDP escape. Abstract Unix sockets are isolated; a pathname socket below root-only `/run/eclipse` returns EACCES.
+- [x] The fixed HTTP bridge reaches only its disposable fixture. Unlisted/private/metadata destinations, simulated forbidden DNS, a forbidden redirect and forged agent identity all return 403. The DNS fixture is deterministic and is not production resolver/allowlist enforcement.
+- [x] Real graphical Chromium loads the bridge fixture, clicks the known button and captures a 4,546-byte PNG in all three sessions. `chrome://sandbox` confirms namespace/PID/network and Seccomp-BPF layers. Existing `startSession` and Playwright private pipes are reused; no production controller integration or noVNC acceptance is claimed.
+- [ ] **Candidate boundary failure (3 assertions):** every session connects to the deliberately world-accessible `/tmp/task071-shared.sock` in the shared filesystem. Network namespaces isolate abstract sockets, but pathname sockets still depend on filesystem permissions/authentication. This is a synthetic counterexample, not a demonstrated exploit of an existing app listener. See [network_namespaces(7)](https://man7.org/linux/man-pages/man7/network_namespaces.7.html), [unix(7)](https://man7.org/linux/man-pages/man7/unix.7.html) and [user_namespaces(7)](https://man7.org/linux/man-pages/man7/user_namespaces.7.html).
+- [ ] **Environment limit:** this Docker Desktop engine advertises seccomp but no AppArmor; both existing desktop and fixture have an empty AppArmor profile. No override or host setting was changed. AppArmor enforcement and Linux-host portability remain unverified.
+- [x] Named volume, internal network, fixture container/image and temporary base-image tag are removed. Independent run-label enumeration is empty; all pre-existing container IDs/images/running states/start times/restart counts and volume/network identities are preserved.
+- Next bounded validation: inventory the actual desktop's pathname listeners and test that peer agents cannot use them to reach network-capable services. Check private directories and service authentication, including X/Chromium sockets. Approve a separate production prompt only after that boundary is accounted for; an AppArmor-capable Linux run is still needed for that layer.
+- No real credentials, saved profiles, models, external websites, metadata endpoints or unrelated LAN targets were used. Production allowlists, credential injection, tripwire, approvals and controller integration remain separate acceptance; their existing boxes stay unchecked.
+- Offline harness checks: `node --test tests/network-namespace-spike.test.mjs` (7/7 with Windows child-process access), `npm run lint` and `npm run typecheck` pass. `--test-isolation=none` also passes 7/7 within the restricted sandbox, avoiding its child-process EPERM without changing Docker security.
+
+### TASK-045 desktop egress (2026-11-02 IST)
+
+- Reproduce: `npm run test:egress-desktop` (12 offline proxy/registry checks), `npm run test:egress-policy` (3 app-push checks), `npm run test:desktop-egress` (disposable `desktop` + `egress-proxy` stack, real Chromium, real internet). Evidence for the Docker run: `data/spikes/task-045/<uuid>/result.json`.
+- [x] Offline: exact/subdomain/look-alike allowlist matching; token mint/verify and desktop/proxy formula agreement; `407` for missing/wrong/peer tokens; `403` for unknown/blocked agents, non-443, IP literals, unlisted hosts, private/metadata DNS and mixed answers; DNS pinned to the first checked address; plain HTTP `307` with the same path and `403` for unlisted/private; policy auth, strict validation, TTL; an unchanged refresh keeps tunnels while a changed/blocked push and expiry destroy them; tunnel caps; no secret or token in logs; the app and proxy domain patterns agree (12/12).
+- [x] Offline app push: Bearer `EGRESS_PROXY_SECRET`, bounded JSON body, 5 s abort, non-2xx/network failure is a soft failure, invalid secret sends nothing, blocked pushes use an empty list (3/3).
+- [x] Real Docker `4a002910-58ca-4ca0-b83f-cfceae57723f` (39 s): allowlisted `example.com` CONNECT completed a verified TLS handshake; `example.org`, `169.254.169.254`, `10.0.0.1`, port 80 and a token minted for another agent were refused; plain HTTP was redirected to HTTPS and `169.254.169.254` over HTTP was refused; direct TCP to `1.1.1.1`, the Docker gateway and unauthenticated `egress-proxy:4320` failed; `DESKTOP_CONTROL_SECRET`, `EGRESS_DESKTOP_SECRET` and the token were absent from every agent-visible environment and command line; real Chromium loaded `example.com`, refused `iana.org`, and still loaded the loopback fixture. Cleanup complete.
+- [x] Plain HTTP from the browser to an allowlisted host is redirected to HTTPS; plaintext is never forwarded.
+- [ ] Live owner-stack check (rebuild with `EGRESS_DESKTOP_SECRET`, browse an allowlisted and a blocked site from an agent desktop) and a chat-run push against the running app.
 
 ## Memory
 
@@ -259,19 +392,26 @@ Rules for AI agents:
 - [ ] New memories show as diffs with Undo; pinned facts are never rewritten
 - [ ] Writes during a session take effect in the next session (frozen snapshot)
 - [ ] Changes are mirrored to `./data/memory` as Markdown
+- [ ] Asked about a fact saved in an earlier session, the agent checks memory and answers with it instead of asking the owner again
+- [ ] "I'll remember that" is only said after a memory write request was made
 
 ## Budgets and cost
 
-- [ ] Budgets per agent, routine, day and month warn at 80% and pause the agent at 100%
-- [ ] Run guards stop runs at max steps, max tokens and the wall-clock limit
-- [ ] The same action repeated 3 times stops the run
-- [ ] Each run has a cost receipt: tokens in/out/cached, model per step, cost in USD
-- [ ] Editing the price table changes later cost receipts
+- [x] Agent daily and monthly budgets warn at 80% and pause the agent at 100% (isolated Postgres run: exact 80% warning card and 100% pause; `npm run test:costs-store`)
+- [ ] Routine budgets warn at 80% and pause at 100% (routine runtime is TASK-038/039)
+- [x] Run guards stop runs at max steps, max tokens and the wall-clock limit (`test:agent-step-loop`, `test:providers`; non-cooperating provider is aborted)
+- [x] The same action repeated 3 times stops the run (`test:agent-step-loop`)
+- [x] Each run has a cost receipt: tokens in/out/cached, model per step and call, cost in USD micros (`test:costs-store`, real run cost route)
+- [x] Editing the price table changes later cost receipts, never old rows (`test:costs-store`: Wonder $4/1M falls to $2/1M while the first row stays $4)
+- [x] Budget is checked before every model call against the live total; two concurrent runs may each make only the one call they checked before the shared total pauses (`test:costs-store`)
+- [x] At 100% the run stops with a `budget_paused` card in chat, the `corona` ring on the agent and a toast (live Chrome: price save/reload, `Needs you` ring and toast at 1440 and 375 px, no overflow; screenshots in `test-results/task-034/`; attention fixture and session removed)
+- [x] Retrying the same model call adds no second cost row (`test:costs-store`, real unique idempotency key and `onConflictDoNothing`)
+- [x] Runs that fail, return invalid output or are cancelled still appear in the cost receipt (`test:costs-runtime`; failed calls carry a zero-usage row when the provider reports no usage)
 
 ## Date and time
 
 - [ ] "What's today's date and time?" is answered correctly in the owner's timezone
-- [ ] "Next Friday 9am" resolves to the correct date and is shown in the routine card
+- [x] "Next Friday 9am" resolves to the correct date and is shown in the routine card (TASK-038 automated relative-date/DST tests; card display verified live)
 - [ ] A weekday 09:00 routine fires at 09:00 local time across a DST change
 - [ ] Timestamps are stored in UTC and shown in the owner's timezone
 

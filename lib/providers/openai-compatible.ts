@@ -217,6 +217,7 @@ export function createOpenAICompatibleConnector(
           method: "POST",
           headers: { Accept: "application/json", "Content-Type": "application/json" },
           body: JSON.stringify(body),
+          signal: validated.signal,
         },
         limits,
       );

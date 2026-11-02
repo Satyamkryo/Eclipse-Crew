@@ -28,7 +28,16 @@ export const mainModelSettingsSchema = z.object({
   model: modelId,
   baseUrl: baseUrl.optional(),
   apiKey: apiKey.optional(),
+  // TASK-027: "fixed" always uses `model`. "auto" may switch to `hardModel` (same provider and key) for hard steps.
+  routing: z.enum(["fixed", "auto"]).default("fixed"),
+  hardModel: modelId.optional(),
 }).strict().superRefine((value, context) => {
+  if (value.routing === "auto" && !value.hardModel) {
+    context.addIssue({ code: "custom", path: ["hardModel"], message: "Enter the hard-step model." });
+  }
+  if (value.routing === "fixed" && value.hardModel) {
+    context.addIssue({ code: "custom", path: ["hardModel"], message: "Hard-step model needs Auto routing." });
+  }
   if (value.kind === "meta" && value.baseUrl) {
     context.addIssue({ code: "custom", path: ["baseUrl"], message: "Meta uses a fixed endpoint." });
   }

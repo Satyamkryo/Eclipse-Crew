@@ -2,6 +2,7 @@ import "server-only";
 
 import { z } from "zod";
 
+import { sourceTagSchema } from "../security/source-tags";
 import { ProviderError, providerHttpError } from "./errors";
 import type { GenerateRequest, ProviderImageMediaType, ProviderRuntimeOptions, ProviderTransport } from "./types";
 
@@ -10,7 +11,7 @@ const DEFAULT_MAX_RESPONSE_BYTES = 1024 * 1024;
 const MAX_REQUEST_BYTES = 8 * 1024 * 1024;
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
-const sourceTag = z.enum(["user", "agent", "web", "email", "document", "tool"]);
+const sourceTag = sourceTagSchema;
 const imageBase64 = z.string().min(4).max(7_000_000).refine((value) => {
   try {
     const bytes = Buffer.from(value, "base64");
@@ -53,6 +54,7 @@ const requestSchema = z.object({
   maxOutputTokens: z.number().int().min(1).max(1_000_000).optional(),
   reasoningEffort: z.enum(["minimal", "low", "medium", "high", "max"]).optional(),
   computerUse: z.boolean().optional(),
+  signal: z.instanceof(AbortSignal).optional(),
 }).strict();
 
 export function validateGenerateRequest(request: unknown): GenerateRequest {
@@ -173,15 +175,26 @@ export async function requestJson(
     throw new ProviderError("invalid_request");
   }
 
+  const caller = init.signal;
+  if (caller?.aborted) throw new ProviderError("aborted");
   const controller = new AbortController();
   let cancelStream: (() => Promise<void>) | undefined;
   let deadline: ReturnType<typeof setTimeout> | undefined;
+  let onCallerAbort: (() => void) | undefined;
   const timedOut = new Promise<never>((_, reject) => {
     deadline = setTimeout(() => {
       controller.abort();
       if (cancelStream) void cancelStream().catch(() => undefined);
       reject(new ProviderError("timeout"));
     }, limits.timeoutMs);
+  });
+  const cancelled = new Promise<never>((_, reject) => {
+    onCallerAbort = () => {
+      controller.abort();
+      if (cancelStream) void cancelStream().catch(() => undefined);
+      reject(new ProviderError("aborted"));
+    };
+    caller?.addEventListener("abort", onCallerAbort, { once: true });
   });
 
   try {
@@ -191,9 +204,14 @@ export async function requestJson(
         try {
           response = await transport(url, { ...init, redirect: "error", signal: controller.signal });
         } catch (error) {
+          if (caller?.aborted) throw new ProviderError("aborted");
           if (controller.signal.aborted) throw new ProviderError("timeout");
           if (error instanceof ProviderError) throw error;
           throw new ProviderError("network_error");
+        }
+        if (caller?.aborted) {
+          await response.body?.cancel();
+          throw new ProviderError("aborted");
         }
         if (controller.signal.aborted) {
           await response.body?.cancel();
@@ -204,9 +222,11 @@ export async function requestJson(
         });
       })(),
       timedOut,
+      cancelled,
     ]);
   } finally {
     if (deadline) clearTimeout(deadline);
+    if (onCallerAbort) caller?.removeEventListener("abort", onCallerAbort);
     cancelStream = undefined;
   }
 }

@@ -342,6 +342,8 @@ function lifecycleDatabase({ statusWrites = true, deleteWrites = true } = {}) {
   return { database, events, state };
 }
 
+const budgetOk = async () => ({ state: "ok" });
+
 function lifecycleDesktop(events) {
   return {
     desktopCreateAgent: async () => { events.push("create-identity"); },
@@ -363,7 +365,7 @@ test("resume and delete serialize the complete owner lifecycle", async () => {
   const service = unwrap(await import("../lib/agents/service.ts"));
   const { database, events, state } = lifecycleDatabase();
   const desktop = lifecycleDesktop(events);
-  const resumed = service.resumeAgentForOwner(database, OWNER, AGENT, desktop);
+  const resumed = service.resumeAgentForOwner(database, OWNER, AGENT, desktop, budgetOk);
   const deleted = service.deleteAgentForOwner(database, OWNER, AGENT, "Concurrent", desktop);
   await Promise.all([resumed, deleted]);
   assert.equal(events[0][0], "lock-timeout", "the bounded row-lock wait is set before locking");
@@ -377,7 +379,7 @@ test("delete that wins prevents a waiting resume from recreating the desktop", a
   const { database, events, state } = lifecycleDatabase();
   const desktop = lifecycleDesktop(events);
   const deleted = service.deleteAgentForOwner(database, OWNER, AGENT, "Concurrent", desktop);
-  const resumed = service.resumeAgentForOwner(database, OWNER, AGENT, desktop).catch((error) => error);
+  const resumed = service.resumeAgentForOwner(database, OWNER, AGENT, desktop, budgetOk).catch((error) => error);
   await Promise.all([deleted, resumed]);
   assert.equal((await resumed).code, "agent_not_found");
   assert.ok(!events.includes("create-identity") && !events.includes("start-begin"), "resume never reaches the desktop");
@@ -391,9 +393,14 @@ test("lifecycle never reports success when its final database write is lost", as
   const pauseError = await service.pauseAgentForOwner(paused.database, OWNER, AGENT, desktop).catch((error) => error);
   assert.equal(pauseError.code, "agent_not_found");
   assert.ok(paused.events.includes("stop"), "pause reached the final write");
-  const resumeError = await service.resumeAgentForOwner(paused.database, OWNER, AGENT, desktop).catch((error) => error);
+  const resumeError = await service.resumeAgentForOwner(paused.database, OWNER, AGENT, desktop, budgetOk).catch((error) => error);
   assert.equal(resumeError.code, "agent_not_found");
   assert.ok(paused.events.includes("start-end"), "resume reached the final write");
+  const exhausted = lifecycleDatabase();
+  const blocked = await service.resumeAgentForOwner(exhausted.database, OWNER, AGENT, lifecycleDesktop(exhausted.events),
+    async () => ({ state: "paused" })).catch((error) => error);
+  assert.equal(blocked.code, "budget_exhausted");
+  assert.ok(!exhausted.events.includes("start-begin"), "an exhausted agent never restarts its desktop");
   const undeleted = lifecycleDatabase({ deleteWrites: false });
   const deleteError = await service.deleteAgentForOwner(undeleted.database, OWNER, AGENT, "Concurrent", lifecycleDesktop(undeleted.events))
     .catch((error) => error);

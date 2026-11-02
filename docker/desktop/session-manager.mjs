@@ -1,6 +1,6 @@
 import net from "node:net";
-import { randomUUID } from "node:crypto";
-import { operationFields, resultFor } from "./controller-schema.mjs";
+import { createHmac, randomUUID } from "node:crypto";
+import { operationFields, resultFor, TeachSchema } from "./controller-schema.mjs";
 import { lstat, chmod, readFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { AgentError, createAgent, deleteAgent, inspectAgent, launchAgent, requireAdmin, validateIds } from "./agent-store.mjs";
@@ -12,6 +12,10 @@ const COMMANDS = ["session-start", "session-status", "session-stop"];
 export function validateSessionRequest(value) {
   if (!value || Object.keys(value).sort().join() !== "agentId,command,ownerId" || !COMMANDS.includes(value.command)) throw new AgentError("invalid_session_request");
   validateIds(value.ownerId, value.agentId); return value;
+}
+// TASK-045. The proxy verifies the same HMAC; the token is delivered over the worker's private pipe.
+export function agentEgressToken(agentId, secret) {
+  return createHmac("sha256", secret).update(`v1:${agentId}`).digest("hex");
 }
 function publicState(record, state = "stopped", extra = {}) {
   return { agentId: record.agentId, state, display: record.uid - 20000 + 100, ...extra };
@@ -101,6 +105,8 @@ export class SessionManager {
       if (old) await this.clean(old);
       this.takeovers.delete(agentId); this.requestIds.set(agentId, new Set());
       const { home: _h, downloads: _d, ...identity } = record; void _h; void _d;
+      const egressSecret = process.env.EGRESS_DESKTOP_SECRET ?? "";
+      const egressToken = /^[0-9a-f]{64}$/.test(egressSecret) ? agentEgressToken(agentId, egressSecret) : null;
       const child = launchAgent(record, ["node", "/opt/eclipse/desktop/session-worker.mjs", JSON.stringify(identity)], { stdio: ["pipe", "pipe", "ignore"] });
       const entry = { record, child, state: "starting", generation: randomUUID(), tracked: new Map() }; this.entries.set(agentId, entry); this.generations.set(agentId, entry.generation);
       entry.monitor = setInterval(() => { void this.observe(entry).catch(() => {}); }, 200);
@@ -126,6 +132,7 @@ export class SessionManager {
         else if (message.state === "failed") failed(SESSION_FAILURES.has(message.reason) ? message.reason : "session_component_failed");
         else throw Error("invalid_worker_event");
       } });
+      writeFramed(child.stdin, { command: "egress", token: egressToken }).catch(() => failed("egress_not_configured"));
       void entry.channel.done.then(() => failed());
       try { await ready; await this.observe(entry); return this.state(entry); }
       catch (error) { await this.clean(entry); throw error; } finally { clearTimeout(timer); delete entry.cancelStart; }
@@ -174,6 +181,7 @@ export class SessionManager {
     });
   }
   closeViewers(agentId) {
+    this.abortTeach(agentId);
     const viewers = this.viewers.get(agentId); this.viewers.delete(agentId); this.takeovers.delete(agentId);
     for (const viewer of viewers?.values() ?? []) { try { viewer.close(); } catch { /* already disconnected */ } }
   }
@@ -191,7 +199,7 @@ export class SessionManager {
       if (viewers.get(control.connectionId) !== viewer) return;
       viewers.delete(control.connectionId); if (!viewers.size) this.viewers.delete(agentId);
       const lease = this.takeovers.get(agentId);
-      if (lease?.connectionId === control.connectionId && lease.sessionRef === control.sessionRef) this.takeovers.delete(agentId);
+      if (lease?.connectionId === control.connectionId && lease.sessionRef === control.sessionRef) { this.abortTeach(agentId); this.takeovers.delete(agentId); }
     };
   }
   validateViewer(ownerId, agentId, control) {
@@ -208,10 +216,15 @@ export class SessionManager {
     });
   }
   handBack(ownerId, agentId, control) {
+    this.authorize(ownerId, agentId, control.generation);
+    const current = this.takeovers.get(agentId);
+    if (current && (current.ownerId !== ownerId || current.leaseId !== control.leaseId || current.sessionRef !== control.sessionRef || current.connectionId !== control.connectionId)) return Promise.reject(new AgentError('invalid_lease'));
+    const stopped = this.abortTeach(agentId);
     return this.serialize(agentId, async () => {
+      await stopped;
       this.authorize(ownerId, agentId, control.generation); const lease = this.takeovers.get(agentId);
       if (lease && (lease.ownerId !== ownerId || lease.leaseId !== control.leaseId || lease.sessionRef !== control.sessionRef || lease.connectionId !== control.connectionId)) throw new AgentError("invalid_lease");
-      this.takeovers.delete(agentId); return { takenOver: false, generation: control.generation };
+      await this.abortTeach(agentId); this.takeovers.delete(agentId); return { takenOver: false, generation: control.generation };
     });
   }
   remember(agentId, requestId) {
@@ -219,6 +232,43 @@ export class SessionManager {
     if (ids.has(requestId)) throw new AgentError("duplicate_request_id");
     ids.add(requestId);
     if (ids.size > DUPLICATE_ID_CACHE_LIMIT) ids.delete(ids.values().next().value);
+  }
+  abortTeach(agentId) {
+    const entry = this.entries.get(agentId);
+    if (!entry?.teachActive) return Promise.resolve();
+    entry.teachActive = false;
+    // Invalidation is sent outside the operation queue and consumed during in-flight work.
+    // Termination on write failure prevents an orphan writer from continuing.
+    return writeFramed(entry.child.stdin, { command: 'teach-abort' }).catch(() => {
+      entry.uncertain = true; entry.state = 'failed';
+      void this.clean(entry).catch(() => {});
+    });
+  }
+  teach(ownerId, agentId, raw) {
+    const control = TeachSchema.parse(raw);
+    return this.serialize(agentId, async () => {
+      const entry = this.authorize(ownerId, agentId, control.generation);
+      this.validateViewer(ownerId, agentId, control);
+      const lease = this.takeovers.get(agentId);
+      if (!lease || lease.ownerId !== ownerId || lease.leaseId !== control.leaseId || lease.sessionRef !== control.sessionRef || lease.connectionId !== control.connectionId) throw new AgentError('not_in_takeover');
+      this.remember(agentId, control.requestId);
+      if (control.action === 'start') entry.teachActive = true;
+      let result;
+      try { result = await entry.channel.send({ command:'teach',requestId:control.requestId,params:control }); }
+      catch (error) {
+        if (['uncertain_outcome','channel_closed'].includes(error.code)) {
+          entry.uncertain = true; entry.state = 'failed'; entry.reason = 'uncertain_outcome';
+          this.closeViewers(agentId); entry.channel.close(); void this.clean(entry).catch(() => {});
+          throw new AgentError('uncertain_outcome');
+        }
+        throw new AgentError('operation_failed');
+      }
+      // Lease loss during a worker operation invalidates its result as well.
+      this.validateViewer(ownerId, agentId, control);
+      if (this.takeovers.get(agentId) !== lease) throw new AgentError('invalid_lease');
+      if (['aborted','failed','complete'].includes(result.state)) entry.teachActive = false;
+      return result;
+    });
   }
   async perform(entry, requestId, operation, params, trustedOwnerInput = false) {
     try {

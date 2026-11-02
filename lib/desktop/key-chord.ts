@@ -5,6 +5,18 @@ const namedKeys = new Set([
   ...Array.from({ length: 12 }, (_, index) => `F${index + 1}`),
 ]);
 
+const modifierNames = ["Control", "Alt", "Shift", "Meta"];
+
+// Same rule the desktop controller applies to `input.key`: unique modifiers, then a named key,
+// or a single letter/digit when at least one modifier is present.
+export function isValidKeyChord(value: string): boolean {
+  if (value.length < 1 || value.length > 64) return false;
+  const parts = value.split("+");
+  const key = parts.pop() as string;
+  return new Set(parts).size === parts.length && parts.every((part) => modifierNames.includes(part)) &&
+    (namedKeys.has(key) || (parts.length > 0 && /^[a-z0-9]$/i.test(key)));
+}
+
 type KeyModifiers = {
   key: string;
   ctrlKey: boolean;

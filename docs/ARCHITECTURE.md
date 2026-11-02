@@ -80,7 +80,7 @@ flowchart LR
 
 The target is one `docker compose up` on Windows (Docker Desktop / WSL 2), macOS and a Linux VPS. All services use `restart: unless-stopped`. ADR-024 adds a fixed-purpose localhost ingress to the four core services.
 
-**Current build:** five services start after supplying database and controller credentials. `app` serves owner setup/login and an authenticated temporary desktop shell; `desktop` provides isolated persistent graphical sessions, authenticated controller operations and view-only RFB streaming; `egress-proxy` is inert. Separate internal database, desktop and ingress-to-app networks isolate the app, database and desktop; the ingress alone also has a frontend network for localhost publication. It accepts only the fixed app upstream. Disposable Docker Desktop tests verify the current auth/desktop stack on this machine; the full agent runtime and other platforms remain unverified.
+**Current build:** five services start after supplying database and controller credentials. `app` serves owner setup/login and an authenticated temporary desktop shell; `desktop` provides isolated persistent graphical sessions, authenticated controller operations and view-only RFB streaming; `egress-proxy` forwards only the app's model-provider requests (TASK-046). Separate internal database, desktop, ingress-to-app and app-to-proxy networks isolate the app, database and desktop; the ingress alone also has a frontend network for localhost publication. It accepts only the fixed app upstream. Disposable Docker Desktop tests verify the current auth/desktop stack on this machine; the full agent runtime and other platforms remain unverified.
 
 Database provisioning is explicit and rejects unexpected existing roles, schemas, objects and migration history before changes. `eclipse_app` has only SELECT, INSERT and UPDATE on the current owner table; it cannot create schemas or temporary tables, escalate roles or access migration metadata. `eclipse_migrator` owns the project schema objects and has the database CREATE permission Drizzle requires. Future migrations must grant table privileges explicitly; no blanket mutation grants exist. The app receives only its runtime URL, while a short-lived helper runs migrations on the private database network with only its migration URL. Owner-scoped queries are a separate, unfinished data-access-layer responsibility.
 
@@ -110,6 +110,12 @@ Database provisioning is explicit and rejects unexpected existing roles, schemas
 │  volumes: workspace, artifacts, postgres  ·  ./data/memory (mirror)       │
 └───────────────────────────────────────────────────────────────────────────┘
 ```
+
+### Desktop-local mock vendor fixture (TASK-035)
+
+`docker/desktop/mock-vendor/` is a synthetic external-site simulation, separate from the authenticated app. The owner starts/stops it through `scripts/mock-vendor.mjs`, which reuses guarded desktop administration to execute as the selected agent. Its detached Node process has that agent's UID, zero capabilities, no-new-privileges and a sanitized environment. It binds an ephemeral `127.0.0.1` port in its current namespace, adds no service/network/host port and holds no real credentials or database connection. Before TASK-071 production integration, loopback remains shared; the fixture is not cross-agent network isolation.
+
+Source-controlled fixtures contain four fictional invoices and deterministic text PDFs. React/shadcn/Lucide markup and shared Tailwind tokens are generated into static assets before distribution; desktop needs no React runtime or installation-time asset build. Layout A (top navigation/table) and B (sidebar/cards) change targets and positions while retaining invoice data. Layout state is process-local and resets on restart. Same-origin, CSRF-protected POST controls change layout/reset; GET filtering is read-only. Private mode-600 lifecycle state under the agent's mode-700 `work/.mock-vendor` records PID/birth/UID and URL; stop validates the exact fixture process before signaling. Reset never deletes downloads. This supplies the demo target, not the teach/replay/self-healing implementation.
 
 ### 3.1 Network exposure
 
@@ -180,13 +186,13 @@ Lifecycle, control transitions and primitive dispatch share a bounded per-agent 
 
 The app authenticates each upgrade through a fixed loopback session-validated route and revalidates within five seconds. The controller authenticates upstream VNC privately; noVNC receives RFB pixels with a separate None-security negotiation only after owner authentication. The view-only protocol accepts bounded format/encoding/framebuffer requests and rejects keyboard, pointer and clipboard events. Owner input uses separate session/Origin/CSRF-checked HTTP routes. Per-session VNC passwords never enter browser responses or public session status.
 
-Teach recording, checkpoints/restores, opaque credential entry and the model grounding/receipt loop remain later tasks.
+Managed-browser teach capture is implemented (§11.1); native desktop/terminal capture remains open (TASK-036). Checkpoints, proof receipts and the grounding loop are implemented (TASK-029/031/032); opaque credential entry remains later.
 
 The desktop container mounts **only** the `workspace` volume. It never sees the database, `.env` or secrets.
 
 ### 4.4 `egress-proxy`
 
-The single outbound path for the desktop and tools.
+The single outbound path for the desktop and tools. **Current build (TASK-045/046):** one built-ins-only Node process (user 65534, read-only root, no published port) with two listeners. **4320** accepts the app's routes over the internal `egress_app` network and is authenticated with `EGRESS_PROXY_SECRET` (Bearer, constant-time compare); the desktop shares the `desktop` network and can reach the port, but never holds that secret: `POST /v1/forward` forwards a model-provider request and injects the saved key (`X-Eclipse-Credential`, used for one upstream call, never stored, logged or returned; a reflected key is replaced by `[redacted]`), `POST /v1/teach-asr` sends fixed-destination narration audio, and `POST /v1/policy` replaces one agent's allowlist. Forwarded targets are public `https` hostnames on 443; the proxy resolves DNS itself, refuses private, loopback, link-local, CGNAT, multicast, metadata and IPv4-mapped addresses, connects to the checked address, refuses redirects, and caps body (9 MiB), response (16 MiB), time (60 s) and concurrency (8). **4321** is the browser proxy on the internal `desktop` network: Chromium sends `CONNECT host:443` with `Basic` username = the agent UUID and password = `HMAC-SHA256(EGRESS_DESKTOP_SECRET, "v1:" + agentId)`. The proxy requires the host to be the agent's allowlist entry or a subdomain of it, resolves and pins the first checked address, and tunnels the TLS bytes without inspecting them. A plain `http://` GET/HEAD for an allowlisted host gets a `307` to the same path over HTTPS; plaintext is never forwarded. Entries are memory-only, expire after 120 s, are re-pushed every 60 s, and a changed or blocked push destroys that agent's open tunnels; limits are 64 tunnels per agent, 256 total, 10 s connect, 120 s idle and 30 min lifetime. The token reaches the worker over the supervisor's private pipe and is never in argv or an environment variable. Loopback is bypassed for the mock fixture and remains shared until TASK-071. The proxy never holds `ENCRYPTION_KEY` or a database connection; tool/MCP/shell egress and TLS inspection are not implemented.
 
 - per-agent default-deny domain allowlists
 - blocking of internal and cloud-metadata addresses (`169.254.169.254`, RFC 1918 ranges)
@@ -241,13 +247,15 @@ flowchart TD
   R -- give up --> H2[Hand off to owner]
 ```
 
+TASK-049/050 make policy concrete in code: the action allowlist, then task scope, then grounding, then the approval gate, then the confidence gate, then execution. `lib/agent/scope.ts` derives in-scope hosts from the owner's task, the agent's configured `domains` and the first readable page, and refuses a `type` that names another host or email (`lib/agent/scope.ts`); one refusal is a blocked receipt, the second stops the run as `scope_blocked`. `lib/agent/risk.ts` classifies a grounded click as download, send, post, delete, purchase or submit from fixed keyword lists in the control name and `expect`; `lib/approvals/gate.ts` then uses a live grant with capacity or creates an approval row and waits for the owner, re-reading and re-grounding the page before execution. TASK-024 implements this loop in `lib/agent/` with every dependency injected (provider connector, desktop port, grounder, card sink), so it is tested with mocked transports only. `intent.ts` holds the strict Zod schema and the single `next_step` tool (click, type, key, scroll, wait, get_time, finish, ask_owner; no coordinates or selectors). `context.ts` builds each request: the owner task is the only `user`-tagged content, the screenshot is tagged `web` and the step history `agent`, and the clock block from `lib/time/clock.ts` follows the stable prefix (see §19). `executor.ts` defines the `Grounder` seam: coordinates exist only when a grounder returns them; the default grounder uses page structure (TASK-025, §7.2), and a click it cannot place hands off to the owner. `desktop-port.ts` wraps `desktopCommand`, so takeover leases still stop input (`takeover_active` ends the run as `paused_by_owner`). Policy includes the agent's default-deny `actions` allowlist and TASK-028 independent target agreement (§7.4). TASK-069 connects chat and TASK-046 supplies authenticated proxy transport. TASK-029 adds per-step receipts and the `runs`/`steps` tables (9.2): `RunDeps.receipts` is a sink the loop calls once per step, and a run that cannot record its proof stops with `receipt_error`. TASK-033 guards are now 20 steps, 200,000 total input + output tokens (cached input and reasoning are not double-counted), a 15-minute wall clock, and the 3rd identical step; one run per agent. The deadline begins before receipt initialization and covers desktop, model and verification work. Its abort signal reaches the provider transport, and a returned step is not executed after a token or time stop. Receipts still seal the run with the guard outcome. Checkpoints remain TASK-032.
+
 ### 6.2 Run guards [M]
 
 | Guard | Behaviour |
 |---|---|
 | Max steps / max tokens / wall-clock limit | Stop the run and report |
 | Loop detection | The same action repeated 3× stops the run |
-| Budgets | Warn at 80%, pause and ask at 100% (see §18) |
+| Budgets | Checked before every step against the live total spent (not a balance read at run start). Warn at 80%; at 100% the run pauses with a `budget_paused` outcome, posts a chat card and asks the owner (see §18) |
 | Concurrency | One run per agent at a time (one screen); agents run in parallel |
 
 Per-step checkpoints are also needed because stateless computer-use replay is reportedly capped at 29 screenshot/action pairs per request (to verify).
@@ -261,7 +269,7 @@ Per-step checkpoints are also needed because stateless computer-use replay is re
 
 ### 6.4 Structured replies [M]
 
-Agent chat output is validated with Zod into one of four card types:
+Agent chat output is validated with Zod into one of five card types:
 
 | Card | Purpose |
 |---|---|
@@ -269,8 +277,9 @@ Agent chat output is validated with Zod into one of four card types:
 | `clarification` | Asks for missing parameters |
 | `tool_connection` | Inline card to connect a tool |
 | `routine` | Schedule blueprint for confirmation |
+| `file` | A file in `inbox/` (owner upload) or `outbox/` (agent result): safe name, size, kind, SHA-256 |
 
-TASK-022 implements the durable chat boundary: users append validated text messages through the owner-scoped API, while agent, tool and background output enters only through the server-only append function. The workspace renders all four cards, reloads bounded history and polls visible timelines so appended run results appear without adding the later SSE channel. Card actions that connect credentials or save routines remain display-only until TASK-046/038. Files written to `outbox/` appear as **file result cards** (preview, Download, Show in Files, Open on the agent's desktop).
+TASK-022 implements the durable chat boundary: users append validated text messages through the owner-scoped API, while agent, tool and background output enters only through the server-only append function. The workspace renders all four cards, reloads bounded history and polls visible timelines so appended run results appear without adding the later SSE channel. **Agent files (TASK-067):** three more closed operations on the 4311 listener, `POST .../files/list|read|deliver`, run `file-tools.mjs` as the agent's own Linux user (60 s limit, 768 MB heap, no network need). `list` names up to 50 plain regular files in `inbox/`, `Downloads/` and `work/` with their content type. `read` takes an `inbox/` file by plain name and returns text in windows of at most 60,000 characters (`offset`, `nextOffset`, `totalChars`): UTF-8 text/CSV/JSON/code, `.docx` (`unzip -p` of `word/document.xml`, tags stripped), PDFs with a text layer (pinned `pdfjs-dist` 4.10.38, offline, no eval, no native canvas), or a PNG/JPEG/WebP up to 4 MiB as an image. Scanned PDFs, xlsx/pptx, audio, video and archives return fixed codes (`no_text_layer`, `unsupported_type`, ...). `deliver` copies a `Downloads/` or `work/` file into `outbox/` (blocked types and extension/content mismatches refused, `O_EXCL`, mode 600, numbered suffix on a name clash, source untouched) and returns name, size, kind and SHA-256 so the file card appears at once. The step loop gets `read_document` and `deliver_file` intents (default-deny by name in the agent's `actions`), keeps the newest three document windows as `document`-tagged data, and lists the agent's files each turn as `tool`-tagged data. Final answers may be 4,000 characters with line breaks and always end with the names of delivered files. **Chat trigger (TASK-069):** after `POST /api/agents/[agentId]/messages` stores the message and returns 201, `lib/agent/chat-run.ts` starts one step-loop run in the `app` process (not durable: an app restart loses the run). It uses the saved Main AI role through the egress-proxy transport, the owner's timezone and the agent's persona and `actions`, and posts the result as one agent card. A busy agent, a missing model or key, or an unreachable desktop each produce one fixed message card with no error details. Only the message text is the task; chat history is not sent yet. Card actions that connect credentials or save routines remain display-only until TASK-046/038. **Attachments (TASK-023a):** one file per request, `POST /api/agents/[agentId]/files` with raw bytes and the name in `X-File-Name`. The route streams the body to a second `desktop` listener on port 4311 (same internal network, secret and source check as the controller, but its own timeouts), which streams it into `inbox-writer.mjs` running as the agent's own Linux user. The writer is the only authority for the stored name, content type and size, writes `.part` with `O_EXCL|O_NOFOLLOW` mode 600, links it into place without overwriting, and returns the card data. `app` never mounts the workspace volume and never stores the bytes. Inbox cards are written only by the owner's upload; an agent can post `outbox` file cards only. **Outbox (TASK-023b):** `POST /api/agents/[agentId]/outbox/refresh` (called by the chat poll; TASK-024 will call the same functions) asks the 4311 listener to list `outbox/` as the agent's user (`outbox-reader.mjs`; at most five new files hashed per call, files younger than 2 s wait) and appends one `outbox` file card per new file (agent message, source tag `tool`). `GET /api/agents/[agentId]/files/[messageId]` streams the file through the listener after it re-checks size and SHA-256 against the card. `POST /api/agents/[agentId]/files/open` runs the new `file.open` controller operation, which opens the file in a new tab of the agent's own Chromium (`session-worker.mjs`). Files written to `outbox/` appear as **file result cards** (preview, Download, Show in Files, Open on the agent's desktop).
 
 ---
 
@@ -290,7 +299,7 @@ Models never emit raw coordinates. They emit:
 
 The layer uses the best available method first and cross-checks when two methods agree:
 
-1. **Page structure:** Playwright/CDP element refs and accessibility snapshots (any tool-calling model).
+1. **Page structure** (built, TASK-025): the worker op `page.snapshot` lists up to 150 visible, unobstructed, clickable controls of the focused page (role, name, box) in screen pixels. It parks the real pointer on a known screen point once and reads the browser's own `screenX - clientX`, so the exact place of the page on the screen is measured, not guessed; zoomed pages are refused. `lib/agent/grounding.ts` matches the intent's `target` against the names with plain code (no model call) and returns the control centre, or nothing on no match, a weak match or a tie. The model sees only a `web`-tagged list of roles and names. Limits: top frame only (iframe and shadow-DOM controls are not listed; the hand-off says so). TASK-028 independently cross-checks targets before input (§7.4).
 2. **Set-of-marks [S]:** numbered boxes drawn on the screenshot from page structure, the Linux accessibility tree or local OCR (any vision model).
 3. **SAM 3.1 pixel masks:** only if enabled.
 4. **The model's own computer-use coordinates:** only if the model supports computer use.
@@ -306,11 +315,15 @@ Each `expect` is checked with, in order:
 4. SAM 3.1 before/after masks (if enabled)
 5. model judgement (last resort)
 
-The receipt records which methods ran and a confidence score.
+**Implemented TASK-028:** `lib/agent/verification.ts` accepts exact `expect` forms `control_present: Name`, `control_absent: Name`, `url_path: /path`, and `object_visible: concept`; prose falls back to visual judgement. The guarded read-only `page.verify` operation checks the bounded visible top-frame control inventory or exact URL pathname, never selectors or evaluation. Control absence means absence from that inventory, not proof of deletion or absence elsewhere. A supported DOM failure polls at most three times with two 500 ms settling waits, then stops; visual opinion cannot override it. SAM runs only when enabled and applicable to object presence; only one unique mask with confidence >=0.90 passes. Missing/ambiguous masks and missing confidence are unknown, never proof of deletion. Independent SAM requests are correlated by concept/geometry, never object IDs across responses. Mask movement cannot establish arbitrary external outcomes.
+
+Model judgement is last resort: strict verdict tool, before/after screenshots, clock and source tags, maximum 512 output tokens, no retries. Model coordinates are never accepted. Per desktop step there are at most one Main-model gate request, one Main-model postcondition request and two single-image SAM requests (before/after), each with a 30-second deadline. SAM uses only authenticated egress transport. `RunStep` keeps pass/fail/unknown evidence and SAM off/on/unavailable state; token usage is added to run totals. SAM image requests are bounded but monetary pricing is not computed here. Failed/unknown postconditions stop with a needs-owner card after recording the attempted action. Final summaries remain model reports and name only postconditions checked. File-tool results are separate from visual verification. Receipts are persisted by TASK-029 (9.2); the History UI that presents them is TASK-031.
 
 ### 7.4 Confidence gate [M]
 
-Irreversible actions (purchase, send, delete, payment hand-off) need **high confidence, meaning two methods agree**. Otherwise the agent asks. Weaker setups ask more often; they don't misclick.
+Irreversible actions (purchase, send, delete, payment hand-off) need **high confidence, meaning two methods agree**. Otherwise the agent asks. Weaker setups ask more often.
+
+**Implemented TASK-028:** conservatively treat all clicks, typing and key presses as potentially irreversible. Page structure must identify one named target (or a visible focused control for typing/keys), plus independent screenshot-only SAM mask agreement for a click or a Main-model semantic observation. SAM must uniquely cover the grounded pixel and overlap the target box (IoU >=0.5, confidence >=0.90); otherwise the screenshot observer identifies the target without DOM answer hints. A repeated DOM lookup is not an independent method. Before dispatch, a fresh guarded snapshot must still match target role/name/geometry, page URL and required focus. Missing/conflicting evidence hands off before input. Existing action permissions still apply. Agreement establishes targeting, not safety or authorization for every possible website effect; the page can still change between checks and dispatch. Wait/scroll require the action allowlist and postcondition checks. Login/OTP input remains denied by the worker; takeover blocks checking/capture/input. This task does not introduce durable approvals or automatic resume.
 
 ### 7.5 Capability profile [M]
 
@@ -349,7 +362,7 @@ Before the official pinned parser can allocate masks, complete wire preflight en
 
 ### 7.8 Model check [S]
 
-The owner-approved spike:meta-live-click developer test uses fresh credential-free Firefox on the verified local placeholder only. It keeps model coordinates as internal grounding data for a fixed click intent, independently validates the point/scene, executes at most once and verifies details closed→open plus visible status. Screenshots explicitly use original detail in all newly constructed image items. Validated PNG dimensions must equal viewport CSS dimensions at DPR1; viewport capture uses no crop or full-page expansion. The request states actual image dimensions and pixel coordinates without target hints. Geometry mismatches fail closed. Limits: low reasoning, 1024 output tokens/request, 3072 total, at most three requests, 30 seconds/request and 90 seconds active model time; no retries. Generic computer_action_requires_confirmation may pause for specific owner approval only after target validation; a run/action-scoped single-use stdin token binds that reply. Review is capped at five minutes, excluded from model time, and never auto-approved. Raw checks/call IDs/receipts stay in memory. After approval and rechecking, execute once and replay genuine history with exact reviewed checks and real after-image for acknowledgement. Unknown genuine metadata and documented assistant phases are preserved; action schemas remain strict. Further returned actions never execute. Execution/postcondition/acknowledgement states remain separate. Private local-page before/after and safe metadata live under ignored data/spikes/task-007-live-click/. This does not implement production desktop/egress services. Earlier calls/unknown discarded fields remain historical. Earlier reviewed-flow run d1395501-fc64-4938-bb4e-676bd3e3fef0 successfully completed observation/replay, then failed the independent target gate at (359,483), below the button. No review was requested and no input/acknowledgement occurred. Two calls used 191/176 output tokens; larger caps did not resolve grounding. TASK-007 remains open; production page-structure/SAM grounding is still future work. Original-detail run 3e06d19f-8460-4162-968a-7ea98b134318 verified 1280x800/DPR1 and the unchanged screenshot hash, but returned (359,483), below the button ending y=466. One Contributor request used 3559 input / 670 output tokens (584 reasoning); wrong_target stopped before review/input/acknowledgement. Original detail did not resolve the miss; no token cap was reached.
+The owner-approved spike:meta-live-click developer test uses fresh credential-free headless Firefox on a self-contained loopback fixture page only (not the app), at a 1862x946 DPR1 viewport. It keeps model coordinates as internal grounding data for a fixed click intent, independently validates the point/scene, executes at most once and verifies details closed→open plus visible status. Screenshots explicitly use original detail in all newly constructed image items. Validated PNG dimensions must equal viewport CSS dimensions at DPR1; viewport capture uses no crop or full-page expansion. The request states actual image dimensions and pixel coordinates without target hints. Geometry mismatches fail closed. Limits: low reasoning, 1024 output tokens/request, 3072 total, at most three requests, 30 seconds/request and 90 seconds active model time; no retries. Generic computer_action_requires_confirmation may pause for specific owner approval only after target validation; a run/action-scoped single-use stdin token binds that reply. Review is capped at five minutes, excluded from model time, and never auto-approved. Raw checks/call IDs/receipts stay in memory. After approval and rechecking, execute once and replay genuine history with exact reviewed checks and real after-image for acknowledgement. Unknown genuine metadata and documented assistant phases are preserved; action schemas remain strict. Further returned actions never execute. Execution/postcondition/acknowledgement states remain separate. Private fixture-page before/after and safe metadata live under ignored data/spikes/task-007-live-click/. This does not implement production desktop/egress services. Earlier calls/unknown discarded fields remain historical. Earlier reviewed-flow run d1395501-fc64-4938-bb4e-676bd3e3fef0 successfully completed observation/replay, then failed the independent target gate at (359,483), below the button. No review was requested and no input/acknowledgement occurred. Two calls used 191/176 output tokens; larger caps did not resolve grounding. Production page-structure/SAM grounding is still future work. Original-detail run 3e06d19f-8460-4162-968a-7ea98b134318 verified 1280x800/DPR1 and the unchanged screenshot hash, but returned (359,483), below the button ending y=466. One Contributor request used 3559 input / 670 output tokens (584 reasoning); wrong_target stopped before review/input/acknowledgement. Original detail did not resolve the miss; no token cap was reached. Run 21c0933d-7e35-4ec4-be42-a784ab4ec56d (fixture, 1862x946/DPR1): after one screenshot observation the model proposed (657,471) inside the button (571,456)-(746,488); owner approved the specific point; one Firefox click opened the section (closed->open, Project status visible, after.png inspected); the reviewed acknowledgement was accepted and no further action executed. 3 Contributor requests, 21354 input / 527 output tokens (338 reasoning), 15.9 s model time, no caps reached. The earlier 1280x800 misses at (359,483) are historical; the viewport size, not original detail, is the likely cause (one run, not proven). TASK-007 is complete.
 
 When a model is added, it runs about 10 standard tasks on the built-in mock vendor portal. The result is shown as a score and expected behaviour, e.g. "8/10, purchases will ask for approval".
 
@@ -363,7 +376,7 @@ When a model is added, it runs about 10 standard tasks on the built-in mock vend
 - **Anthropic-compatible adapter [S]:** Anthropic's Messages API and any endpoint that speaks the same format. Base URL + key. Handles tool calling, image input, prompt-cache markers, and Claude's computer-use tool (translated through the intent schema, §7.1). See ADR-023.
 - **Native Meta adapter:** Muse models, including the Responses API computer tool (`tools: [{type: "computer"}]`) on `muse-wonder-1.0` / `muse-spark-1.3`, batched actions in screenshot pixel coordinates, and acknowledgement of `pending_safety_checks`.
 
-TASK-021 implements the server-only provider modules in `lib/providers/`. Adapters are keyless and receive an injected `ProviderTransport`; they never accept API keys or add authentication headers. A separately approved minimal TASK-046 egress-proxy authenticated transport is required before any live Settings call, with no direct-auth or proxy-bypass exception. Requests and provider output are bounded and schema-validated; source-tagged text is JSON-framed so untrusted text cannot forge a new tag. Meta computer continuation requires the exact validated `call_id`, actions, replay items and explicitly approved safety checks, never an automatic acknowledgement. Usage is required before a result is accepted so cost accounting cannot silently disappear. TASK-021 proves these boundaries with mocked transports only; live provider connectivity remains pending.
+TASK-021 implements the server-only provider modules in `lib/providers/`. Adapters are keyless and receive an injected `ProviderTransport`; they never accept API keys or add authentication headers. TASK-046 supplies the authenticated transport (`lib/providers/proxy-transport.ts`, `lib/models/transport.ts`): the key is decrypted per request, sent only to the egress proxy, and added there; there is no direct-auth or proxy-bypass path. Requests and provider output are bounded and schema-validated; source-tagged text is JSON-framed so untrusted text cannot forge a new tag. Meta computer continuation requires the exact validated `call_id`, actions, replay items and explicitly approved safety checks, never an automatic acknowledgement. Usage is required before a result is accepted so cost accounting cannot silently disappear. TASK-021 proves these boundaries with mocked transports only; live provider connectivity remains pending.
 
 TASK-007 provides a standalone, server-only developer probe with a bounded read-only observation loop. The owner-selected muse-spark-1.3-contributor model receives a text-only observation request, then the validated static PNG as computer_call_output only after a single valid screenshot call with empty safety checks. At most two requests use minimal reasoning, 512 output tokens each (1024 total), a 30-second per-request deadline and 45-second total deadline. No retries or desktop input occur. A click before the image is supplied is rejected. Native coordinates remain provider-grounding evidence, separate from product intents; no provider adapter, desktop driver, egress proxy or production receipts are implemented. A genuine validated live click and owner target confirmation are required for completion.
 
@@ -391,7 +404,7 @@ Each job has its own provider, model and key:
 
 TASK-020 implements Settings → Models for Main AI and SAM 3.1. Owner-scoped `providers` rows hold encrypted keys and last-four hints; `model_roles` holds one row per owner/role, with SAM either off, sharing the Main provider through `use_main_key`, or using its own Meta key. Main supports Meta and OpenAI-compatible endpoints, while SAM supports Off or Meta API. The server never returns plaintext or ciphertext, accepts blank key input as "keep the saved key", and refuses to change Main away from Meta while SAM depends on that key.
 
-Test uses only saved configuration, returns a bounded model list and measured latency through the keyless connector with an injected transport, and has its own owner-wide rate limit. The production route currently fails closed with `authenticated_transport_unavailable`: real Settings Test calls remain pending TASK-046's proxy-backed credential injection, and TASK-020 adds no direct-auth fallback or outbound provider call.
+Test uses only saved configuration, returns a bounded model list and measured latency through the keyless connector with an injected transport, and has its own owner-wide rate limit. The production route builds its transport with `proxyTransportFor` (TASK-046): the saved key is decrypted per request and the call goes through the egress proxy. It still fails closed with `authenticated_transport_unavailable` (503) when the role has no saved key, `ENCRYPTION_KEY` or `EGRESS_PROXY_SECRET` is missing or invalid, or the saved key cannot be decrypted. There is no direct-auth fallback.
 
 ### 8.3 Routing [M]
 
@@ -404,6 +417,8 @@ Test uses only saved configuration, returns a bounded model list and measured la
 | Dev agent code changes | Muse Code in the agent's terminal **[S]** |
 
 A model label ("Muse Spark", "SAM 3.1", …) is shown on every step in the UI.
+
+**Implemented (TASK-027):** routing is a setting on the Main AI card. **Fixed** (default) always uses the Main model, which in the hackathon build is `muse-spark-1.3-contributor`. **Auto** adds a hard-step model on the same provider and key (stored as `model_roles.routing` and `hard_model`). A turn uses the hard-step model only when the previous turn failed (invalid output, target not found, failed file action) or the same step repeated, at most 5 times per run. If the hard-step model errors, the same turn is retried on Main and escalation ends for that run. Muse Wonder has no Contributor mode on pay-as-you-go, so any hard-step model is billed at its standard rate and is outside Contributor terms; Settings says so. Each executed step records `model`, `modelLabel` and `route` (`main`, `hard`, `fallback`) in `RunStep`; the visible per-step label comes with the History timeline (TASK-031).
 
 ---
 
@@ -428,9 +443,23 @@ flowchart LR
 ```
 
 - Receipts are hash-chained per run. The run is signed with an Ed25519 key generated at install.
-- Thumbnails (WebP), masks and hashes are stored in the `artifacts` volume and kept permanently by default.
+- Screenshots are stored in the `artifacts` volume and kept permanently by default. Built (TASK-031) as the exact PNG bytes named by their SHA-256, not WebP thumbnails, so a stored file re-hashes to the signed `before_hash` / `after_hash`.
 - `eclipse-crew verify <run.json>` checks the chain and signature offline.
 - When SAM is off, receipts still state the method, e.g. *"Verified by: page structure + pixel diff (SAM off)."*
+
+**Implemented (TASK-029, TASK-030).** `lib/receipts/chain.mjs` is plain JavaScript (`node:crypto` only) so the offline CLI runs it with bare `node`. `fields.ts` maps a step to a receipt, `store.ts` writes to Postgres, `signer.ts` loads the key.
+
+- **Key:** `RECEIPT_SIGNING_KEY` in `.env` is a 64-hex Ed25519 seed made by `npm run receipt-key` (never printed, never rotated). Only `app` receives it. Each run records the public key and its fingerprint `sha256:<hex of the raw public key>`. With no valid key the chat run does not start (a fixed card names the fix); if a receipt cannot be written the run stops with `receipt_error`.
+- **Canonical text:** sorted keys, no whitespace, integers only. The exact text that was hashed is what is stored (`runs.header_json`, `steps.receipt_json`), so a hash is always re-checkable.
+- **Header:** `{v, run_id, agent_id, agent_name, task (max 2,000 chars), started_at, key_id}`, plus `branch_of` and `branch_at` only on a branch (TASK-043); `header_hash = sha256(text)`. The optional fields are written only when present, so every earlier header and hash is unchanged.
+- **Receipt (v1):** `v, run_id, idx, at, agent_id, model, model_label, route, action, target {role,name}, grounding_method, methods [{phase gate|verify, method, status, code}], sam off|on|unavailable, confidence, before_hash, after_hash, postcondition, result, code, executed, usage {input,output,cached,reasoning}, cost_micro_usd (null until the cost ledger), prev_hash`. `receipt_hash = sha256(text)`; step 1 `prev_hash` is the header hash. One receipt per executed step, per step stopped by the target gate (`blocked`), and per file action (`executed` or `failed`). `get_time`, `finish`, `ask_owner` and hand-offs before any step are not steps; the seal carries the final outcome. Token usage in a receipt is what was spent since the previous receipt, so receipts add up to the run total.
+- **Confidence:** `high` two or more different methods passed and none failed; `medium` one passed; `low` anything else, including every non-`pass` result; `none` for file actions.
+- **What is never stored:** typed text (only the character count), key names beyond the chord, file contents, page values, model reasoning, credentials. Page text (control names) is bounded to 200 characters and stripped of control characters. Receipts hold only the SHA-256 of each screenshot; the PNG files are in the artifacts store (Evidence and History below).
+- **Seal:** Ed25519 over `"eclipse-crew/run-seal/v1\n"` plus canonical `{run_id, header_hash, step_count, head_hash, status, ended_at, usage}`; `status` is the run outcome. The seal is written once (`WHERE signature IS NULL`). A run that never seals (crash) stays unsealed and fails verification with `unsealed`.
+- **Tables:** `runs` (owner_id, agent_id without a foreign key so proof outlives the agent, branch_of, header text and hash, key id and public key, started_at, status, and the seal columns that are all NULL or all set) and `steps` (owner_id, run_id, idx, receipt text, receipt hash, prev_hash; unique `(run_id, idx)`). The app role has SELECT and INSERT on `steps`, so receipts cannot be rewritten or deleted through the app. It also has UPDATE on `runs` to write the seal; a seal rewritten later no longer verifies, so that is detected, not blocked.
+- **Export and verify:** `GET /api/runs/[runId]/export` (owner session, scoped by owner, a download) returns `{format: "eclipse-crew-run/1", run_id, header, header_hash, key_id, public_key, steps: [{idx, receipt, receipt_hash, prev_hash}], seal}` where `header` and `receipt` are the stored canonical text. `scripts/eclipse-crew.mjs verify <run.json|-> [--key-id sha256:...] [--json]` needs only Node (no database, network or `.env`). Failure reasons are fixed codes (`receipt_hash_mismatch`, `prev_hash_mismatch`, `step_missing`, `step_order`, `step_count_mismatch`, `head_hash_mismatch`, `header_hash_mismatch`, `bad_signature`, `unsealed`, `key_id_mismatch`, `pin_mismatch`, `bad_format`), with the failing step. The CLI prints only a validated run id and key id from the file. `eclipse-crew key-id` prints this install fingerprint from `RECEIPT_SIGNING_KEY` in the environment, never the key.
+- **Evidence and History (TASK-031).** After each receipt the loop stores the exact before and after screenshots with `lib/artifacts/blob-store.ts` (`<artifacts>/blobs/ab/<sha256>`, written to a temp name and renamed, mode 600, re-hashed on read, only 64-hex names reach the filesystem) and inserts a `step_evidence` row (owner_id, run_id, idx, before_hash, after_hash, width, height, `sam_box`; unique run + idx; insert-only for the app role). The SAM box is an annotation, not part of the signed receipt: it is set only when SAM found exactly one mask with confidence 0.90 or more for an `object_visible` check, and the UI says so. A failed evidence write never stops a run (the step then shows "screenshot not stored"). The History tab (`components/history/`) lists the selected agent's newest 20 runs (`GET /api/agents/[agentId]/runs`) and shows one run's timeline (`GET /api/runs/[runId]`): action, method (including "SAM off"), confidence, cost, before/after thumbnails, pass/fail, an expandable row with full screenshots and the 2 px `corona` outline, and a **Chain verified** badge that comes from running `verifyRunExport` on the stored rows at load time (an edited receipt shows the reason code and step; an open run shows "not sealed yet"). Screenshots load from `GET /api/runs/[runId]/evidence/[hash]`: owner session, the hash must be listed as before/after evidence of that owner's run, bytes are re-hashed, `image/png`, `nosniff`, sandbox CSP. The open run refreshes every 3 s while it is running. Rewind controls, the checkpoint dialog and branch badges/links are built (TASK-043).
+- **Trust model:** the signature proves the export was not altered after signing and, with a pinned fingerprint, that it was signed by this install key. `app` holds the key, so a compromised `app` could sign a made-up run; pinning cannot stop that. Losing `RECEIPT_SIGNING_KEY` means new runs use a new key and a new fingerprint; old runs still verify against the public key stored with them.
 
 ---
 
@@ -445,6 +474,15 @@ After every step the runtime stores:
 - changed files in the agent's home, **content-addressed** (by hash, so unchanged files are not copied again) in `artifacts`
 
 Excluded: browser cache. Files above the size limit (default 200 MB) are recorded by hash only and marked "not restorable". The browser profile is snapshotted daily.
+
+**Implemented (TASK-032).** `lib/checkpoints/` and `docker/desktop/checkpoint-tools.mjs`. A checkpoint is taken before the first step (idx 0) and after every receipt (idx N is the state after receipt N). The `checkpoints` table (owner_id, run_id, idx, state_hash, manifest_hash, file_count, restorable_count, status `complete`/`partial`, reason; unique run + idx; insert-only for the app role) only points at content-addressed blobs in the artifacts store.
+
+- **State blob:** canonical JSON validated with Zod (`lib/checkpoints/state.ts`, at most 256 KiB, unknown fields refused): the owner task, the short step history, document references (name and offset; contents are re-read on resume), delivered file names, the loop counters and routing flags, token usage, and the previous intent with typed text replaced by its length. It never holds typed text, screenshots, document contents, keys or tokens.
+- **Files:** the desktop lists the agent's files in `inbox`, `work`, `downloads` and `outbox` (recursive, at most 2,000 files, depth 6, no symlinks, devices, FIFOs, hard-linked or hidden files) with their SHA-256, as the agent's own Linux user (`POST .../checkpoint/manifest` on the file listener, port 4311). The app asks for the content of only the hashes it does not already hold (`POST .../checkpoint/blob`), re-hashes every body, and stores it. An unchanged file is therefore copied once across all checkpoints. `artifacts` is **not** mounted into `desktop`.
+- **Limit:** files above **4 MiB** (not 200 MB: the app caps a desktop response at 6 MiB, and base64 adds a third) are listed with name and size only and marked not restorable. Larger files need chunked transfer.
+- **Failure policy:** a failed capture is retried once (a file may be written during the scan). If it still fails, or exceeds the 10 s bound, the row is stored as `partial` with a fixed reason (`files_unreadable`, `content_changed`, `too_many_files`, `scan_limit`, `capture_timeout`, `files_unsupported`); the state is still saved, the run continues, History says "Can't rewind to this step", and rewind (TASK-043) must refuse a partial checkpoint. Receipts, by contrast, stop a run when they fail.
+- **Restore (TASK-043):** `lib/rewind/` plans the diff between the saved manifest and the live files, then applies it through the agent-user restore tool (`docker/desktop/checkpoint-restore.mjs`). Restorable files that are missing or changed are written back atomically and re-hashed; live files that did not exist at that step are moved to `<area>/.rewound/<new-run-id>/`, never deleted. A `partial` checkpoint, a missing/altered blob, or a file over 4 MiB that is missing or resized refuses the rewind before any write. Browser pages, tabs and logins are not restored.
+- **Not built yet:** blob cleanup (blobs are kept permanently for now) and the daily browser-profile snapshot.
 
 ### 10.2 Rewind and branch [M]
 
@@ -463,6 +501,8 @@ gitGraph
 - Rewind to step N, add a correction and continue as a new branch (`runs.branch_of`). Earlier steps are not re-executed.
 - Branches are visible in History.
 - The UI states the limit: rewind restores agent state and files, **not external side effects** (sent emails, placed orders).
+
+**Implemented (TASK-043).** `POST /api/runs/[runId]/rewind` accepts `{step, correction}` (owner session, CSRF, 16 KiB). It verifies the original chain and seal, loads a `complete` checkpoint, plans the file restore, and applies it as the agent's own Linux user. The held per-agent lock is passed into `runTask` with a resumed state (history, document references, delivered files, turn); the branch task is the checkpoint task plus `Owner correction: …` (trimmed to 2,000 characters) and the first new step continues the step numbering. Receipts, evidence, checkpoints and costs are normal; the branch's signed header carries `branch_of`/`branch_at`, and History shows both runs. The correction cannot undo external effects, and the browser page/tabs/logins stay as they are now.
 - **[S]** Automatic restore on security events (tripwire, malware hash hit, policy violation, tampered browser profile). After an event, every external action taken since the compromise point is listed.
 - **[S]** A failed job can be replayed from the failing step.
 
@@ -483,6 +523,8 @@ The owner takes over an agent's screen and presses **Record**. Capture covers th
 | Narration | Transcribed and aligned to event timestamps |
 | Secrets | Passwords and OTPs masked as `••••`, never stored |
 
+**Current build (TASK-036, managed browser):** recording is explicit owner consent, separate from takeover, and covers only the selected agent's managed browser viewport — not the app workspace, other windows, terminal or desktop. It requires the live owner session, owned active agent and current viewer/generation/lease; ordinary takeover records nothing. Capture states are `recording → paused → recording → finalizing → complete`, or `aborted`/`failed`; handback, lease/viewer loss, session stop, agent stop and worker failure stop capture and microphone intake immediately, and reconnect never resumes automatically. Frames are masked in memory before screenshots, encoder or storage, and typed text, clipboard and printable keys are never persisted. Privacy gates pause on login/password/OTP/CAPTCHA, dialogs, uninspectable frames/shadow roots and unsupported surfaces; Resume repeats the gate. Limits: 120 s active, 300 events, 5 fps, 1024×768, 128 MiB total, 8 MiB per artifact and 3 MiB per audio segment; a limit stops the capture rather than completing a truncated one. Narration is opt-in, held in bounded memory and transcribed after Stop by the saved native Meta Main provider through the fixed `api.meta.ai/v1/asr/transcribe` proxy route; audio cost is recorded in integer micro-USD and transcripts are untrusted. Artifacts live in the owner-scoped `artifacts/teach/<owner>/<capture>/` namespace and are served only by manifest-checked owner routes; the desktop has no artifacts mount, database or key access. A bounded owner+agent list of the newest 20 completed captures (counters, status and timestamps only) supports reopening after reload; review still requires manifest membership. Discard deletes that private namespace and retains a minimal `discarded` row for cost attribution. Native desktop/terminal capture is owner-deferred for v1 (no reliable native field masking); skill generation/review/approval and post-approval cleanup are TASK-037.
+
 ### 11.2 Skill generation [M]
 
 ```mermaid
@@ -500,6 +542,7 @@ flowchart LR
 - The UI records how the skill was learned, e.g. "Learned from video + steps".
 - Approved skills become callable and schedulable. Secret inputs are never written into skills.
 - After approval, recordings are deleted except one reference screenshot per step.
+- TASK-037 implements the image-only path from validated capture events, paired after-shots and transcribed narration. The structured draft is rendered by code; the owner approves it, drafts remain non-callable, and approval grants no permissions. Native video-to-MP4 conversion and real-provider video generation remain unverified.
 - **[S]** Long recordings are capped and downscaled to fit context, with a warning to split long tasks.
 - **[S]** Post-run review improves skills, gated like memory writes.
 - **[S]** Import/export uses the OpenClaw/Hermes format. Imported skills are scanned and can never grant permissions.
@@ -508,6 +551,15 @@ flowchart LR
 
 A verified run compiles into a **replay script** (selectors, reference crops, coordinates, postconditions). Later runs replay with **no model calls**. The model is invoked only on a postcondition mismatch, so a second run with no drift costs $0 in model fees.
 
+**Implemented (TASK-041).** `lib/replay/` (`script.ts`, `runner.ts`, `store.ts`, `ports.ts`, `view.ts`). Differences from the description above, each approved by the owner:
+
+- **Compile.** `compileRun` loads the run export, verifies the chain (`verifyRunExport`), requires status `finished`, and turns the signed receipts into at most 20 steps with `compileFromReceipts`. Only a click's grounded role and exact name, a key chord, a scroll direction, a structural postcondition (`control_present`, `control_absent`, `url_path`) and a delivered file name are kept. Typed text is never stored (it is not in the receipts): each `type` step becomes an input the owner supplies when replaying. `read_document`, `object_visible` and prose postconditions refuse to compile with fixed codes and the step number. One script per source run (`replay_scripts.source_run_id` is unique).
+- **No coordinates or crops.** Receipts hold neither, and stored coordinates go stale when the window scrolls. The click point is re-derived from the live page structure on every replay.
+- **One check per step.** The two-method gate's second method is a model or SAM call, so a replay uses page structure only: exactly one visible control with the recorded role and exact name (or one focused text field for `type`/`key`), read again before input, then `desktop.verify` up to three times. Receipts record model `none`, route `replay`, confidence `medium`, zero usage and 0 micro-USD. `unknown` or a missing verifier is a mismatch.
+- **No model on mismatch.** The runner has no provider in its dependencies. A mismatch writes a `blocked`/`fail`/`unknown` receipt, seals the run `needs_owner` and posts a fixed "Replay stopped at step N" card; TASK-044 then starts a bounded repair run and proposes a new replay version (§11.4).
+- **Same run bookkeeping.** Checkpoint 0, then receipt, evidence and checkpoint per step, then the seal (a failed receipt stops the run). Chat runs and replays share one per-agent lock (`claimAgent`, kept on `globalThis` because they start from different route bundles).
+- **Routes.** `POST /api/runs/[runId]/replay-script` (save), `GET /api/agents/[agentId]/replay-scripts`, `DELETE /api/replay-scripts/[scriptId]`, `POST /api/replay-scripts/[scriptId]/run` (202; body `{inputs}`, up to 64 KiB). A replay needs an active agent, a running desktop and the receipt signing key, not a model key.
+
 ### 11.4 Self-healing [M]
 
 When a postcondition fails because the site changed, the agent:
@@ -515,6 +567,12 @@ When a postcondition fails because the site changed, the agent:
 1. re-plans visually
 2. completes the step
 3. proposes a **skill diff** ("what changed") for approval
+
+**Implemented (TASK-044).** `lib/heal/` (`codes.ts`, `task.ts`, `view.ts`, `store.ts`, `heal.ts`, `ports.ts`), `lib/replay/diff.ts`, two tables and two proposal routes. A `needs_owner` replay with a site-change code (`target_missing`, `ambiguous_target`, `target_changed`, `unsupported_focus`, `postcondition_failed`, `postcondition_unknown`) starts one bounded model run (8 steps, 100k tokens, 5 min) from the live screen. It does not restore files or set a branch: TASK-043 owns rewind/branch. The fixed instruction is the signed run task; the saved step labels travel only in a code-built `web`-tagged context part (quoted, bounded, data only). The repair uses the agent's current Actions, two-method gate, verification, budgets, receipts, evidence and checkpoints. No heal for typed remaining steps, a pending proposal, no Main model, a busy agent, a stale version, takeover, limits or errors.
+
+- **Proposal.** A sealed, finished, chain-verified repair compiles its receipts with the replay compiler; the steps before the failure are prefixed and the result is renumbered and re-validated (at most 20). A pending `replay_script_proposals` row stores the steps, the failed step and code, the replay run and the repair run (unique). "Why this changed" is fixed text chosen by the code plus the old step label; model prose is never shown. The chat card `skill_update` and the Saved replays badge open the same review, and the diff is computed against the version the replay actually ran.
+- **Approval.** Approve appends `replay_script_versions` v(base+1) and marks the proposal approved in one transaction; `getScript`/`listScripts` resolve the latest version, so the next replay runs it. Reject, a second decision, a stale base and another owner change nothing. Versions are append-only for the app role; approval grants no permission and replay still checks the current Actions allowlist.
+- **Limit.** The taught `SKILL.md` is not changed: a replay script has no link to a `skills` row and the two use different step models. Repair spend counts against the agent's budget.
 
 ---
 
@@ -546,6 +604,7 @@ sequenceDiagram
 - Failure path: retries with exponential backoff → self-healing → hand off.
 - On startup, overdue routines follow their catch-up policy: run once now, skip, or run all missed.
 - Times are stored as UTC + IANA timezone (DST-safe).
+- **Implemented (TASK-039/040):** one `routine.run` queue starts in the Next process via instrumentation, so chat/replay/routine runs share the per-agent lock. Enqueue and `next_run_at` commit in one Drizzle transaction; jobs use `SKIP LOCKED`, deterministic execution ids, `groupConcurrency: 1` per agent and two exponential-backoff retries. Run Now enqueues a `run_now` job; the routine card polls owner-scoped execution status and signed run detail every two seconds.
 
 ### 12.3 Sundance / Moondance [S]
 
@@ -574,6 +633,8 @@ A built-in page over pg-boss and the run tables, with no extra service or port.
 
 - **[M]** Runs list (status, agent, trigger, start, duration, cost; filters and search), run detail (step timeline, receipts, I/O, errors, retry history), actions (Run now, Cancel, Retry, Pause/Resume) and upcoming runs in local time.
 - **[S]** SSE live updates, a health strip (queue depth, failures in 24 h, "nothing new" rate), replay from the failing step and the webhook log.
+
+**Implemented (TASK-042 Part A).** `/jobs` lists every owner-scoped run newest first (agent, outcome, date range and search filters; keyset paging by `(started_at, id)`), grouped outcomes (Verified, Finished, Needs you, Paused, Asked you, Canceled, Failed, Running, Not sealed), one grouped cost query per page, and a "Failed" view. `/jobs/[runId]` adds the signed task as input, the run's final card and delivered files, failed steps with their fixed codes, the retry chain and the existing proof timeline. Upcoming runs are computed from the `routines` table with `nextRoutineRun` in each routine's IANA timezone and grouped in the owner's timezone; paused routines are listed separately and can be resumed. Cancel aborts a run still held by this app process (a restart leaves it unsealed and uncancellable); Retry starts a fresh chat run from the signed task for a sealed, non-verified chat run. Run now and retrying scheduled runs wait for TASK-040. Display metadata (trigger, routine, replay script, retry-of, label) lives in the insert-only `run_meta` table, written by `receipts.begin()`; the signed header is untouched. **Part B (TASK-042, after TASK-040):** Upcoming runs and Crew actions mount the routine Run now component, which calls `POST /api/routines/[routineId]/run` and polls its execution view for queued/running/completed status. Retrying a sealed `schedule`/`run_now` job with a `routine_id` enqueues a new `run_now` execution with `retryOf`, so the new attempt's `run_meta.retry_of` points at the original; a routine run with no routine id and replay/branch/heal runs stay unretryable.
 
 ---
 
@@ -606,6 +667,7 @@ flowchart LR
 - Every entry records provenance: agent, session, timestamp, trusted or untrusted origin.
 - **Frozen snapshot per session:** memory is loaded once so the prompt cache stays warm. Writes become visible next session.
 - The UI shows diffs ("Daily Briefer learned: timezone is IST" + Undo), and supports pinning, editing and version history.
+- Prompt rules: an agent checks its memory before saying it doesn't know something about the owner or earlier work, and says it will remember something only after it has made a write request. A write request still goes through the path above.
 
 ### 13.3 Nightly consolidation [S]
 
@@ -650,6 +712,7 @@ These are layered mitigations, not guarantees.
 
 - Each agent gets its own Linux user, screen, browser profile, credentials and files. There is no sudo and no access to other homes.
 - Containers run non-root except ADR-026 trusted desktop administration. Desktop adds only the six approved bootstrap capabilities after cap-drop ALL, permanently removes SYS_ADMIN before normal operation, and applies an inherited syscall/ABI filter. Every agent has zero capability sets. Docker default AppArmor, read-only system paths, no-new-privileges and the pinned Chromium sandbox profile remain enforced.
+- `app` also drops all capabilities and sets no-new-privileges. `npm run test:posture` validates the effective Compose posture (ports, mounts, networks, capability sets, secret scoping) and live non-root identities; `npm run test:agent-isolation` re-runs the cross-agent process, file, `/tmp`, display and network denials in both directions. Shared loopback is authenticated, not isolated, until TASK-071.
 - Canonical `/downloads/<agent-uuid>` is mode 700 and mounted `noexec,nosuid,nodev`; its persistent source is inaccessible to agents under root-only `/workspace/.system`. Home/profile/subdirectories are mode 700. Alias changes and wrong ownership are rejected. `noexec` prevents direct execution, not interpreter use or copying elsewhere; approval/file-type checks remain later work.
 - The desktop container never mounts the database, secrets or `.env`.
 
@@ -661,7 +724,7 @@ These are layered mitigations, not guarantees.
 | `agent` | Limited |
 | `tool`, `web`, `email`, `document` | Untrusted data; never instructions |
 
-- **Task scope [M]:** the owner's instruction fixes the allowed sites, items, amounts and recipients. Untrusted content may inform *how* a task is done, never change *what* it is.
+- **Task scope [M]:** the owner's instruction fixes the allowed sites, items, amounts and recipients. Untrusted content may inform *how* a task is done, never change *what* it is. Implemented (TASK-049): scope hosts are the agent's `domains` allowlist, hosts named in the owner's text and the first readable page host; emails must appear in the owner's text. Only `type` is checked, because clicks, keys, scrolling and file delivery do not carry a destination the code can read. A refusal is a blocked receipt and one `security_events` row; the second refusal stops the run with `scope_blocked`. Matching is label- and IP-exact with look-alike and userinfo tricks resolved by the URL parser.
 - **Files:** uploads are user-provided, but their *contents* are untrusted. Downloads are untrusted.
 - **Taint tracking [S]:** once a run ingests untrusted content, out-of-scope actions (new destinations, sharing, permission changes, payments) need approval. Exfiltration-class actions are blocked even in Astra Mode.
 - **Quarantined reader [S]:** untrusted content is first processed by a model call with **no tools** that returns structured data only.
@@ -671,8 +734,9 @@ These are layered mitigations, not guarantees.
 
 - Credentials and API keys are encrypted at rest (key from `.env`) and injected by the egress proxy. They never enter model context. **[M]**
 - Implemented master encryption uses a server-only 256-bit `ENCRYPTION_KEY` and versioned AES-256-GCM envelopes (`v1.<nonce>.<tag>.<ciphertext>`) through `lib/security/encryption.ts`. The key is passed only to `app`; malformed, tampered and wrong-key values fail without exposing plaintext or key material (ADR-027). **[M]**
+- Implemented browser egress (TASK-045): `app` pushes each agent's domain allowlist to the proxy's memory-only registry every 60 s and on lifecycle/run changes; the desktop browser may `CONNECT` only to allowlisted HTTPS hosts, and private, loopback, link-local, CGNAT and metadata addresses are always refused. The desktop identifies itself with an HMAC token delivered over the supervisor's private pipe; `EGRESS_DESKTOP_SECRET` stays with the supervisor and proxy, and `EGRESS_PROXY_SECRET` stays with `app` and the proxy. Plain HTTP is redirected to HTTPS, never forwarded. Loopback remains shared until TASK-071 and HTTPS bodies are not inspected. **[M]**
 - Secret inputs (passwords, OTPs) are typed by the executor from an **opaque, single-use, short-lived handle**. They are never stored in memory, skills, logs or receipts, and are masked in screenshots. **[M]**
-- **Leak tripwire [M]:** each agent has its own canary secret. If it appears in outbound traffic, the proxy kills the session.
+- **Leak tripwire [M]:** each agent has its own canary secret (bait, stored encrypted; the proxy holds only its SHA-256). The app checks every `type` text before execution, including text split across steps and common encodings; the proxy checks the `CONNECT` host and plain-HTTP request line/headers before any resolve or connect. A match refuses the traffic, trips and latches the proxy, cancels the agent's other runs, stops its desktop, pauses it with `security_stop` and writes one append-only `security_events` row plus one card. Not detected: HTTPS bodies/paths, chat text, owner takeover typing and provider calls. The decoy `inbox/passwords-backup.txt` is planted once and is not recreated if deleted.
 - Egress is default-deny with per-agent allowlists. Internal and metadata ranges are blocked. **[M]**
 
 ### 15.4 Approvals and Astra Mode
@@ -680,6 +744,7 @@ These are layered mitigations, not guarantees.
 - **[M]** Default-deny role policy per agent: tools, domains, memory scopes, files, credentials and action types (send, delete, purchase, post, run downloaded files).
 - **[M]** Risky actions prompt **Allow once / Always allow / Deny**. "Always allow" is stored per **agent + site + action (+ optional limit)** and is never global.
 - **[S]** Approvals are keyed on arguments, not tool names (e.g. a new email recipient escalates).
+- Implemented (TASK-050): a risky grounded click is classified by code from the control name and `expect` (download, send, post, delete, purchase, submit). The run waits for Allow once / Always allow / Deny; a timeout (10 minutes) or an app restart leaves the request `expired`, and a page that changed while waiting makes it `stale`. A grant is one row in `permissions` for exactly one agent, one exact host and one class, default 20 uses in a rolling 24 hours; revoking takes effect on the next action. Replay never waits: it needs a live grant with capacity, otherwise it stops with `approval_required`. Classification is heuristic—the page can label a destructive button neutrally—and an Enter key that submits a form is not classified. Astra Mode (TASK-051) will remove only this prompt.
 - **[M]** **Astra Mode** (per agent) removes approval prompts only. It is enabled through a warning modal and shown with a red badge everywhere. These stay on: receipts, audit log, rewind, budget caps, tripwire, token isolation and the taint exfiltration block. Astra Mode never changes model safety behaviour.
 
 ### 15.5 Downloads, payments and sites
@@ -753,22 +818,31 @@ Run 68cb4301-90ea-4b9d-b191-3d91327f7447 completed six bounded I/O rounds in 28.
 | `model_roles` | role, provider_id, model, use_main_key, mode, agent_id |
 | `agents` | id, name, role, linux_user, screen, browser, status, astra_mode, budgets, routing |
 | `agent_policies` | agent_id, tools[], domains[], actions[], memory_scopes[], limits |
-| `permissions` | agent_id, site, action, limit, expires_at, revoked_at |
+| `agent_canaries` (implemented TASK-047) | agent_id (PK, cascade), owner_id, encrypted_canary (ADR-027), canary_sha256 (unique), created_at, planted_at (once-only decoy claim) |
+| `permissions` (implemented TASK-050) | id, owner_id, agent_id (cascade), site (exact host), action_class `download/send/post/delete/purchase/submit`, max_per_day (default 20), created_at, revoked_at; one active row per agent + site + class |
+| `permission_uses` (implemented TASK-050) | id, owner_id, permission_id (cascade), nullable run_id, used_at; append-only, counted over a rolling 24 hours |
 | `sessions` (implemented owner authentication) | id, owner_id, token_hash, csrf_token, created_at, expires_at |
 | `chat_sessions` (implemented) | id, owner_id, agent_id, created_at; one owner-scoped conversation per agent |
 | `messages` (implemented) | id, owner_id, session_id, role, card_type, jsonb content, source_tag, nullable run_id, created_at |
 | `memory_entries` / `memory_versions` | file, scope, visible_to[], provenance, trusted, pinned, confidence, version |
-| `skills` / `skill_versions` | agent_id, name, body, source, status, version, diff |
-| `routines` | agent_id, skill_id, schedule, tz, next_run_at, catch_up, budget, mode |
-| `runs` | agent_id, routine_id, branch_of, status, cost, signature |
-| `steps` | run_id, idx, action, model, target, postcondition, result, receipt_hash, prev_hash, checkpoint_ref, cost |
-| `approvals` | run_id, step_id, kind, args, decision |
-| `security_events` | agent_id, run_id, kind, detail |
+| `skills` / `skill_versions` (implemented TASK-037) | owner_id, agent_id, capture_id, name, description, source, status, version, body, reference_shots; versions are append-only |
+| `routines` (implemented TASK-038) | owner_id, agent_id, source_message_id, skill_id, goal, steps, schedule, schedule_spec, timezone, next_run_at, tools, budget_cents, catch_up, active, mode |
+| `runs` (implemented TASK-029) | id, owner_id, agent_id (no FK), branch_of, header_json, header_hash, key_id, public_key, started_at, status, ended_at, step_count, head_hash, usage, signature; index (owner_id, started_at desc) for the Jobs list |
+| `run_meta` (implemented TASK-042, insert-only) | run_id (PK, references `runs`), owner_id, agent_id (no FK), trigger `chat/run_now/schedule/replay/branch/heal`, routine_id (set null), execution_id (TASK-039, nullable, indexed with owner; shared by retries), replay_script_id (set null), retry_of (references `runs`), label (1-120 chars), created_at |
+| `steps` (implemented TASK-029, append-only) | id, owner_id, run_id, idx, receipt_json, receipt_hash, prev_hash, created_at; unique (run_id, idx); checkpoints are separate rows (`checkpoints`) |
+| `step_evidence` (implemented TASK-031, insert-only) | id, owner_id, run_id, idx, before_hash, after_hash, width, height, sam_box (jsonb, annotation), created_at; unique (run_id, idx) |
+| `checkpoints` (implemented TASK-032, insert-only) | id, owner_id, run_id, idx (0 = before the first step), state_hash, manifest_hash (null when partial), file_count, restorable_count, status complete/partial, reason, created_at; unique (run_id, idx) |
+| `replay_scripts` (implemented TASK-041) | owner_id, agent_id (cascade), source_run_id (unique, references `runs`), name, steps (jsonb, validated by `lib/replay/script.ts`: no coordinates, no typed text), step_count (1-20), created_at; app role has SELECT, INSERT and DELETE only |
+| `replay_script_versions` / `replay_script_proposals` (implemented TASK-044) | versions: owner_id, script_id (cascade), version >= 2, steps, step_count, source_run_id (the repair run), created_at; unique (script_id, version); append-only. Proposals: owner_id, agent_id (cascade), script_id (cascade), base_version, proposed_version (= base + 1), failed_step, failure_code (site-change codes), replay_run_id, heal_run_id (unique), steps, step_count, status `pending|approved|rejected`, decided_at, created_at; at most one pending per script |
+| `cost_entries` (implemented) | owner_id, run_id, agent_id, provider_id, call_index, model, tokens_in, tokens_out, tokens_cached, cost_micro_usd (bigint), outcome, idempotency_key = `cost:<run_id>:<call_index>`, `teach:<capture>:asr:<sequence>` or `teach:<capture>:skill:<call_index>` (unique), created_at; append-only |
+| `model_prices` (implemented) | owner_id, provider_id, model, input/cached/output micro-USD per 1M tokens, image micro-USD per 1K; unique owner + provider + model |
+| `approvals` (implemented TASK-050) | id, owner_id, agent_id (no FK, so history survives deletion), nullable run_id, action_class, site (exact host or empty), control_name (page-derived, 1-120 chars), state `pending/allowed_once/always_allowed/denied/expired/stale`, decided_at, created_at |
+| `security_events` (implemented TASK-047/049, append-only) | id, owner_id, agent_id (no FK), kind `canary_leak/scope_blocked`, source `typed_text/proxy_host/proxy_request/scope_host/scope_recipient/scope_page`, nullable run_id, unique nullable source_ref (`typed_text:<run>:<step>` or `<boot>:<seq>`), created_at; no free text |
 | `connections` | agent_id, provider (mcp/composio), encrypted_token_ref |
 | `traveller_profiles` | encrypted_blob, allowed_agents[] |
 | `backups` | target, status, size |
 
-The implemented Drizzle schema defines `owner`, authentication `sessions`, `agents`, `agent_policies`, `chat_sessions`, `messages`, `providers` and `model_roles`. `agents` stores owner scope, name, role, canonical `soul_md` persona content, `active`/`paused` status and integer-cent daily/monthly budgets; `agent_policies` stores default-deny tool, domain, action and memory-scope allowlists. Chat messages store validated card JSON, a source tag and an optional run reference; the runtime has append-only access to both chat tables, while agent deletion cascades through them. `providers` stores owner scope, kind, optional compatible base URL and application-encrypted key plus hint; `model_roles` stores one owner-scoped Main/SAM row, its provider reference, model and same-key/mode flags. Migrations `0000`–`0005` add these tables and the singleton-owner constraint. Runtime and migration connections use separate `DATABASE_URL` and `MIGRATION_DATABASE_URL` values. TASK-064 provisions the separate database roles and private database network; TASK-065 supplies master-key setup and authenticated encryption.
+The implemented Drizzle schema defines `owner`, authentication `sessions`, `agents`, `agent_policies`, `agent_canaries`, `security_events`, `skills`, `skill_versions`, `chat_sessions`, `messages`, `routines`, `providers`, `model_roles`, `runs`, `run_meta`, `steps`, `step_evidence`, `checkpoints`, `replay_scripts`, `replay_script_versions`, `replay_script_proposals`, `model_prices`, `cost_entries`, `approvals`, `permissions` and `permission_uses`. `agents` stores owner scope, name, role, canonical `soul_md` persona content, `active`/`paused` status, integer-cent daily/monthly budgets and a nullable attention reason (`budget_warning`, `budget_paused`, `security_stop` or `approval_pending`) for the workspace's persistent "Needs you" state; `agent_policies` stores default-deny tool, domain, action and memory-scope allowlists. `agent_canaries` holds the encrypted bait secret and its hash; `security_events` is append-only and survives agent deletion. `approvals` records every owner decision, `permissions` holds scoped grants and `permission_uses` is append-only. Chat messages store validated card JSON (including the `approval` card), a source tag and an optional run reference; the runtime has append-only access to both chat tables, while agent deletion cascades through them. `providers` stores owner scope, kind, optional compatible base URL and application-encrypted key plus hint; `model_roles` stores one owner-scoped Main/SAM row, its provider reference, model and same-key/mode flags. `model_prices` holds owner-editable rates and `cost_entries` holds one append-only row per attempted model call. Migrations `0000`-`0021` add these tables and constraints. Runtime and migration connections use separate `DATABASE_URL` and `MIGRATION_DATABASE_URL` values. TASK-064 provisions the separate database roles and private database network; TASK-065 supplies master-key setup and authenticated encryption; TASK-029/031/034 provide signed proof, display evidence and spend history.
 
 `.env.example` documents three separate database passwords and the runtime/migration URLs without supplying credentials. Compose mounts password secrets only into Postgres and gives the app only its runtime URL. Server-only validation rejects incorrect role URLs; database initialization verifies the authenticated role and releases failed initialization attempts so a later call can recover. CLI configuration loads `.env` with shell values taking precedence. No configuration substitutes the bootstrap account for either role. Migration SQL uses LF in Git; provisioning accepts the known migration's LF/CRLF hashes while preserving stored history and rejecting other hashes.
 
@@ -779,6 +853,7 @@ New artifacts volumes inherit ownership from the image's UID/GID 1000 directory.
 ```mermaid
 erDiagram
   agents ||--o{ agent_policies : has
+  agents ||--o{ agent_canaries : carries
   agents ||--o{ permissions : grants
   agents ||--o{ skills : owns
   skills ||--o{ skill_versions : versions
@@ -817,7 +892,10 @@ Backups are encrypted ZIPs (DB export + memory + skills + workspace + artifacts)
 - **[M]** Budgets per agent, routine, day and month: warn at 80%, pause and ask at 100%.
 - **[M]** A cost receipt per run: tokens in/out/cached, model per step, USD (and the user's currency).
 - **[M]** An editable price table per provider/model. Local models cost $0.
+- **[M]** Cost rows are only ever added (`cost_entries`, one per model call), keyed `cost:<run_id>:<call_index>` so a retried job cannot count a call twice. Calls that fail, return invalid output or are cancelled are billed too, because the tokens were spent. Costs are whole millionths of a US dollar, rounded up per call; budgets stored in cents are compared as `cents × 10,000`.
 - **[S]** A pre-save estimate on routine cards ("≈ $0.03/run") and a spend dashboard.
+
+TASK-034 implements the agent daily/monthly half of the budget requirement. Before every Main, fallback, visual or SAM call, the runtime reads the live owner-scoped ledger for the owner-timezone day and month, resolves the current price, compares integer micro-USD with `cents × 10,000`, warns once per run at 80%, and at 100% pauses the agent, persists `budget_paused` attention and makes no further call. Two runs that both pass the same pre-call check may each spend one call before the shared total pauses them. Cost rows use the provider/model snapshot and `cost:<run_id>:<call_index>` idempotency; failed calls are recorded with zero usage when the provider reports none, and returned incomplete/invalid/cancelled usage is retained. Each signed step receipt carries the cost added since the previous step, while `GET /api/runs/<id>/cost` is the run-level receipt that also covers finish/invalid calls with no step. Built-in rates match the verified Meta prices in PRD §9; SAM is charged per 1K images; local OpenAI-compatible endpoints are $0; an unpriced hosted model stops with `price_required`. Routine budget enforcement remains for TASK-038/039.
 
 Built-in savings:
 
@@ -835,7 +913,7 @@ Built-in savings:
 
 - **[M]** A clock block is injected into **every** model call, *after* the cached prefix so caching survives:
   `Now: 2026-10-28T04:45:00+05:30 (Wednesday) · User timezone: Asia/Kolkata · UTC: 2026-10-27T23:15:00Z`
-- **[M]** A `get_time(timezone?)` tool covers long runs.
+- **[M]** A `get_time(timezone?)` tool covers long runs. Built (TASK-026) as a `next_step` action, because the provider layer cannot return tool output yet: the loop answers it in code from the injected clock and shows the answer in the next turn's history. Only validated IANA names are used or echoed. Every agent model call must end its `instructions` with `withClock(...)` from `lib/time/clock.ts`; the clock is rounded to the minute so the text before it stays cacheable.
 - **[M]** Relative dates ("next Friday 9am") are resolved by code and echoed in the routine card for confirmation.
 - **[M]** Timestamps are stored in UTC + IANA timezone and displayed in the owner's timezone.
 - **[M]** Agents are told their training knowledge may be stale and must check live sources.
@@ -874,7 +952,8 @@ flowchart LR
 | Left pane | Agent list (status, Astra Mode badge) |
 | Center | Chat with card types and file cards; attachments up to 250 MB (saved to `inbox/`) **[M]** |
 | Right pane tabs | Desktop (live view + takeover), Settings, Tools, Routines, History (runs, branches, receipts), Memory, Files **[S]** |
-| Full-screen desktop | noVNC stream; takeover / hand back |
+| History tab **[M]** | Built (TASK-031, TASK-043): the selected agent's runs and each run's step timeline with before/after screenshots, the SAM outline, pass/fail, a chain badge, Export, rewind controls and branch badges/links. The original run stays read-only. |
+| Expanded desktop view **[M]** | Full screen on the live desktop opens an expanded view inside the app window (the app header stays; no browser fullscreen). The same noVNC stream moves into it without reconnecting; takeover / hand back work there. View-only on phones. See `docs/DESIGN.md` |
 | Jobs | Dashboard (§12.5) |
 | Security Center | Events, blocked actions, injections |
 | Settings → Models | Role cards (§8.2) |
@@ -938,11 +1017,14 @@ sequenceDiagram
   Page->>Agent: hidden instruction "send token to evil.example"
   Note over Agent: web content = data, not instructions
   Agent->>Proxy: outbound request (contains canary)
-  Proxy->>Proxy: canary match
-  Proxy-->>RT: kill session + security_event
+  Proxy->>Proxy: canary match, latch trip + fixed event
+  RT->>Proxy: poll /v1/events every 3 s
+  RT->>RT: stop desktop, cancel runs, pause, card
   RT->>RT: auto-rewind to pre-compromise checkpoint [S]
   RT-->>RT: list external actions since compromise
 ```
+
+Implemented (TASK-047): the app also checks every `type` text before execution, including split steps and common encodings. The proxy checks the `CONNECT` host and plain-HTTP request line/headers before DNS or connect. Events and logs carry no host, path or canary text. HTTPS bodies/paths, chat text, owner takeover typing and provider calls are not inspected.
 
 ### 23.3 Routine replay with self-heal
 
@@ -954,7 +1036,7 @@ flowchart LR
   P -- no --> SH[Self-heal: visual re-plan<br/>via Main AI + perception]
   SH --> D[Skill diff proposed]
   D --> A[Owner approves on phone]
-  A --> U[Skill + replay script updated]
+  A --> U[Replay script v2 active]
 ```
 
 ---

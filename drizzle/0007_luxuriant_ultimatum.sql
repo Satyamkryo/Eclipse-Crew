@@ -1,0 +1,3 @@
+ALTER TABLE "model_roles" ADD COLUMN "routing" text DEFAULT 'fixed' NOT NULL;--> statement-breakpoint
+ALTER TABLE "model_roles" ADD COLUMN "hard_model" text;--> statement-breakpoint
+ALTER TABLE "model_roles" ADD CONSTRAINT "model_roles_routing_check" CHECK ("model_roles"."routing" in ('fixed', 'auto') and ("model_roles"."routing" = 'fixed' or "model_roles"."hard_model" is not null) and ("model_roles"."role" = 'main' or ("model_roles"."routing" = 'fixed' and "model_roles"."hard_model" is null)));

@@ -33,9 +33,17 @@ BEGIN
         AND (d.defaclnamespace = 0 OR d.defaclnamespace IN (SELECT oid FROM pg_namespace WHERE nspname IN ('public','drizzle')))) THEN
     RAISE EXCEPTION 'unexpected default privileges';
   END IF;
-  IF EXISTS (SELECT FROM pg_namespace WHERE nspname NOT IN ('public','drizzle','information_schema')
+  IF EXISTS (SELECT FROM pg_namespace WHERE nspname NOT IN ('public','drizzle','pgboss','information_schema')
       AND nspname NOT LIKE 'pg\_%' ESCAPE '\') THEN
     RAISE EXCEPTION 'unrelated schema';
+  END IF;
+  IF to_regnamespace('pgboss') IS NOT NULL AND (
+    (SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname = 'pgboss') <> 'eclipse_migrator'
+    OR has_schema_privilege('eclipse_app', 'pgboss', 'CREATE')
+    OR EXISTS (SELECT FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      JOIN pg_roles r ON r.oid = c.relowner WHERE n.nspname = 'pgboss' AND r.rolname <> 'eclipse_migrator')
+  ) THEN
+    RAISE EXCEPTION 'incompatible queue schema';
   END IF;
   IF EXISTS (SELECT FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = 'public') OR
      EXISTS (SELECT FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace
@@ -43,27 +51,32 @@ BEGIN
     RAISE EXCEPTION 'unrelated public function or type';
   END IF;
   IF EXISTS (SELECT FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-      WHERE n.nspname = 'public' AND c.relkind IN ('r','p','v','m','S','f') AND c.relname NOT IN ('owner','sessions','agents','agent_policies','chat_sessions','messages','providers','model_roles')) THEN
+      WHERE n.nspname = 'public' AND c.relkind IN ('r','p','v','m','S','f') AND c.relname NOT IN ('owner','sessions','agents','agent_policies','agent_canaries','security_events','chat_sessions','messages','providers','model_roles','runs','steps','step_evidence','checkpoints','model_prices','cost_entries','teach_recordings','routines','replay_scripts','replay_script_versions','replay_script_proposals','run_meta','skills','skill_versions','approvals','permissions','permission_uses')) THEN
     RAISE EXCEPTION 'unrelated public object';
   END IF;
   IF EXISTS (SELECT FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-      WHERE n.nspname = 'public' AND c.relkind = 'i' AND c.relname NOT IN ('owner_pkey','owner_login_unique','owner_singleton_idx','sessions_pkey','sessions_token_hash_unique','sessions_owner_id_idx','sessions_expires_at_idx','agents_pkey','agents_owner_id_idx','agent_policies_pkey','agent_policies_owner_id_idx','chat_sessions_pkey','chat_sessions_owner_id_idx','chat_sessions_owner_agent_idx','messages_pkey','messages_owner_id_idx','messages_session_created_idx','messages_run_id_idx','providers_pkey','providers_owner_id_idx','model_roles_pkey','model_roles_owner_id_idx','model_roles_provider_id_idx','model_roles_owner_role_idx')) OR
+      WHERE n.nspname = 'public' AND c.relkind = 'i' AND c.relname NOT IN ('owner_pkey','owner_login_unique','owner_singleton_idx','sessions_pkey','sessions_token_hash_unique','sessions_owner_id_idx','sessions_expires_at_idx','agents_pkey','agents_owner_id_idx','agent_canaries_pkey','agent_canaries_owner_id_idx','agent_canaries_sha256_idx','security_events_pkey','security_events_owner_created_idx','security_events_source_ref_unique','agent_policies_pkey','agent_policies_owner_id_idx','chat_sessions_pkey','chat_sessions_owner_id_idx','chat_sessions_owner_agent_idx','messages_pkey','messages_owner_id_idx','messages_session_created_idx','messages_run_id_idx','providers_pkey','providers_owner_id_idx','model_roles_pkey','model_roles_owner_id_idx','model_roles_provider_id_idx','model_roles_owner_role_idx','runs_pkey','runs_owner_id_idx','runs_owner_started_idx','run_meta_pkey','run_meta_owner_id_idx','run_meta_owner_execution_idx','run_meta_retry_of_idx','steps_pkey','steps_owner_id_idx','steps_run_idx_idx','step_evidence_pkey','step_evidence_owner_id_idx','step_evidence_run_idx_idx','checkpoints_pkey','checkpoints_owner_id_idx','checkpoints_run_idx_idx','model_prices_pkey','model_prices_owner_id_idx','model_prices_provider_id_idx','model_prices_owner_provider_model_idx','cost_entries_pkey','cost_entries_owner_id_idx','cost_entries_run_id_idx','cost_entries_run_call_idx','cost_entries_idempotency_key_idx','cost_entries_capture_call_idx','teach_recordings_pkey','teach_recordings_owner_id_idx','teach_recordings_agent_id_idx','teach_recordings_active_agent_idx','routines_pkey','routines_source_message_id_unique','routines_owner_id_idx','routines_agent_id_idx','routines_owner_next_run_idx','replay_scripts_pkey','replay_scripts_owner_id_idx','replay_scripts_agent_id_idx','replay_scripts_source_run_idx','replay_script_versions_pkey','replay_script_versions_owner_id_idx','replay_script_versions_script_id_idx','replay_script_versions_script_version_idx','replay_script_proposals_pkey','replay_script_proposals_owner_id_idx','replay_script_proposals_script_id_idx','replay_script_proposals_heal_run_idx','replay_script_proposals_pending_script_idx','skills_pkey','skills_capture_id_unique','skills_owner_id_idx','skills_agent_id_idx','skills_owner_agent_name_idx','skill_versions_pkey','skill_versions_owner_id_idx','skill_versions_skill_version_idx','approvals_pkey','approvals_owner_id_idx','permissions_pkey','permissions_owner_id_idx','permissions_active_idx','permission_uses_pkey','permission_uses_permission_used_idx')) OR
      EXISTS (SELECT FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
       JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname IN ('public','drizzle') AND NOT t.tgisinternal) THEN
     RAISE EXCEPTION 'unexpected index or trigger';
   END IF;
   IF EXISTS (SELECT FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-      JOIN pg_roles o ON o.oid = c.relowner WHERE n.nspname = 'public' AND c.relname IN ('owner','sessions','agents','agent_policies','chat_sessions','messages','providers','model_roles')
+      JOIN pg_roles o ON o.oid = c.relowner WHERE n.nspname = 'public' AND c.relname IN ('owner','sessions','agents','agent_policies','agent_canaries','security_events','chat_sessions','messages','providers','model_roles','runs','run_meta','steps','step_evidence','checkpoints','model_prices','cost_entries','teach_recordings','routines','replay_scripts','replay_script_versions','replay_script_proposals','skills','skill_versions','approvals','permissions','permission_uses')
       AND (c.relkind <> 'r' OR o.rolname NOT IN ('eclipse_bootstrap','eclipse_migrator'))) THEN
     RAISE EXCEPTION 'incompatible owner table';
   END IF;
   IF EXISTS (SELECT FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
       CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) a
-      WHERE n.nspname = 'public' AND c.relname IN ('owner','sessions','agents','agent_policies','chat_sessions','messages','providers','model_roles') AND a.grantee <> c.relowner
+      WHERE n.nspname = 'public' AND c.relname IN ('owner','sessions','agents','agent_policies','agent_canaries','security_events','chat_sessions','messages','providers','model_roles','runs','run_meta','steps','step_evidence','checkpoints','model_prices','cost_entries','teach_recordings','routines','replay_scripts','replay_script_versions','replay_script_proposals','skills','skill_versions','approvals','permissions','permission_uses') AND a.grantee <> c.relowner
         AND NOT (COALESCE(a.grantee = (SELECT oid FROM pg_roles WHERE rolname = 'eclipse_app'), false)
-                 AND ((c.relname IN ('owner','agent_policies','model_roles') AND a.privilege_type IN ('SELECT','INSERT','UPDATE'))
+                 AND ((c.relname IN ('owner','agent_policies','agent_canaries','model_roles') AND a.privilege_type IN ('SELECT','INSERT','UPDATE'))
                    OR (c.relname IN ('sessions','agents','providers') AND a.privilege_type IN ('SELECT','INSERT','UPDATE','DELETE'))
-                   OR (c.relname IN ('chat_sessions','messages') AND a.privilege_type IN ('SELECT','INSERT')))
+                   OR (c.relname IN ('chat_sessions','messages','security_events','steps','step_evidence','checkpoints','cost_entries','run_meta','permission_uses') AND a.privilege_type IN ('SELECT','INSERT'))
+                    OR (c.relname IN ('runs','model_prices','teach_recordings','routines','skills','approvals','permissions') AND a.privilege_type IN ('SELECT','INSERT','UPDATE'))
+                    OR (c.relname IN ('replay_scripts') AND a.privilege_type IN ('SELECT','INSERT','DELETE'))
+                    OR (c.relname = 'replay_script_versions' AND a.privilege_type IN ('SELECT','INSERT'))
+                    OR (c.relname = 'replay_script_proposals' AND a.privilege_type IN ('SELECT','INSERT','UPDATE'))
+                    OR (c.relname = 'skill_versions' AND a.privilege_type IN ('SELECT','INSERT')))
                  AND NOT a.is_grantable)) THEN
     RAISE EXCEPTION 'unexpected owner table grants';
   END IF;
@@ -78,6 +91,156 @@ BEGIN
        WHERE attrelid = to_regclass('public.owner') AND attnum > 0 AND NOT attisdropped)
         IS DISTINCT FROM ARRAY['uuid','uuid','text','text','text','timestamp with time zone'] THEN
     RAISE EXCEPTION 'unexpected owner table types';
+  END IF;
+  IF to_regclass('public.step_evidence') IS NOT NULL AND (
+      (SELECT array_agg(attname::text ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid = to_regclass('public.step_evidence') AND attnum > 0 AND NOT attisdropped)
+        IS DISTINCT FROM ARRAY['id','owner_id','run_id','idx','before_hash','after_hash','width','height','sam_box','created_at'] OR
+      (SELECT array_agg(format_type(atttypid, atttypmod) ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid = to_regclass('public.step_evidence') AND attnum > 0 AND NOT attisdropped)
+        IS DISTINCT FROM ARRAY['uuid','uuid','uuid','integer','text','text','integer','integer','jsonb','timestamp with time zone'] OR
+      (SELECT array_agg(attnotnull ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid = to_regclass('public.step_evidence') AND attnum > 0 AND NOT attisdropped)
+        IS DISTINCT FROM ARRAY[true,true,true,true,false,false,false,false,false,true] OR
+      (SELECT array_agg(conname::text || '=' || pg_get_constraintdef(oid) ORDER BY conname) FROM pg_constraint WHERE conrelid = to_regclass('public.step_evidence'))
+        IS DISTINCT FROM ARRAY[
+          'step_evidence_pkey=PRIMARY KEY (id)',
+          'step_evidence_run_id_runs_id_fk=FOREIGN KEY (run_id) REFERENCES runs(id)'] OR
+      (SELECT array_agg(adnum::integer ORDER BY adnum) FROM pg_attrdef WHERE adrelid = to_regclass('public.step_evidence'))
+        IS DISTINCT FROM ARRAY[10] OR
+      EXISTS (SELECT FROM pg_attrdef WHERE adrelid = to_regclass('public.step_evidence') AND pg_get_expr(adbin, adrelid) <> 'now()') OR
+      (SELECT array_agg(indexdef ORDER BY indexname) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'step_evidence')
+        IS DISTINCT FROM ARRAY[
+          'CREATE INDEX step_evidence_owner_id_idx ON public.step_evidence USING btree (owner_id)',
+          'CREATE UNIQUE INDEX step_evidence_pkey ON public.step_evidence USING btree (id)',
+          'CREATE UNIQUE INDEX step_evidence_run_idx_idx ON public.step_evidence USING btree (run_id, idx)']) THEN
+    RAISE EXCEPTION 'unexpected step evidence schema';
+  END IF;
+  IF to_regclass('public.teach_recordings') IS NULL AND to_regclass('public.model_prices') IS NOT NULL AND (
+      (SELECT array_agg(attname::text ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid = to_regclass('public.model_prices') AND attnum > 0 AND NOT attisdropped)
+        IS DISTINCT FROM ARRAY['id','owner_id','provider_id','model','input_micro_usd_per_million','cached_micro_usd_per_million','output_micro_usd_per_million','image_micro_usd_per_thousand','created_at','updated_at'] OR
+      (SELECT array_agg(format_type(atttypid, atttypmod) ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid = to_regclass('public.model_prices') AND attnum > 0 AND NOT attisdropped)
+        IS DISTINCT FROM ARRAY['uuid','uuid','uuid','text','bigint','bigint','bigint','bigint','timestamp with time zone','timestamp with time zone'] OR
+      EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.model_prices')
+        AND attnum > 0 AND NOT attisdropped AND NOT attnotnull) OR
+      (SELECT array_agg(conname::text || '=' || pg_get_constraintdef(oid) ORDER BY conname) FROM pg_constraint WHERE conrelid = to_regclass('public.model_prices'))
+        IS DISTINCT FROM ARRAY[
+          'model_prices_model_check=CHECK ((model ~ ''^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$''::text))',
+          'model_prices_pkey=PRIMARY KEY (id)',
+          'model_prices_provider_id_providers_id_fk=FOREIGN KEY (provider_id) REFERENCES providers(id) ON DELETE CASCADE',
+          'model_prices_rates_check=CHECK ((((input_micro_usd_per_million >= 0) AND (input_micro_usd_per_million <= 1000000000)) AND ((cached_micro_usd_per_million >= 0) AND (cached_micro_usd_per_million <= 1000000000)) AND ((output_micro_usd_per_million >= 0) AND (output_micro_usd_per_million <= 1000000000)) AND ((image_micro_usd_per_thousand >= 0) AND (image_micro_usd_per_thousand <= 1000000000))))'] OR
+      (SELECT array_agg(adnum::integer ORDER BY adnum) FROM pg_attrdef WHERE adrelid = to_regclass('public.model_prices'))
+        IS DISTINCT FROM ARRAY[5,6,7,8,9,10] OR
+      (SELECT count(*) FROM pg_attrdef WHERE adrelid = to_regclass('public.model_prices') AND adnum BETWEEN 5 AND 8 AND pg_get_expr(adbin, adrelid) = '0') <> 4 OR
+      (SELECT count(*) FROM pg_attrdef WHERE adrelid = to_regclass('public.model_prices') AND adnum BETWEEN 9 AND 10 AND pg_get_expr(adbin, adrelid) = 'now()') <> 2 OR
+      (SELECT array_agg(indexdef ORDER BY indexname) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'model_prices')
+        IS DISTINCT FROM ARRAY[
+          'CREATE INDEX model_prices_owner_id_idx ON public.model_prices USING btree (owner_id)',
+          'CREATE UNIQUE INDEX model_prices_owner_provider_model_idx ON public.model_prices USING btree (owner_id, provider_id, model)',
+          'CREATE UNIQUE INDEX model_prices_pkey ON public.model_prices USING btree (id)',
+          'CREATE INDEX model_prices_provider_id_idx ON public.model_prices USING btree (provider_id)']) THEN
+    RAISE EXCEPTION 'unexpected model prices schema';
+  END IF;
+  IF to_regclass('public.checkpoints') IS NOT NULL AND (
+      (SELECT array_agg(attname::text ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid = to_regclass('public.checkpoints') AND attnum > 0 AND NOT attisdropped)
+        IS DISTINCT FROM ARRAY['id','owner_id','run_id','idx','state_hash','manifest_hash','file_count','restorable_count','status','reason','created_at'] OR
+      (SELECT array_agg(format_type(atttypid, atttypmod) ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid = to_regclass('public.checkpoints') AND attnum > 0 AND NOT attisdropped)
+        IS DISTINCT FROM ARRAY['uuid','uuid','uuid','integer','text','text','integer','integer','text','text','timestamp with time zone'] OR
+      (SELECT array_agg(attnotnull ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid = to_regclass('public.checkpoints') AND attnum > 0 AND NOT attisdropped)
+        IS DISTINCT FROM ARRAY[true,true,true,true,true,false,true,true,true,false,true] OR
+      (SELECT array_agg(conname::text || '=' || pg_get_constraintdef(oid) ORDER BY conname) FROM pg_constraint WHERE conrelid = to_regclass('public.checkpoints'))
+        IS DISTINCT FROM ARRAY[
+          'checkpoints_pkey=PRIMARY KEY (id)',
+          'checkpoints_run_id_runs_id_fk=FOREIGN KEY (run_id) REFERENCES runs(id)',
+          'checkpoints_status_check=CHECK ((status = ANY (ARRAY[''complete''::text, ''partial''::text])))'] OR
+      (SELECT array_agg(adnum::integer ORDER BY adnum) FROM pg_attrdef WHERE adrelid = to_regclass('public.checkpoints'))
+        IS DISTINCT FROM ARRAY[7,8,11] OR
+      EXISTS (SELECT FROM pg_attrdef WHERE adrelid = to_regclass('public.checkpoints') AND adnum IN (7,8) AND pg_get_expr(adbin, adrelid) <> '0') OR
+      EXISTS (SELECT FROM pg_attrdef WHERE adrelid = to_regclass('public.checkpoints') AND adnum = 11 AND pg_get_expr(adbin, adrelid) <> 'now()') OR
+      (SELECT array_agg(indexdef ORDER BY indexname) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'checkpoints')
+        IS DISTINCT FROM ARRAY[
+          'CREATE INDEX checkpoints_owner_id_idx ON public.checkpoints USING btree (owner_id)',
+          'CREATE UNIQUE INDEX checkpoints_pkey ON public.checkpoints USING btree (id)',
+          'CREATE UNIQUE INDEX checkpoints_run_idx_idx ON public.checkpoints USING btree (run_id, idx)']) THEN
+    RAISE EXCEPTION 'unexpected checkpoints schema';
+  END IF;
+  IF to_regclass('public.teach_recordings') IS NULL AND to_regclass('public.cost_entries') IS NOT NULL AND (
+      (SELECT array_agg(attname::text ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid = to_regclass('public.cost_entries') AND attnum > 0 AND NOT attisdropped)
+        IS DISTINCT FROM ARRAY['id','owner_id','run_id','agent_id','provider_id','call_index','model','tokens_in','tokens_out','tokens_cached','cost_micro_usd','outcome','idempotency_key','created_at'] OR
+      (SELECT array_agg(format_type(atttypid, atttypmod) ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid = to_regclass('public.cost_entries') AND attnum > 0 AND NOT attisdropped)
+        IS DISTINCT FROM ARRAY['uuid','uuid','uuid','uuid','uuid','integer','text','integer','integer','integer','bigint','text','text','timestamp with time zone'] OR
+      EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.cost_entries')
+        AND attnum > 0 AND NOT attisdropped AND NOT attnotnull) OR
+      (SELECT array_agg(conname::text || '=' || pg_get_constraintdef(oid) ORDER BY conname) FROM pg_constraint WHERE conrelid = to_regclass('public.cost_entries'))
+        IS DISTINCT FROM ARRAY[
+          'cost_entries_call_index_check=CHECK ((call_index > 0))',
+          'cost_entries_cost_check=CHECK ((cost_micro_usd >= 0))',
+          'cost_entries_idempotency_check=CHECK ((idempotency_key = (((''cost:''::text || (run_id)::text) || '':''::text) || (call_index)::text)))',
+          'cost_entries_outcome_check=CHECK ((outcome ~ ''^[a-z_]{1,64}$''::text))',
+          'cost_entries_pkey=PRIMARY KEY (id)',
+          'cost_entries_run_id_runs_id_fk=FOREIGN KEY (run_id) REFERENCES runs(id)',
+          'cost_entries_tokens_check=CHECK (((tokens_in >= 0) AND (tokens_out >= 0) AND (tokens_cached >= 0) AND (tokens_cached <= tokens_in)))'] OR
+      (SELECT array_agg(adnum::integer ORDER BY adnum) FROM pg_attrdef WHERE adrelid = to_regclass('public.cost_entries'))
+        IS DISTINCT FROM ARRAY[14] OR
+      EXISTS (SELECT FROM pg_attrdef WHERE adrelid = to_regclass('public.cost_entries') AND pg_get_expr(adbin, adrelid) <> 'now()') OR
+      (SELECT array_agg(indexdef ORDER BY indexname) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'cost_entries')
+        IS DISTINCT FROM ARRAY[
+          'CREATE UNIQUE INDEX cost_entries_idempotency_key_idx ON public.cost_entries USING btree (idempotency_key)',
+          'CREATE INDEX cost_entries_owner_id_idx ON public.cost_entries USING btree (owner_id)',
+          'CREATE UNIQUE INDEX cost_entries_pkey ON public.cost_entries USING btree (id)',
+          'CREATE UNIQUE INDEX cost_entries_run_call_idx ON public.cost_entries USING btree (run_id, call_index)',
+          'CREATE INDEX cost_entries_run_id_idx ON public.cost_entries USING btree (run_id)']) THEN
+    RAISE EXCEPTION 'unexpected cost entries schema';
+  END IF;
+
+  -- Exact post-0013 catalog contracts. Pre-0013 contracts above remain unchanged.
+  IF to_regclass('public.teach_recordings') IS NOT NULL AND (
+      to_regclass('public.model_prices') IS NULL OR
+      (SELECT array_agg(attname::text ORDER BY attnum) FROM pg_attribute WHERE attrelid = to_regclass('public.model_prices') AND attnum > 0 AND NOT attisdropped) IS DISTINCT FROM ARRAY['id','owner_id','provider_id','model','input_micro_usd_per_million','cached_micro_usd_per_million','output_micro_usd_per_million','image_micro_usd_per_thousand','created_at','updated_at','audio_micro_usd_per_hour'] OR
+      (SELECT array_agg(format_type(atttypid, atttypmod) ORDER BY attnum) FROM pg_attribute WHERE attrelid = to_regclass('public.model_prices') AND attnum > 0 AND NOT attisdropped) IS DISTINCT FROM ARRAY['uuid','uuid','uuid','text','bigint','bigint','bigint','bigint','timestamp with time zone','timestamp with time zone','bigint'] OR
+      (SELECT array_agg(attnotnull ORDER BY attnum) FROM pg_attribute WHERE attrelid = to_regclass('public.model_prices') AND attnum > 0 AND NOT attisdropped) IS DISTINCT FROM ARRAY[true,true,true,true,true,true,true,true,true,true,true] OR
+      (SELECT array_agg(conname::text || '=' || pg_get_constraintdef(oid) ORDER BY conname) FROM pg_constraint WHERE conrelid = to_regclass('public.model_prices')) IS DISTINCT FROM ARRAY['model_prices_model_check=CHECK ((model ~ ''^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$''::text))','model_prices_pkey=PRIMARY KEY (id)','model_prices_provider_id_providers_id_fk=FOREIGN KEY (provider_id) REFERENCES providers(id) ON DELETE CASCADE','model_prices_rates_check=CHECK ((((input_micro_usd_per_million >= 0) AND (input_micro_usd_per_million <= 1000000000)) AND ((cached_micro_usd_per_million >= 0) AND (cached_micro_usd_per_million <= 1000000000)) AND ((output_micro_usd_per_million >= 0) AND (output_micro_usd_per_million <= 1000000000)) AND ((image_micro_usd_per_thousand >= 0) AND (image_micro_usd_per_thousand <= 1000000000)) AND ((audio_micro_usd_per_hour >= 0) AND (audio_micro_usd_per_hour <= 1000000000))))'] OR
+      (SELECT array_agg(adnum::integer::text || '=' || pg_get_expr(adbin,adrelid) ORDER BY adnum) FROM pg_attrdef WHERE adrelid = to_regclass('public.model_prices')) IS DISTINCT FROM ARRAY['5=0','6=0','7=0','8=0','9=now()','10=now()','11=0'] OR
+      (SELECT array_agg(indexdef ORDER BY indexname) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'model_prices') IS DISTINCT FROM ARRAY['CREATE INDEX model_prices_owner_id_idx ON public.model_prices USING btree (owner_id)','CREATE UNIQUE INDEX model_prices_owner_provider_model_idx ON public.model_prices USING btree (owner_id, provider_id, model)','CREATE UNIQUE INDEX model_prices_pkey ON public.model_prices USING btree (id)','CREATE INDEX model_prices_provider_id_idx ON public.model_prices USING btree (provider_id)']) THEN
+    RAISE EXCEPTION 'unexpected model_prices post-0013 schema';
+  END IF;
+  IF to_regclass('public.teach_recordings') IS NOT NULL AND (
+      to_regclass('public.cost_entries') IS NULL OR
+      (SELECT array_agg(attname::text ORDER BY attnum) FROM pg_attribute WHERE attrelid = to_regclass('public.cost_entries') AND attnum > 0 AND NOT attisdropped) IS DISTINCT FROM ARRAY['id','owner_id','run_id','agent_id','provider_id','call_index','model','tokens_in','tokens_out','tokens_cached','cost_micro_usd','outcome','idempotency_key','created_at','capture_id','audio_duration_ms'] OR
+      (SELECT array_agg(format_type(atttypid, atttypmod) ORDER BY attnum) FROM pg_attribute WHERE attrelid = to_regclass('public.cost_entries') AND attnum > 0 AND NOT attisdropped) IS DISTINCT FROM ARRAY['uuid','uuid','uuid','uuid','uuid','integer','text','integer','integer','integer','bigint','text','text','timestamp with time zone','uuid','integer'] OR
+      (SELECT array_agg(attnotnull ORDER BY attnum) FROM pg_attribute WHERE attrelid = to_regclass('public.cost_entries') AND attnum > 0 AND NOT attisdropped) IS DISTINCT FROM ARRAY[true,true,false,true,true,true,true,true,true,true,true,true,true,true,false,true] OR
+      (SELECT array_agg(conname::text || '=' || pg_get_constraintdef(oid) ORDER BY conname) FROM pg_constraint WHERE conrelid = to_regclass('public.cost_entries')) IS DISTINCT FROM ARRAY['cost_entries_audio_duration_check=CHECK (((audio_duration_ms >= 0) AND (audio_duration_ms <= 120000)))','cost_entries_call_index_check=CHECK ((call_index > 0))','cost_entries_capture_id_teach_recordings_id_fk=FOREIGN KEY (capture_id) REFERENCES teach_recordings(id)','cost_entries_cost_check=CHECK ((cost_micro_usd >= 0))','cost_entries_idempotency_check=CHECK ((((run_id IS NOT NULL) AND (idempotency_key = (((''cost:''::text || (run_id)::text) || '':''::text) || (call_index)::text))) OR ((capture_id IS NOT NULL) AND ((idempotency_key = (((''teach:''::text || (capture_id)::text) || '':asr:''::text) || ((call_index - 1))::text)) OR (idempotency_key = (((''teach:''::text || (capture_id)::text) || '':skill:''::text) || (call_index)::text))))))','cost_entries_outcome_check=CHECK ((outcome ~ ''^[a-z_]{1,64}$''::text))','cost_entries_pkey=PRIMARY KEY (id)','cost_entries_run_id_runs_id_fk=FOREIGN KEY (run_id) REFERENCES runs(id)','cost_entries_source_check=CHECK (((((run_id IS NOT NULL))::integer + ((capture_id IS NOT NULL))::integer) = 1))','cost_entries_tokens_check=CHECK (((tokens_in >= 0) AND (tokens_out >= 0) AND (tokens_cached >= 0) AND (tokens_cached <= tokens_in)))'] OR
+      (SELECT array_agg(adnum::integer::text || '=' || pg_get_expr(adbin,adrelid) ORDER BY adnum) FROM pg_attrdef WHERE adrelid = to_regclass('public.cost_entries')) IS DISTINCT FROM ARRAY['14=now()','16=0'] OR
+      (SELECT array_agg(indexdef ORDER BY indexname) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'cost_entries') IS DISTINCT FROM ARRAY['CREATE UNIQUE INDEX cost_entries_capture_call_idx ON public.cost_entries USING btree (capture_id, call_index)','CREATE UNIQUE INDEX cost_entries_idempotency_key_idx ON public.cost_entries USING btree (idempotency_key)','CREATE INDEX cost_entries_owner_id_idx ON public.cost_entries USING btree (owner_id)','CREATE UNIQUE INDEX cost_entries_pkey ON public.cost_entries USING btree (id)','CREATE UNIQUE INDEX cost_entries_run_call_idx ON public.cost_entries USING btree (run_id, call_index)','CREATE INDEX cost_entries_run_id_idx ON public.cost_entries USING btree (run_id)']) THEN
+    RAISE EXCEPTION 'unexpected cost_entries post-0013 schema';
+  END IF;
+  IF to_regclass('public.teach_recordings') IS NOT NULL AND (
+      to_regclass('public.teach_recordings') IS NULL OR
+      (SELECT array_agg(attname::text ORDER BY attnum) FROM pg_attribute WHERE attrelid = to_regclass('public.teach_recordings') AND attnum > 0 AND NOT attisdropped) IS DISTINCT FROM ARRAY['id','owner_id','agent_id','generation','state','reason','timezone','narration','narration_status','narration_segments','manifest','active_ms','event_count','created_at','updated_at'] OR
+      (SELECT array_agg(format_type(atttypid, atttypmod) ORDER BY attnum) FROM pg_attribute WHERE attrelid = to_regclass('public.teach_recordings') AND attnum > 0 AND NOT attisdropped) IS DISTINCT FROM ARRAY['uuid','uuid','uuid','uuid','text','text','text','boolean','text','jsonb','jsonb','integer','integer','timestamp with time zone','timestamp with time zone'] OR
+      (SELECT array_agg(attnotnull ORDER BY attnum) FROM pg_attribute WHERE attrelid = to_regclass('public.teach_recordings') AND attnum > 0 AND NOT attisdropped) IS DISTINCT FROM ARRAY[true,true,true,true,true,false,true,true,true,true,false,true,true,true,true] OR
+      (SELECT array_agg(conname::text || '=' || pg_get_constraintdef(oid) ORDER BY conname) FROM pg_constraint WHERE conrelid = to_regclass('public.teach_recordings')) IS DISTINCT FROM ARRAY['teach_recordings_bounds_check=CHECK ((((active_ms >= 0) AND (active_ms <= 120000)) AND ((event_count >= 0) AND (event_count <= 300))))','teach_recordings_narration_status_check=CHECK ((narration_status = ANY (ARRAY[''off''::text, ''pending''::text, ''working''::text, ''complete''::text, ''error''::text, ''uncertain''::text])))','teach_recordings_pkey=PRIMARY KEY (id)','teach_recordings_state_check=CHECK ((state = ANY (ARRAY[''recording''::text, ''paused''::text, ''finalizing''::text, ''complete''::text, ''aborted''::text, ''failed''::text, ''discarded''::text])))'] OR
+      (SELECT array_agg(adnum::integer::text || '=' || pg_get_expr(adbin,adrelid) ORDER BY adnum) FROM pg_attrdef WHERE adrelid = to_regclass('public.teach_recordings')) IS DISTINCT FROM ARRAY['8=false','9=''off''::text','10=''[]''::jsonb','12=0','13=0','14=now()','15=now()'] OR
+      (SELECT array_agg(indexdef ORDER BY indexname) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'teach_recordings') IS DISTINCT FROM ARRAY['CREATE UNIQUE INDEX teach_recordings_active_agent_idx ON public.teach_recordings USING btree (owner_id, agent_id) WHERE (state = ANY (ARRAY[''recording''::text, ''paused''::text, ''finalizing''::text]))','CREATE INDEX teach_recordings_agent_id_idx ON public.teach_recordings USING btree (agent_id)','CREATE INDEX teach_recordings_owner_id_idx ON public.teach_recordings USING btree (owner_id)','CREATE UNIQUE INDEX teach_recordings_pkey ON public.teach_recordings USING btree (id)']) THEN
+    RAISE EXCEPTION 'unexpected teach_recordings post-0013 schema';
+  END IF;
+  IF to_regclass('public.teach_recordings') IS NOT NULL AND (
+      to_regclass('public.messages') IS NULL OR
+      (SELECT array_agg(attname::text ORDER BY attnum) FROM pg_attribute WHERE attrelid = to_regclass('public.messages') AND attnum > 0 AND NOT attisdropped) IS DISTINCT FROM ARRAY['id','owner_id','session_id','role','card_type','content','source_tag','run_id','created_at'] OR
+      (SELECT array_agg(format_type(atttypid, atttypmod) ORDER BY attnum) FROM pg_attribute WHERE attrelid = to_regclass('public.messages') AND attnum > 0 AND NOT attisdropped) IS DISTINCT FROM ARRAY['uuid','uuid','uuid','text','text','jsonb','text','uuid','timestamp with time zone'] OR
+      (SELECT array_agg(attnotnull ORDER BY attnum) FROM pg_attribute WHERE attrelid = to_regclass('public.messages') AND attnum > 0 AND NOT attisdropped) IS DISTINCT FROM ARRAY[true,true,true,true,true,true,true,false,true] OR
+      ((SELECT array_agg(conname::text || '=' || pg_get_constraintdef(oid) ORDER BY conname) FROM pg_constraint WHERE conrelid = to_regclass('public.messages')) IS DISTINCT FROM ARRAY['messages_card_type_check=CHECK ((card_type = ANY (ARRAY[''message''::text, ''clarification''::text, ''tool_connection''::text, ''routine''::text, ''file''::text, ''budget_warning''::text, ''budget_paused''::text, ''teach_paused''::text])))','messages_pkey=PRIMARY KEY (id)','messages_role_check=CHECK ((role = ANY (ARRAY[''user''::text, ''agent''::text, ''system''::text])))','messages_session_id_chat_sessions_id_fk=FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE','messages_source_tag_check=CHECK ((source_tag = ANY (ARRAY[''user''::text, ''agent''::text, ''tool''::text, ''system''::text])))'] AND
+       (SELECT array_agg(conname::text || '=' || pg_get_constraintdef(oid) ORDER BY conname) FROM pg_constraint WHERE conrelid = to_regclass('public.messages')) IS DISTINCT FROM ARRAY['messages_card_type_check=CHECK ((card_type = ANY (ARRAY[''message''::text, ''clarification''::text, ''tool_connection''::text, ''routine''::text, ''file''::text, ''budget_warning''::text, ''budget_paused''::text, ''teach_paused''::text, ''skill_update''::text, ''approval''::text])))','messages_pkey=PRIMARY KEY (id)','messages_role_check=CHECK ((role = ANY (ARRAY[''user''::text, ''agent''::text, ''system''::text])))','messages_session_id_chat_sessions_id_fk=FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE','messages_source_tag_check=CHECK ((source_tag = ANY (ARRAY[''user''::text, ''agent''::text, ''tool''::text, ''system''::text])))']) OR
+      (SELECT array_agg(adnum::integer::text || '=' || pg_get_expr(adbin,adrelid) ORDER BY adnum) FROM pg_attrdef WHERE adrelid = to_regclass('public.messages')) IS DISTINCT FROM ARRAY['9=now()'] OR
+      (SELECT array_agg(indexdef ORDER BY indexname) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'messages') IS DISTINCT FROM ARRAY['CREATE INDEX messages_owner_id_idx ON public.messages USING btree (owner_id)','CREATE UNIQUE INDEX messages_pkey ON public.messages USING btree (id)','CREATE INDEX messages_run_id_idx ON public.messages USING btree (run_id)','CREATE INDEX messages_session_created_idx ON public.messages USING btree (session_id, created_at, id)']) THEN
+    RAISE EXCEPTION 'unexpected messages post-0013 schema';
   END IF;
   IF to_regclass('public.owner') IS NOT NULL AND (
       EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.owner')
@@ -118,18 +281,27 @@ BEGIN
   IF to_regclass('public.agents') IS NOT NULL AND (
       (SELECT array_agg(attname::text ORDER BY attnum) FROM pg_attribute
        WHERE attrelid = to_regclass('public.agents') AND attnum > 0 AND NOT attisdropped)
-        IS DISTINCT FROM ARRAY['id','owner_id','name','role','soul_md','status','daily_budget_cents','monthly_budget_cents','created_at','updated_at'] OR
+        IS DISTINCT FROM ARRAY['id','owner_id','name','role','soul_md','status','daily_budget_cents','monthly_budget_cents','created_at','updated_at','attention_reason'] OR
       (SELECT array_agg(format_type(atttypid, atttypmod) ORDER BY attnum) FROM pg_attribute
        WHERE attrelid = to_regclass('public.agents') AND attnum > 0 AND NOT attisdropped)
-        IS DISTINCT FROM ARRAY['uuid','uuid','text','text','text','text','integer','integer','timestamp with time zone','timestamp with time zone'] OR
-      EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agents')
-        AND attnum > 0 AND NOT attisdropped AND NOT attnotnull) OR
-      (SELECT array_agg(conname::text || '=' || pg_get_constraintdef(oid) ORDER BY conname) FROM pg_constraint WHERE conrelid = to_regclass('public.agents'))
+        IS DISTINCT FROM ARRAY['uuid','uuid','text','text','text','text','integer','integer','timestamp with time zone','timestamp with time zone','text'] OR
+      (SELECT array_agg(attnotnull ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid = to_regclass('public.agents') AND attnum > 0 AND NOT attisdropped)
+        IS DISTINCT FROM ARRAY[true,true,true,true,true,true,true,true,true,true,false] OR
+      ((SELECT array_agg(conname::text || '=' || pg_get_constraintdef(oid) ORDER BY conname) FROM pg_constraint WHERE conrelid = to_regclass('public.agents'))
         IS DISTINCT FROM ARRAY[
+          'agents_attention_reason_check=CHECK (((attention_reason IS NULL) OR (attention_reason = ANY (ARRAY[''budget_warning''::text, ''budget_paused''::text]))))',
           'agents_daily_budget_check=CHECK (((daily_budget_cents >= 1) AND (daily_budget_cents <= 100000000)))',
           'agents_monthly_budget_check=CHECK (((monthly_budget_cents >= 1) AND (monthly_budget_cents <= 100000000)))',
           'agents_pkey=PRIMARY KEY (id)',
-          'agents_status_check=CHECK ((status = ANY (ARRAY[''active''::text, ''paused''::text])))'] OR
+          'agents_status_check=CHECK ((status = ANY (ARRAY[''active''::text, ''paused''::text])))'] AND
+       (SELECT array_agg(conname::text || '=' || pg_get_constraintdef(oid) ORDER BY conname) FROM pg_constraint WHERE conrelid = to_regclass('public.agents'))
+        IS DISTINCT FROM ARRAY[
+          'agents_attention_reason_check=CHECK (((attention_reason IS NULL) OR (attention_reason = ANY (ARRAY[''budget_warning''::text, ''budget_paused''::text, ''security_stop''::text, ''approval_pending''::text]))))',
+          'agents_daily_budget_check=CHECK (((daily_budget_cents >= 1) AND (daily_budget_cents <= 100000000)))',
+          'agents_monthly_budget_check=CHECK (((monthly_budget_cents >= 1) AND (monthly_budget_cents <= 100000000)))',
+          'agents_pkey=PRIMARY KEY (id)',
+          'agents_status_check=CHECK ((status = ANY (ARRAY[''active''::text, ''paused''::text])))']) OR
       (SELECT array_agg(adnum::integer ORDER BY adnum) FROM pg_attrdef WHERE adrelid = to_regclass('public.agents'))
         IS DISTINCT FROM ARRAY[6,9,10] OR
       EXISTS (SELECT FROM pg_attrdef WHERE adrelid = to_regclass('public.agents') AND pg_get_expr(adbin, adrelid) <> 'now()' AND adnum <> 6) OR
@@ -140,6 +312,129 @@ BEGIN
           'CREATE INDEX agents_owner_id_idx ON public.agents USING btree (owner_id)',
           'CREATE UNIQUE INDEX agents_pkey ON public.agents USING btree (id)']) THEN
     RAISE EXCEPTION 'unexpected agents schema';
+  END IF;
+  IF to_regclass('public.agent_canaries') IS NOT NULL AND (
+      (SELECT array_agg(attname::text ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid = to_regclass('public.agent_canaries') AND attnum > 0 AND NOT attisdropped)
+        IS DISTINCT FROM ARRAY['agent_id','owner_id','encrypted_canary','canary_sha256','created_at','planted_at'] OR
+      (SELECT array_agg(format_type(atttypid, atttypmod) ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid = to_regclass('public.agent_canaries') AND attnum > 0 AND NOT attisdropped)
+        IS DISTINCT FROM ARRAY['uuid','uuid','text','text','timestamp with time zone','timestamp with time zone'] OR
+      (SELECT array_agg(attnotnull ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid = to_regclass('public.agent_canaries') AND attnum > 0 AND NOT attisdropped)
+        IS DISTINCT FROM ARRAY[true,true,true,true,true,false] OR
+      (SELECT array_agg(conname::text || '=' || pg_get_constraintdef(oid) ORDER BY conname) FROM pg_constraint WHERE conrelid = to_regclass('public.agent_canaries'))
+        IS DISTINCT FROM ARRAY[
+          'agent_canaries_agent_id_agents_id_fk=FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE',
+          'agent_canaries_pkey=PRIMARY KEY (agent_id)'] OR
+      (SELECT array_agg(adnum::integer ORDER BY adnum) FROM pg_attrdef WHERE adrelid = to_regclass('public.agent_canaries'))
+        IS DISTINCT FROM ARRAY[5] OR
+      EXISTS (SELECT FROM pg_attrdef WHERE adrelid = to_regclass('public.agent_canaries') AND pg_get_expr(adbin, adrelid) <> 'now()') OR
+      (SELECT array_agg(indexdef ORDER BY indexname) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'agent_canaries')
+        IS DISTINCT FROM ARRAY[
+          'CREATE INDEX agent_canaries_owner_id_idx ON public.agent_canaries USING btree (owner_id)',
+          'CREATE UNIQUE INDEX agent_canaries_pkey ON public.agent_canaries USING btree (agent_id)',
+          'CREATE UNIQUE INDEX agent_canaries_sha256_idx ON public.agent_canaries USING btree (canary_sha256)']) THEN
+    RAISE EXCEPTION 'unexpected agent canaries schema';
+  END IF;
+  IF to_regclass('public.security_events') IS NOT NULL AND (
+      (SELECT array_agg(attname::text ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid = to_regclass('public.security_events') AND attnum > 0 AND NOT attisdropped)
+        IS DISTINCT FROM ARRAY['id','owner_id','agent_id','kind','source','run_id','source_ref','created_at'] OR
+      (SELECT array_agg(format_type(atttypid, atttypmod) ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid = to_regclass('public.security_events') AND attnum > 0 AND NOT attisdropped)
+        IS DISTINCT FROM ARRAY['uuid','uuid','uuid','text','text','uuid','text','timestamp with time zone'] OR
+      (SELECT array_agg(attnotnull ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid = to_regclass('public.security_events') AND attnum > 0 AND NOT attisdropped)
+        IS DISTINCT FROM ARRAY[true,true,true,true,true,false,false,true] OR
+      (SELECT array_agg(conname::text || '=' || pg_get_constraintdef(oid) ORDER BY conname) FROM pg_constraint WHERE conrelid = to_regclass('public.security_events'))
+        IS DISTINCT FROM ARRAY[
+          'security_events_kind_check=CHECK ((kind = ANY (ARRAY[''canary_leak''::text, ''scope_blocked''::text])))',
+          'security_events_pkey=PRIMARY KEY (id)',
+          'security_events_source_check=CHECK ((source = ANY (ARRAY[''typed_text''::text, ''proxy_host''::text, ''proxy_request''::text, ''scope_host''::text, ''scope_recipient''::text, ''scope_page''::text])))',
+          'security_events_source_ref_unique=UNIQUE (source_ref)'] OR
+      (SELECT array_agg(adnum::integer ORDER BY adnum) FROM pg_attrdef WHERE adrelid = to_regclass('public.security_events'))
+        IS DISTINCT FROM ARRAY[8] OR
+      EXISTS (SELECT FROM pg_attrdef WHERE adrelid = to_regclass('public.security_events') AND pg_get_expr(adbin, adrelid) <> 'now()') OR
+      (SELECT array_agg(indexdef ORDER BY indexname) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'security_events')
+        IS DISTINCT FROM ARRAY[
+          'CREATE INDEX security_events_owner_created_idx ON public.security_events USING btree (owner_id, created_at DESC NULLS LAST)',
+          'CREATE UNIQUE INDEX security_events_pkey ON public.security_events USING btree (id)',
+          'CREATE UNIQUE INDEX security_events_source_ref_unique ON public.security_events USING btree (source_ref)']) THEN
+    RAISE EXCEPTION 'unexpected security events schema';
+  END IF;
+  IF to_regclass('public.approvals') IS NOT NULL AND (
+      (SELECT array_agg(attname::text ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid = to_regclass('public.approvals') AND attnum > 0 AND NOT attisdropped)
+        IS DISTINCT FROM ARRAY['id','owner_id','agent_id','run_id','action_class','site','control_name','state','decided_at','created_at'] OR
+      (SELECT array_agg(format_type(atttypid, atttypmod) ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid = to_regclass('public.approvals') AND attnum > 0 AND NOT attisdropped)
+        IS DISTINCT FROM ARRAY['uuid','uuid','uuid','uuid','text','text','text','text','timestamp with time zone','timestamp with time zone'] OR
+      (SELECT array_agg(attnotnull ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid = to_regclass('public.approvals') AND attnum > 0 AND NOT attisdropped)
+        IS DISTINCT FROM ARRAY[true,true,true,false,true,true,true,true,false,true] OR
+      (SELECT array_agg(conname::text || '=' || pg_get_constraintdef(oid) ORDER BY conname) FROM pg_constraint WHERE conrelid = to_regclass('public.approvals'))
+        IS DISTINCT FROM ARRAY[
+          'approvals_action_class_check=CHECK ((action_class = ANY (ARRAY[''download''::text, ''send''::text, ''post''::text, ''delete''::text, ''purchase''::text, ''submit''::text])))',
+          'approvals_control_name_check=CHECK (((char_length(control_name) >= 1) AND (char_length(control_name) <= 120)))',
+          'approvals_pkey=PRIMARY KEY (id)',
+          'approvals_site_check=CHECK ((char_length(site) <= 255))',
+          'approvals_state_check=CHECK ((state = ANY (ARRAY[''pending''::text, ''allowed_once''::text, ''always_allowed''::text, ''denied''::text, ''expired''::text, ''stale''::text])))'] OR
+      (SELECT array_agg(adnum::integer::text || '=' || pg_get_expr(adbin,adrelid) ORDER BY adnum) FROM pg_attrdef WHERE adrelid = to_regclass('public.approvals'))
+        IS DISTINCT FROM ARRAY['6=''''::text','8=''pending''::text','10=now()'] OR
+      (SELECT array_agg(indexdef ORDER BY indexname) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'approvals')
+        IS DISTINCT FROM ARRAY[
+          'CREATE INDEX approvals_owner_id_idx ON public.approvals USING btree (owner_id)',
+          'CREATE UNIQUE INDEX approvals_pkey ON public.approvals USING btree (id)']) THEN
+    RAISE EXCEPTION 'unexpected approvals schema';
+  END IF;
+  IF to_regclass('public.permissions') IS NOT NULL AND (
+      (SELECT array_agg(attname::text ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid = to_regclass('public.permissions') AND attnum > 0 AND NOT attisdropped)
+        IS DISTINCT FROM ARRAY['id','owner_id','agent_id','site','action_class','max_per_day','created_at','revoked_at'] OR
+      (SELECT array_agg(format_type(atttypid, atttypmod) ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid = to_regclass('public.permissions') AND attnum > 0 AND NOT attisdropped)
+        IS DISTINCT FROM ARRAY['uuid','uuid','uuid','text','text','integer','timestamp with time zone','timestamp with time zone'] OR
+      (SELECT array_agg(attnotnull ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid = to_regclass('public.permissions') AND attnum > 0 AND NOT attisdropped)
+        IS DISTINCT FROM ARRAY[true,true,true,true,true,true,true,false] OR
+      (SELECT array_agg(conname::text || '=' || pg_get_constraintdef(oid) ORDER BY conname) FROM pg_constraint WHERE conrelid = to_regclass('public.permissions'))
+        IS DISTINCT FROM ARRAY[
+          'permissions_action_class_check=CHECK ((action_class = ANY (ARRAY[''download''::text, ''send''::text, ''post''::text, ''delete''::text, ''purchase''::text, ''submit''::text])))',
+          'permissions_agent_id_agents_id_fk=FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE',
+          'permissions_max_per_day_check=CHECK (((max_per_day >= 1) AND (max_per_day <= 1000)))',
+          'permissions_pkey=PRIMARY KEY (id)',
+          'permissions_site_check=CHECK (((char_length(site) >= 1) AND (char_length(site) <= 255)))'] OR
+      (SELECT array_agg(adnum::integer::text || '=' || pg_get_expr(adbin,adrelid) ORDER BY adnum) FROM pg_attrdef WHERE adrelid = to_regclass('public.permissions'))
+        IS DISTINCT FROM ARRAY['6=20','7=now()'] OR
+      (SELECT array_agg(indexdef ORDER BY indexname) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'permissions')
+        IS DISTINCT FROM ARRAY[
+          'CREATE UNIQUE INDEX permissions_active_idx ON public.permissions USING btree (agent_id, site, action_class) WHERE (revoked_at IS NULL)',
+          'CREATE INDEX permissions_owner_id_idx ON public.permissions USING btree (owner_id)',
+          'CREATE UNIQUE INDEX permissions_pkey ON public.permissions USING btree (id)']) THEN
+    RAISE EXCEPTION 'unexpected permissions schema';
+  END IF;
+  IF to_regclass('public.permission_uses') IS NOT NULL AND (
+      (SELECT array_agg(attname::text ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid = to_regclass('public.permission_uses') AND attnum > 0 AND NOT attisdropped)
+        IS DISTINCT FROM ARRAY['id','owner_id','permission_id','run_id','used_at'] OR
+      (SELECT array_agg(format_type(atttypid, atttypmod) ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid = to_regclass('public.permission_uses') AND attnum > 0 AND NOT attisdropped)
+        IS DISTINCT FROM ARRAY['uuid','uuid','uuid','uuid','timestamp with time zone'] OR
+      (SELECT array_agg(attnotnull ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid = to_regclass('public.permission_uses') AND attnum > 0 AND NOT attisdropped)
+        IS DISTINCT FROM ARRAY[true,true,true,false,true] OR
+      (SELECT array_agg(conname::text || '=' || pg_get_constraintdef(oid) ORDER BY conname) FROM pg_constraint WHERE conrelid = to_regclass('public.permission_uses'))
+        IS DISTINCT FROM ARRAY[
+          'permission_uses_permission_id_permissions_id_fk=FOREIGN KEY (permission_id) REFERENCES permissions(id) ON DELETE CASCADE',
+          'permission_uses_pkey=PRIMARY KEY (id)'] OR
+      (SELECT array_agg(adnum::integer::text || '=' || pg_get_expr(adbin,adrelid) ORDER BY adnum) FROM pg_attrdef WHERE adrelid = to_regclass('public.permission_uses'))
+        IS DISTINCT FROM ARRAY['5=now()'] OR
+      (SELECT array_agg(indexdef ORDER BY indexname) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'permission_uses')
+        IS DISTINCT FROM ARRAY[
+          'CREATE INDEX permission_uses_permission_used_idx ON public.permission_uses USING btree (permission_id, used_at)',
+          'CREATE UNIQUE INDEX permission_uses_pkey ON public.permission_uses USING btree (id)']) THEN
+    RAISE EXCEPTION 'unexpected permission uses schema';
   END IF;
   IF to_regclass('public.agent_policies') IS NOT NULL AND (
       (SELECT array_agg(attname::text ORDER BY attnum) FROM pg_attribute
@@ -195,7 +490,7 @@ BEGIN
           'CREATE UNIQUE INDEX chat_sessions_pkey ON public.chat_sessions USING btree (id)']) THEN
     RAISE EXCEPTION 'unexpected chat sessions schema';
   END IF;
-  IF to_regclass('public.messages') IS NOT NULL AND (
+  IF to_regclass('public.teach_recordings') IS NULL AND to_regclass('public.messages') IS NOT NULL AND (
       (SELECT array_agg(attname::text ORDER BY attnum) FROM pg_attribute
        WHERE attrelid = to_regclass('public.messages') AND attnum > 0 AND NOT attisdropped)
         IS DISTINCT FROM ARRAY['id','owner_id','session_id','role','card_type','content','source_tag','run_id','created_at'] OR
@@ -207,7 +502,7 @@ BEGIN
         IS DISTINCT FROM ARRAY[true,true,true,true,true,true,true,false,true] OR
       (SELECT array_agg(conname::text || '=' || pg_get_constraintdef(oid) ORDER BY conname) FROM pg_constraint WHERE conrelid = to_regclass('public.messages'))
         IS DISTINCT FROM ARRAY[
-          'messages_card_type_check=CHECK ((card_type = ANY (ARRAY[''message''::text, ''clarification''::text, ''tool_connection''::text, ''routine''::text])))',
+          'messages_card_type_check=CHECK ((card_type = ANY (ARRAY[''message''::text, ''clarification''::text, ''tool_connection''::text, ''routine''::text, ''file''::text, ''budget_warning''::text, ''budget_paused''::text])))',
           'messages_pkey=PRIMARY KEY (id)',
           'messages_role_check=CHECK ((role = ANY (ARRAY[''user''::text, ''agent''::text, ''system''::text])))',
           'messages_session_id_chat_sessions_id_fk=FOREIGN KEY (session_id) REFERENCES chat_sessions(id) ON DELETE CASCADE',
@@ -242,7 +537,8 @@ BEGIN
         IS DISTINCT FROM ARRAY[7,8,9] OR
       EXISTS (SELECT FROM pg_attrdef d WHERE d.adrelid = to_regclass('public.providers')
         AND ((d.adnum = 7 AND pg_get_expr(d.adbin, d.adrelid) <> 'true')
-          OR (d.adnum IN (8,9) AND pg_get_expr(d.adbin, d.adrelid) <> 'now()'))) OR
+          OR (d.adnum IN (8,9) AND pg_get_expr(d.adbin, d.adrelid) <> 'now()')
+          OR (d.adnum = 10 AND pg_get_expr(d.adbin, d.adrelid) <> '''fixed''::text'))) OR
       (SELECT array_agg(indexdef ORDER BY indexname) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'providers')
         IS DISTINCT FROM ARRAY[
           'CREATE INDEX providers_owner_id_idx ON public.providers USING btree (owner_id)',
@@ -252,28 +548,45 @@ BEGIN
   IF to_regclass('public.model_roles') IS NOT NULL AND (
       (SELECT array_agg(attname::text ORDER BY attnum) FROM pg_attribute
        WHERE attrelid = to_regclass('public.model_roles') AND attnum > 0 AND NOT attisdropped)
-        IS DISTINCT FROM ARRAY['id','owner_id','role','provider_id','model','use_main_key','mode','created_at','updated_at'] OR
+        IS DISTINCT FROM CASE WHEN EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.model_roles') AND attname = 'routing' AND NOT attisdropped)
+          THEN ARRAY['id','owner_id','role','provider_id','model','use_main_key','mode','created_at','updated_at','routing','hard_model']
+          ELSE ARRAY['id','owner_id','role','provider_id','model','use_main_key','mode','created_at','updated_at'] END OR
       (SELECT array_agg(format_type(atttypid, atttypmod) ORDER BY attnum) FROM pg_attribute
        WHERE attrelid = to_regclass('public.model_roles') AND attnum > 0 AND NOT attisdropped)
-        IS DISTINCT FROM ARRAY['uuid','uuid','text','uuid','text','boolean','text','timestamp with time zone','timestamp with time zone'] OR
+        IS DISTINCT FROM CASE WHEN EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.model_roles') AND attname = 'routing' AND NOT attisdropped)
+          THEN ARRAY['uuid','uuid','text','uuid','text','boolean','text','timestamp with time zone','timestamp with time zone','text','text']
+          ELSE ARRAY['uuid','uuid','text','uuid','text','boolean','text','timestamp with time zone','timestamp with time zone'] END OR
       (SELECT array_agg(attnotnull ORDER BY attnum) FROM pg_attribute
        WHERE attrelid = to_regclass('public.model_roles') AND attnum > 0 AND NOT attisdropped)
-        IS DISTINCT FROM ARRAY[true,true,true,false,false,true,true,true,true] OR
+        IS DISTINCT FROM CASE WHEN EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.model_roles') AND attname = 'routing' AND NOT attisdropped)
+          THEN ARRAY[true,true,true,false,false,true,true,true,true,true,false]
+          ELSE ARRAY[true,true,true,false,false,true,true,true,true] END OR
       (SELECT array_agg(conname::text || ': ' || pg_get_constraintdef(oid) ORDER BY conname)
        FROM pg_constraint WHERE conrelid = to_regclass('public.model_roles'))
-        IS DISTINCT FROM ARRAY[
+        IS DISTINCT FROM CASE WHEN EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.model_roles') AND attname = 'routing' AND NOT attisdropped)
+          THEN ARRAY[
+          'model_roles_main_shape_check: CHECK (((role <> ''main''::text) OR ((mode = ''active''::text) AND (provider_id IS NOT NULL) AND (model IS NOT NULL) AND (use_main_key = false))))',
+          'model_roles_mode_check: CHECK ((mode = ANY (ARRAY[''active''::text, ''off''::text, ''meta''::text])))',
+          'model_roles_pkey: PRIMARY KEY (id)',
+          'model_roles_provider_id_providers_id_fk: FOREIGN KEY (provider_id) REFERENCES providers(id) ON DELETE RESTRICT',
+          'model_roles_role_check: CHECK ((role = ANY (ARRAY[''main''::text, ''sam''::text])))',
+          'model_roles_routing_check: CHECK (((routing = ANY (ARRAY[''fixed''::text, ''auto''::text])) AND ((routing = ''fixed''::text) OR (hard_model IS NOT NULL)) AND ((role = ''main''::text) OR ((routing = ''fixed''::text) AND (hard_model IS NULL)))))',
+          'model_roles_sam_shape_check: CHECK (((role <> ''sam''::text) OR (((mode = ''off''::text) AND (provider_id IS NULL) AND (model IS NULL) AND (use_main_key = false)) OR ((mode = ''meta''::text) AND (provider_id IS NOT NULL) AND (model IS NOT NULL)))))'
+        ]
+          ELSE ARRAY[
           'model_roles_main_shape_check: CHECK (((role <> ''main''::text) OR ((mode = ''active''::text) AND (provider_id IS NOT NULL) AND (model IS NOT NULL) AND (use_main_key = false))))',
           'model_roles_mode_check: CHECK ((mode = ANY (ARRAY[''active''::text, ''off''::text, ''meta''::text])))',
           'model_roles_pkey: PRIMARY KEY (id)',
           'model_roles_provider_id_providers_id_fk: FOREIGN KEY (provider_id) REFERENCES providers(id) ON DELETE RESTRICT',
           'model_roles_role_check: CHECK ((role = ANY (ARRAY[''main''::text, ''sam''::text])))',
           'model_roles_sam_shape_check: CHECK (((role <> ''sam''::text) OR (((mode = ''off''::text) AND (provider_id IS NULL) AND (model IS NULL) AND (use_main_key = false)) OR ((mode = ''meta''::text) AND (provider_id IS NOT NULL) AND (model IS NOT NULL)))))'
-        ] OR
+        ] END OR
       (SELECT array_agg(adnum::integer ORDER BY adnum) FROM pg_attrdef WHERE adrelid = to_regclass('public.model_roles'))
-        IS DISTINCT FROM ARRAY[6,8,9] OR
+        IS DISTINCT FROM CASE WHEN EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.model_roles') AND attname = 'routing' AND NOT attisdropped) THEN ARRAY[6,8,9,10] ELSE ARRAY[6,8,9] END OR
       EXISTS (SELECT FROM pg_attrdef d WHERE d.adrelid = to_regclass('public.model_roles')
         AND ((d.adnum = 6 AND pg_get_expr(d.adbin, d.adrelid) <> 'false')
-          OR (d.adnum IN (8,9) AND pg_get_expr(d.adbin, d.adrelid) <> 'now()'))) OR
+          OR (d.adnum IN (8,9) AND pg_get_expr(d.adbin, d.adrelid) <> 'now()')
+          OR (d.adnum = 10 AND pg_get_expr(d.adbin, d.adrelid) <> '''fixed''::text'))) OR
       (SELECT array_agg(indexdef ORDER BY indexname) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'model_roles')
         IS DISTINCT FROM ARRAY[
           'CREATE INDEX model_roles_owner_id_idx ON public.model_roles USING btree (owner_id)',
@@ -281,6 +594,54 @@ BEGIN
           'CREATE UNIQUE INDEX model_roles_pkey ON public.model_roles USING btree (id)',
           'CREATE INDEX model_roles_provider_id_idx ON public.model_roles USING btree (provider_id)']) THEN
     RAISE EXCEPTION 'unexpected model roles schema';
+  END IF;
+  IF to_regclass('public.runs') IS NOT NULL AND (
+      (SELECT array_agg(attname::text ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid = to_regclass('public.runs') AND attnum > 0 AND NOT attisdropped)
+        IS DISTINCT FROM ARRAY['id','owner_id','agent_id','branch_of','header_json','header_hash','key_id','public_key','started_at','status','ended_at','step_count','head_hash','usage','signature'] OR
+      (SELECT array_agg(format_type(atttypid, atttypmod) ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid = to_regclass('public.runs') AND attnum > 0 AND NOT attisdropped)
+        IS DISTINCT FROM ARRAY['uuid','uuid','uuid','uuid','text','text','text','text','timestamp with time zone','text','timestamp with time zone','integer','text','jsonb','text'] OR
+      (SELECT array_agg(attnotnull ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid = to_regclass('public.runs') AND attnum > 0 AND NOT attisdropped)
+        IS DISTINCT FROM ARRAY[true,true,true,false,true,true,true,true,true,true,false,false,false,false,false] OR
+      (SELECT array_agg(conname::text || '=' || pg_get_constraintdef(oid) ORDER BY conname) FROM pg_constraint WHERE conrelid = to_regclass('public.runs'))
+        IS DISTINCT FROM ARRAY[
+          'runs_pkey=PRIMARY KEY (id)',
+          'runs_sealed_check=CHECK ((((signature IS NULL) AND (ended_at IS NULL) AND (step_count IS NULL) AND (head_hash IS NULL) AND (usage IS NULL)) OR ((signature IS NOT NULL) AND (ended_at IS NOT NULL) AND (step_count IS NOT NULL) AND (head_hash IS NOT NULL) AND (usage IS NOT NULL))))'] OR
+      (SELECT array_agg(adnum::integer ORDER BY adnum) FROM pg_attrdef WHERE adrelid = to_regclass('public.runs'))
+        IS DISTINCT FROM ARRAY[10] OR
+      (SELECT pg_get_expr(adbin, adrelid) FROM pg_attrdef WHERE adrelid = to_regclass('public.runs') AND adnum = 10)
+        IS DISTINCT FROM '''running''::text' OR
+      (SELECT array_agg(indexdef ORDER BY indexname) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'runs')
+        IS DISTINCT FROM ARRAY[
+          'CREATE INDEX runs_owner_id_idx ON public.runs USING btree (owner_id)',
+          'CREATE INDEX runs_owner_started_idx ON public.runs USING btree (owner_id, started_at DESC NULLS LAST)',
+          'CREATE UNIQUE INDEX runs_pkey ON public.runs USING btree (id)']) THEN
+    RAISE EXCEPTION 'unexpected runs schema';
+  END IF;
+  IF to_regclass('public.steps') IS NOT NULL AND (
+      (SELECT array_agg(attname::text ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid = to_regclass('public.steps') AND attnum > 0 AND NOT attisdropped)
+        IS DISTINCT FROM ARRAY['id','owner_id','run_id','idx','receipt_json','receipt_hash','prev_hash','created_at'] OR
+      (SELECT array_agg(format_type(atttypid, atttypmod) ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid = to_regclass('public.steps') AND attnum > 0 AND NOT attisdropped)
+        IS DISTINCT FROM ARRAY['uuid','uuid','uuid','integer','text','text','text','timestamp with time zone'] OR
+      EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.steps')
+        AND attnum > 0 AND NOT attisdropped AND NOT attnotnull) OR
+      (SELECT array_agg(conname::text || '=' || pg_get_constraintdef(oid) ORDER BY conname) FROM pg_constraint WHERE conrelid = to_regclass('public.steps'))
+        IS DISTINCT FROM ARRAY[
+          'steps_pkey=PRIMARY KEY (id)',
+          'steps_run_id_runs_id_fk=FOREIGN KEY (run_id) REFERENCES runs(id)'] OR
+      (SELECT array_agg(adnum::integer ORDER BY adnum) FROM pg_attrdef WHERE adrelid = to_regclass('public.steps'))
+        IS DISTINCT FROM ARRAY[8] OR
+      EXISTS (SELECT FROM pg_attrdef WHERE adrelid = to_regclass('public.steps') AND pg_get_expr(adbin, adrelid) <> 'now()') OR
+      (SELECT array_agg(indexdef ORDER BY indexname) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'steps')
+        IS DISTINCT FROM ARRAY[
+          'CREATE INDEX steps_owner_id_idx ON public.steps USING btree (owner_id)',
+          'CREATE UNIQUE INDEX steps_pkey ON public.steps USING btree (id)',
+          'CREATE UNIQUE INDEX steps_run_idx_idx ON public.steps USING btree (run_id, idx)']) THEN
+    RAISE EXCEPTION 'unexpected steps schema';
   END IF;
   IF to_regclass('public.owner') IS NOT NULL AND (
       (SELECT array_agg(adnum::integer ORDER BY adnum) FROM pg_attrdef WHERE adrelid = to_regclass('public.owner'))
@@ -348,13 +709,37 @@ BEGIN
        (migration_count >= 3) <> (to_regclass('public.owner_singleton_idx') IS NOT NULL) OR
        (migration_count >= 4) <> ((to_regclass('public.agents') IS NOT NULL) AND (to_regclass('public.agent_policies') IS NOT NULL)) OR
        (migration_count >= 5) <> ((to_regclass('public.chat_sessions') IS NOT NULL) AND (to_regclass('public.messages') IS NOT NULL)) OR
-       (migration_count >= 6) <> ((to_regclass('public.providers') IS NOT NULL) AND (to_regclass('public.model_roles') IS NOT NULL)) THEN
+       (migration_count >= 6) <> ((to_regclass('public.providers') IS NOT NULL) AND (to_regclass('public.model_roles') IS NOT NULL)) OR
+       (migration_count >= 8) <> (to_regclass('public.model_roles') IS NOT NULL AND EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.model_roles') AND attname = 'routing' AND NOT attisdropped)) OR
+       (migration_count >= 10) <> (to_regclass('public.runs') IS NOT NULL AND to_regclass('public.steps') IS NOT NULL) OR
+       (migration_count >= 11) <> (to_regclass('public.step_evidence') IS NOT NULL) OR
+       (migration_count >= 12) <> (to_regclass('public.model_prices') IS NOT NULL AND to_regclass('public.cost_entries') IS NOT NULL AND EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agents') AND attname = 'attention_reason' AND NOT attisdropped)) OR
+       (migration_count >= 13) <> (to_regclass('public.checkpoints') IS NOT NULL) OR
+       (migration_count >= 14) <> (to_regclass('public.teach_recordings') IS NOT NULL) OR
+       (migration_count >= 15) <> (to_regclass('public.routines') IS NOT NULL) OR
+       (migration_count >= 16) <> (to_regclass('public.replay_scripts') IS NOT NULL) OR
+       (migration_count >= 17) <> (to_regclass('public.skills') IS NOT NULL AND to_regclass('public.skill_versions') IS NOT NULL) OR
+       (migration_count >= 18) <> (to_regclass('public.run_meta') IS NOT NULL) OR
+       (migration_count >= 19) <> (to_regclass('public.replay_script_versions') IS NOT NULL AND to_regclass('public.replay_script_proposals') IS NOT NULL) OR
+       (migration_count >= 20) <> (to_regclass('pgboss.version') IS NOT NULL AND EXISTS (
+         SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.run_meta') AND attname = 'execution_id' AND NOT attisdropped)) OR
+       (migration_count >= 21) <> (to_regclass('public.agent_canaries') IS NOT NULL AND to_regclass('public.security_events') IS NOT NULL) OR
+       (migration_count >= 22) <> (to_regclass('public.approvals') IS NOT NULL AND to_regclass('public.permissions') IS NOT NULL AND to_regclass('public.permission_uses') IS NOT NULL) THEN
       RAISE EXCEPTION 'inconsistent migration history';
     END IF;
   ELSIF to_regclass('public.owner') IS NOT NULL OR to_regclass('public.sessions') IS NOT NULL OR
         to_regclass('public.agents') IS NOT NULL OR to_regclass('public.agent_policies') IS NOT NULL OR
         to_regclass('public.chat_sessions') IS NOT NULL OR to_regclass('public.messages') IS NOT NULL OR
-        to_regclass('public.providers') IS NOT NULL OR to_regclass('public.model_roles') IS NOT NULL THEN
+        to_regclass('public.providers') IS NOT NULL OR to_regclass('public.model_roles') IS NOT NULL OR
+        to_regclass('public.runs') IS NOT NULL OR to_regclass('public.steps') IS NOT NULL OR to_regclass('public.step_evidence') IS NOT NULL OR
+        to_regclass('public.model_prices') IS NOT NULL OR to_regclass('public.cost_entries') IS NOT NULL OR to_regclass('public.checkpoints') IS NOT NULL OR to_regclass('public.teach_recordings') IS NOT NULL OR to_regclass('public.routines') IS NOT NULL OR to_regclass('public.replay_scripts') IS NOT NULL OR
+        to_regclass('public.skills') IS NOT NULL OR to_regclass('public.skill_versions') IS NOT NULL OR
+        to_regclass('public.run_meta') IS NOT NULL OR
+        to_regclass('public.replay_script_versions') IS NOT NULL OR to_regclass('public.replay_script_proposals') IS NOT NULL OR
+        to_regclass('public.agent_canaries') IS NOT NULL OR to_regclass('public.security_events') IS NOT NULL OR
+        to_regclass('public.approvals') IS NOT NULL OR to_regclass('public.permissions') IS NOT NULL OR
+        to_regclass('public.permission_uses') IS NOT NULL OR
+        to_regclass('pgboss.version') IS NOT NULL THEN
     RAISE EXCEPTION 'missing migration history';
   END IF;
 END $$;
@@ -388,6 +773,15 @@ BEGIN
   IF to_regclass('drizzle.__drizzle_migrations') IS NOT NULL THEN
     ALTER TABLE drizzle.__drizzle_migrations OWNER TO eclipse_migrator;
   END IF;
+  IF to_regnamespace('pgboss') IS NOT NULL THEN
+    ALTER SCHEMA pgboss OWNER TO eclipse_migrator;
+    REVOKE CREATE ON SCHEMA pgboss FROM PUBLIC, eclipse_app;
+    GRANT USAGE ON SCHEMA pgboss TO eclipse_app;
+    GRANT USAGE ON TYPE pgboss.job_state TO eclipse_app;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA pgboss TO eclipse_app;
+    GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA pgboss TO eclipse_app;
+    GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA pgboss TO eclipse_app;
+  END IF;
   IF to_regclass('public.owner') IS NOT NULL THEN
     ALTER TABLE public.owner OWNER TO eclipse_migrator;
     REVOKE ALL ON public.owner FROM PUBLIC, eclipse_app;
@@ -408,6 +802,31 @@ BEGIN
     REVOKE ALL ON public.agent_policies FROM PUBLIC, eclipse_app;
     GRANT SELECT, INSERT, UPDATE ON public.agent_policies TO eclipse_app;
   END IF;
+  IF to_regclass('public.agent_canaries') IS NOT NULL THEN
+    ALTER TABLE public.agent_canaries OWNER TO eclipse_migrator;
+    REVOKE ALL ON public.agent_canaries FROM PUBLIC, eclipse_app;
+    GRANT SELECT, INSERT, UPDATE ON public.agent_canaries TO eclipse_app;
+  END IF;
+  IF to_regclass('public.security_events') IS NOT NULL THEN
+    ALTER TABLE public.security_events OWNER TO eclipse_migrator;
+    REVOKE ALL ON public.security_events FROM PUBLIC, eclipse_app;
+    GRANT SELECT, INSERT ON public.security_events TO eclipse_app;
+  END IF;
+  IF to_regclass('public.approvals') IS NOT NULL THEN
+    ALTER TABLE public.approvals OWNER TO eclipse_migrator;
+    REVOKE ALL ON public.approvals FROM PUBLIC, eclipse_app;
+    GRANT SELECT, INSERT, UPDATE ON public.approvals TO eclipse_app;
+  END IF;
+  IF to_regclass('public.permissions') IS NOT NULL THEN
+    ALTER TABLE public.permissions OWNER TO eclipse_migrator;
+    REVOKE ALL ON public.permissions FROM PUBLIC, eclipse_app;
+    GRANT SELECT, INSERT, UPDATE ON public.permissions TO eclipse_app;
+  END IF;
+  IF to_regclass('public.permission_uses') IS NOT NULL THEN
+    ALTER TABLE public.permission_uses OWNER TO eclipse_migrator;
+    REVOKE ALL ON public.permission_uses FROM PUBLIC, eclipse_app;
+    GRANT SELECT, INSERT ON public.permission_uses TO eclipse_app;
+  END IF;
   IF to_regclass('public.chat_sessions') IS NOT NULL THEN
     ALTER TABLE public.chat_sessions OWNER TO eclipse_migrator;
     REVOKE ALL ON public.chat_sessions FROM PUBLIC, eclipse_app;
@@ -418,6 +837,41 @@ BEGIN
     REVOKE ALL ON public.messages FROM PUBLIC, eclipse_app;
     GRANT SELECT, INSERT ON public.messages TO eclipse_app;
   END IF;
+  IF to_regclass('public.replay_scripts') IS NOT NULL THEN
+    ALTER TABLE public.replay_scripts OWNER TO eclipse_migrator;
+    REVOKE ALL ON public.replay_scripts FROM PUBLIC, eclipse_app;
+    GRANT SELECT, INSERT, DELETE ON public.replay_scripts TO eclipse_app;
+  END IF;
+  IF to_regclass('public.replay_script_versions') IS NOT NULL THEN
+    ALTER TABLE public.replay_script_versions OWNER TO eclipse_migrator;
+    REVOKE ALL ON public.replay_script_versions FROM PUBLIC, eclipse_app;
+    GRANT SELECT, INSERT ON public.replay_script_versions TO eclipse_app;
+  END IF;
+  IF to_regclass('public.replay_script_proposals') IS NOT NULL THEN
+    ALTER TABLE public.replay_script_proposals OWNER TO eclipse_migrator;
+    REVOKE ALL ON public.replay_script_proposals FROM PUBLIC, eclipse_app;
+    GRANT SELECT, INSERT, UPDATE ON public.replay_script_proposals TO eclipse_app;
+  END IF;
+  IF to_regclass('public.run_meta') IS NOT NULL THEN
+    ALTER TABLE public.run_meta OWNER TO eclipse_migrator;
+    REVOKE ALL ON public.run_meta FROM PUBLIC, eclipse_app;
+    GRANT SELECT, INSERT ON public.run_meta TO eclipse_app;
+  END IF;
+  IF to_regclass('public.skills') IS NOT NULL THEN
+    ALTER TABLE public.skills OWNER TO eclipse_migrator;
+    REVOKE ALL ON public.skills FROM PUBLIC, eclipse_app;
+    GRANT SELECT, INSERT, UPDATE ON public.skills TO eclipse_app;
+  END IF;
+  IF to_regclass('public.skill_versions') IS NOT NULL THEN
+    ALTER TABLE public.skill_versions OWNER TO eclipse_migrator;
+    REVOKE ALL ON public.skill_versions FROM PUBLIC, eclipse_app;
+    GRANT SELECT, INSERT ON public.skill_versions TO eclipse_app;
+  END IF;
+  IF to_regclass('public.routines') IS NOT NULL THEN
+    ALTER TABLE public.routines OWNER TO eclipse_migrator;
+    REVOKE ALL ON public.routines FROM PUBLIC, eclipse_app;
+    GRANT SELECT, INSERT, UPDATE ON public.routines TO eclipse_app;
+  END IF;
   IF to_regclass('public.providers') IS NOT NULL THEN
     ALTER TABLE public.providers OWNER TO eclipse_migrator;
     REVOKE ALL ON public.providers FROM PUBLIC, eclipse_app;
@@ -427,6 +881,41 @@ BEGIN
     ALTER TABLE public.model_roles OWNER TO eclipse_migrator;
     REVOKE ALL ON public.model_roles FROM PUBLIC, eclipse_app;
     GRANT SELECT, INSERT, UPDATE ON public.model_roles TO eclipse_app;
+  END IF;
+  IF to_regclass('public.runs') IS NOT NULL THEN
+    ALTER TABLE public.runs OWNER TO eclipse_migrator;
+    REVOKE ALL ON public.runs FROM PUBLIC, eclipse_app;
+    GRANT SELECT, INSERT, UPDATE ON public.runs TO eclipse_app;
+  END IF;
+  IF to_regclass('public.steps') IS NOT NULL THEN
+    ALTER TABLE public.steps OWNER TO eclipse_migrator;
+    REVOKE ALL ON public.steps FROM PUBLIC, eclipse_app;
+    GRANT SELECT, INSERT ON public.steps TO eclipse_app;
+  END IF;
+  IF to_regclass('public.step_evidence') IS NOT NULL THEN
+    ALTER TABLE public.step_evidence OWNER TO eclipse_migrator;
+    REVOKE ALL ON public.step_evidence FROM PUBLIC, eclipse_app;
+    GRANT SELECT, INSERT ON public.step_evidence TO eclipse_app;
+  END IF;
+  IF to_regclass('public.checkpoints') IS NOT NULL THEN
+    ALTER TABLE public.checkpoints OWNER TO eclipse_migrator;
+    REVOKE ALL ON public.checkpoints FROM PUBLIC, eclipse_app;
+    GRANT SELECT, INSERT ON public.checkpoints TO eclipse_app;
+  END IF;
+  IF to_regclass('public.cost_entries') IS NOT NULL THEN
+    ALTER TABLE public.cost_entries OWNER TO eclipse_migrator;
+    REVOKE ALL ON public.cost_entries FROM PUBLIC, eclipse_app;
+    GRANT SELECT, INSERT ON public.cost_entries TO eclipse_app;
+  END IF;
+  IF to_regclass('public.model_prices') IS NOT NULL THEN
+    ALTER TABLE public.model_prices OWNER TO eclipse_migrator;
+    REVOKE ALL ON public.model_prices FROM PUBLIC, eclipse_app;
+    GRANT SELECT, INSERT, UPDATE ON public.model_prices TO eclipse_app;
+  END IF;
+  IF to_regclass('public.teach_recordings') IS NOT NULL THEN
+    ALTER TABLE public.teach_recordings OWNER TO eclipse_migrator;
+    REVOKE ALL ON public.teach_recordings FROM PUBLIC, eclipse_app;
+    GRANT SELECT, INSERT, UPDATE ON public.teach_recordings TO eclipse_app;
   END IF;
 END $$;
 REVOKE ALL ON SCHEMA drizzle FROM PUBLIC, eclipse_app;

@@ -4,6 +4,9 @@ import { sql } from "drizzle-orm";
 import { getDatabase } from "../../db/client";
 import { desktopCreateAgent, desktopDeleteAgent, desktopSession } from "../desktop/client";
 import { createAgentRecord, deleteAgentRecord, getAgentIdentity, setAgentStatus, updateAgentRecord } from "./data";
+import { clearAgentAttention, readBudgetStatus } from "../costs/store";
+import { clearTripwire } from "../security/tripwire";
+import { pushAgentPolicy, syncAgentEgress, clearAgentTrip } from "../egress/sync";
 import type { AgentCreateInput, AgentUpdateInput } from "./schema";
 
 type Database = Awaited<ReturnType<typeof getDatabase>>;
@@ -18,7 +21,7 @@ type DesktopOperations = {
 const defaultDesktop: DesktopOperations = { desktopCreateAgent, desktopDeleteAgent, desktopSession };
 
 export class AgentLifecycleError extends Error {
-  constructor(public code: "agent_not_found" | "confirmation_mismatch" | "desktop_setup_failed") {
+  constructor(public code: "agent_not_found" | "confirmation_mismatch" | "desktop_setup_failed" | "budget_exhausted") {
     super(code);
   }
 }
@@ -33,6 +36,7 @@ export async function createAgentForOwner(
     const status = await desktop.desktopSession(agentId, ownerId, "session.start");
     if (status.state !== "running" || !status.generation) throw new Error("agent_not_running");
     if (!await setAgentStatus(database, ownerId, agentId, "active")) throw new Error("agent_missing");
+    await syncEgress(() => syncAgentEgress(database, ownerId, agentId));
     return { agentId, desktopReady: true };
   } catch {
     return { agentId, desktopReady: false };
@@ -44,6 +48,7 @@ export async function updateAgentForOwner(
 ) {
   const updated = await updateAgentRecord(database, ownerId, agentId, input);
   if (!updated) throw new AgentLifecycleError("agent_not_found");
+  await syncEgress(() => syncAgentEgress(database, ownerId, agentId));
 }
 
 export async function pauseAgentForOwner(
@@ -55,12 +60,16 @@ export async function pauseAgentForOwner(
       throw new AgentLifecycleError("agent_not_found");
     }
   });
+  await syncEgress(() => syncAgentEgress(database, ownerId, agentId));
 }
 
 export async function resumeAgentForOwner(
   database: Database, ownerId: string, agentId: string, desktop: DesktopOperations = defaultDesktop,
+  budgetStatus: typeof readBudgetStatus = readBudgetStatus,
 ) {
   await withLockedAgent(database, ownerId, agentId, async (transaction) => {
+    const budget = await budgetStatus(transaction, ownerId, agentId, new Date());
+    if (budget.state === "paused") throw new AgentLifecycleError("budget_exhausted");
     try {
       await desktop.desktopCreateAgent(agentId, ownerId);
       const status = await desktop.desktopSession(agentId, ownerId, "session.start");
@@ -71,7 +80,11 @@ export async function resumeAgentForOwner(
     if (!await setAgentStatus(transaction, ownerId, agentId, "active")) {
       throw new AgentLifecycleError("agent_not_found");
     }
+    await clearAgentAttention(transaction, ownerId, agentId);
   });
+  clearTripwire(ownerId, agentId);
+  await syncEgress(() => clearAgentTrip(database, ownerId, agentId));
+  await syncEgress(() => syncAgentEgress(database, ownerId, agentId));
 }
 
 export async function deleteAgentForOwner(
@@ -85,6 +98,11 @@ export async function deleteAgentForOwner(
       throw new AgentLifecycleError("agent_not_found");
     }
   });
+  await syncEgress(() => pushAgentPolicy({ agentId, domains: [], blocked: true, canaryHashes: [] }));
+}
+
+async function syncEgress(push: () => Promise<unknown>): Promise<void> {
+  try { await push(); } catch { /* the proxy fails closed; the 60 s loop retries */ }
 }
 
 async function withLockedAgent<Result>(

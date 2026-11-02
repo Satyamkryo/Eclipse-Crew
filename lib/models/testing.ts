@@ -2,7 +2,7 @@ import "server-only";
 
 import { createProviderConnector } from "../providers";
 import type { ProviderTransport } from "../providers/types";
-import type { ModelSettingsStore } from "./data";
+import type { ModelSettingsStore, StoredProvider } from "./data";
 import type { ModelRole } from "./schema";
 import { ModelSettingsError } from "./errors";
 
@@ -18,8 +18,9 @@ export async function testSavedRole(
   ownerId: string,
   role: ModelRole,
   transport?: ProviderTransport,
+  transportFor?: (provider: StoredProvider) => ProviderTransport | null,
 ): Promise<ModelTestResult> {
-  if (typeof transport !== "function") {
+  if (typeof transport !== "function" && typeof transportFor !== "function") {
     throw new ModelSettingsError("authenticated_transport_unavailable", 503);
   }
   const settings = await store.load(ownerId);
@@ -29,11 +30,15 @@ export async function testSavedRole(
     throw new ModelSettingsError("role_not_configured");
   }
 
+  const effective = typeof transport === "function" ? transport : transportFor?.(provider);
+  if (typeof effective !== "function") {
+    throw new ModelSettingsError("authenticated_transport_unavailable", 503);
+  }
   let connector;
   try {
     connector = createProviderConnector(provider.kind === "meta"
-      ? { kind: "meta", transport }
-      : { kind: "openai-compatible", baseUrl: provider.baseUrl ?? "", transport });
+      ? { kind: "meta", transport: effective }
+      : { kind: "openai-compatible", baseUrl: provider.baseUrl ?? "", transport: effective });
   } catch {
     throw new ModelSettingsError("role_not_configured");
   }

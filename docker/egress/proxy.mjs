@@ -1,0 +1,252 @@
+import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import dns from "node:dns/promises";
+import { createServer } from "node:http";
+import https from "node:https";
+import net from "node:net";
+import { fileURLToPath } from "node:url";
+
+import { createRegistry, POLICY_TTL_MS } from "./registry.mjs";
+import { createEventLog } from "./events.mjs";
+import { isBlockedAddress } from "./addresses.mjs";
+
+export { isBlockedAddress };
+
+// TASK-046: forwards the app's model-provider requests to the internet and injects the API key.
+// The key arrives in a header from `app` over the private network, is used for one upstream request,
+// and is never stored, logged or returned. Public HTTPS destinations only.
+// TASK-045: the same process also hosts the desktop browser's CONNECT proxy on 4321 and receives
+// per-agent allowlists on POST /v1/policy (authenticated with EGRESS_PROXY_SECRET).
+
+export const MAX_BODY_BYTES = 9 * 1024 * 1024;
+export const MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
+export const TOTAL_TIMEOUT_MS = 60_000;
+export const MAX_ACTIVE = 8;
+export const REDACTION = "[redacted]";
+
+export class ProxyError extends Error {
+  constructor(code, status) { super(code); this.code = code; this.status = status; }
+}
+
+export function parseTarget(value) {
+  let url;
+  try { url = new URL(value); } catch { throw new ProxyError("forbidden_target", 403); }
+  const host = url.hostname.toLowerCase();
+  if (url.protocol !== "https:" || url.username || url.password || url.hash || (url.port && url.port !== "443") ||
+      net.isIP(host.replace(/^\[|\]$/g, "")) || host.length > 253 || !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z][a-z0-9-]{0,61}[a-z0-9]$/.test(host) ||
+      url.pathname.length + url.search.length > 2048 || /[\\\u0000-\u001f\u007f]/.test(value)) {
+    throw new ProxyError("forbidden_target", 403);
+  }
+  return { host, path: `${url.pathname}${url.search}` };
+}
+
+const digest = (value) => createHash("sha256").update(value).digest();
+export function secretMatches(provided, expected) {
+  return typeof provided === "string" && timingSafeEqual(digest(provided), digest(expected));
+}
+
+// Must stay identical to the domain rule in lib/agents/schema.ts (tests compare both).
+export const POLICY_DOMAIN = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
+const AGENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const CANARY_HASH = /^[0-9a-f]{64}$/;
+const POLICY_KEYS = new Set(["agentId", "blocked", "canaryHashes", "clearTrip", "domains", "trip"]);
+
+export function validatePolicy(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new ProxyError("invalid_policy", 400);
+  if (Object.keys(value).some((key) => !POLICY_KEYS.has(key))) throw new ProxyError("invalid_policy", 400);
+  if (typeof value.agentId !== "string" || !AGENT_ID.test(value.agentId)) throw new ProxyError("invalid_policy", 400);
+  if (typeof value.blocked !== "boolean" || !Array.isArray(value.domains) || value.domains.length > 64) throw new ProxyError("invalid_policy", 400);
+  const canaryHashes = value.canaryHashes ?? [];
+  if (!Array.isArray(canaryHashes) || canaryHashes.length > 4 ||
+      canaryHashes.some((hash) => typeof hash !== "string" || !CANARY_HASH.test(hash))) throw new ProxyError("invalid_policy", 400);
+  if (value.trip !== undefined && typeof value.trip !== "boolean") throw new ProxyError("invalid_policy", 400);
+  if (value.clearTrip !== undefined && typeof value.clearTrip !== "boolean") throw new ProxyError("invalid_policy", 400);
+  if (value.trip && value.clearTrip) throw new ProxyError("invalid_policy", 400);
+  const domains = value.domains.map((domain) => {
+    if (typeof domain !== "string") throw new ProxyError("invalid_policy", 400);
+    const normalized = domain.trim().toLowerCase();
+    if (normalized.length > 253 || !POLICY_DOMAIN.test(normalized)) throw new ProxyError("invalid_policy", 400);
+    return normalized;
+  });
+  return { agentId: value.agentId.toLowerCase(), domains, blocked: value.blocked,
+    canaryHashes: canaryHashes.map((hash) => hash.toLowerCase()), trip: value.trip === true, clearTrip: value.clearTrip === true };
+}
+
+const TOKEN_HEADER = /^[\x21-\x7e]{8,4096}$/;
+const SIMPLE_HEADER = /^[\w.+\-/ ;=,*]{1,128}$/;
+
+async function readBody(request, maxBytes = MAX_BODY_BYTES) {
+  const declared = request.headers["content-length"];
+  if (declared !== undefined && (!/^\d{1,10}$/.test(declared) || Number(declared) > maxBytes)) throw new ProxyError("body_too_large", 413);
+  const chunks = []; let size = 0;
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > maxBytes) throw new ProxyError("body_too_large", 413);
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
+export function redact(body, credential) {
+  if (!credential) return body;
+  return Buffer.from(body.toString("latin1").split(credential).join(REDACTION), "latin1");
+}
+
+async function resolvePublic(host, resolve) {
+  let addresses;
+  try { addresses = await resolve(host); } catch { throw new ProxyError("upstream_error", 502); }
+  if (!addresses.length || addresses.some(({ address }) => isBlockedAddress(address))) throw new ProxyError("forbidden_target", 403);
+  return addresses[0];
+}
+
+function forwardUpstream({ upstream, host, path, method, headers, body, address, signal, timeoutMs }) {
+  return new Promise((resolve, reject) => {
+    const chunks = []; let size = 0; let settled = false;
+    const finish = (fn, value) => { if (!settled) { settled = true; fn(value); } };
+    const request = upstream({
+      host, port: 443, method, path, headers, servername: host, signal, timeout: timeoutMs,
+      // Connect to the address that was already checked, so a second lookup cannot change it.
+      // Node 24 asks for `all: true` (an array) when it picks between address families.
+      autoSelectFamily: false,
+      lookup: (_name, options, callback) => options?.all
+        ? callback(null, [{ address: address.address, family: address.family }])
+        : callback(null, address.address, address.family),
+    }, (response) => {
+      response.on("data", (chunk) => {
+        size += chunk.length;
+        if (size > MAX_RESPONSE_BYTES) { response.destroy(); finish(reject, new ProxyError("response_too_large", 502)); return; }
+        chunks.push(chunk);
+      });
+      response.on("end", () => finish(resolve, { status: response.statusCode, contentType: response.headers["content-type"], body: Buffer.concat(chunks) }));
+      response.on("error", () => finish(reject, new ProxyError("upstream_error", 502)));
+    });
+    request.on("error", () => finish(reject, signal.aborted ? new ProxyError("upstream_timeout", 504) : new ProxyError("upstream_error", 502)));
+    request.on("timeout", () => { request.destroy(); finish(reject, new ProxyError("upstream_timeout", 504)); });
+    signal.addEventListener("abort", () => { request.destroy(); finish(reject, new ProxyError("upstream_timeout", 504)); }, { once: true });
+    request.end(body.length ? body : undefined);
+  });
+}
+
+export function createProxy({ secret, registry, events = createEventLog(), resolve = (host) => dns.lookup(host, { all: true, verbatim: true }), upstream = https.request,
+  log = (event) => console.log(JSON.stringify(event)), timeoutMs = TOTAL_TIMEOUT_MS } = {}) {
+  const configured = typeof secret === "string" && /^[0-9a-f]{64}$/.test(secret);
+  let active = 0;
+  const server = createServer(async (request, response) => {
+    const send = (status, body, headers = {}) => {
+      response.writeHead(status, { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", ...headers });
+      response.end(body);
+    };
+    const refuse = (error) => send(error.status, JSON.stringify({ error: error.code }), { "Content-Type": "application/json", "X-Eclipse-Proxy": "error" });
+    try {
+      const path = (request.url ?? "").split("?")[0];
+      if (path === "/healthz" && request.method === "GET") return send(configured ? 200 : 503, JSON.stringify({ ok: configured }), { "Content-Type": "application/json" });
+      if (!configured) throw new ProxyError("not_configured", 503);
+      const authorization = request.headers.authorization ?? "";
+      if (!authorization.startsWith("Bearer ") || !secretMatches(authorization.slice(7), secret)) throw new ProxyError("unauthorized", 401);
+      if (path === "/v1/events") {
+        if (request.method !== "GET") throw new ProxyError("not_found", 404);
+        const rawAfter = new URL(request.url ?? "/v1/events", "http://proxy.local").searchParams.get("after");
+        const after = rawAfter === null ? 0 : Number(rawAfter);
+        if (!Number.isSafeInteger(after) || after < 0) throw new ProxyError("invalid_after", 400);
+        return send(200, JSON.stringify({ boot: events.boot, events: events.after(after) }), { "Content-Type": "application/json", "X-Eclipse-Proxy": "ok" });
+      }
+      if (!["/v1/forward", "/v1/teach-asr", "/v1/policy"].includes(path) || request.method !== "POST") throw new ProxyError("not_found", 404);
+      if (active >= MAX_ACTIVE) throw new ProxyError("busy", 503);
+      active += 1;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        if (path === "/v1/policy") {
+          if (!registry) throw new ProxyError("not_found", 404);
+          const raw = await readBody(request, 64 * 1024);
+          let body;
+          try { body = JSON.parse(raw.toString("utf8")); } catch { throw new ProxyError("invalid_policy", 400); }
+          const policy = validatePolicy(body);
+          const result = registry.setPolicy(policy.agentId, policy.domains, policy.blocked,
+            { canaryHashes: policy.canaryHashes, trip: policy.trip, clearTrip: policy.clearTrip });
+          return send(200, JSON.stringify({ ok: true, expiresInMs: POLICY_TTL_MS, tripped: result.tripped }), { "Content-Type": "application/json", "X-Eclipse-Proxy": "ok" });
+        }
+        const audio = path === "/v1/teach-asr";
+        const method = audio ? "POST" : request.headers["x-eclipse-method"];
+        if (method !== "GET" && method !== "POST") throw new ProxyError("forbidden_target", 403);
+        const { host, path: targetPath } = parseTarget(audio ? "https://api.meta.ai/v1/asr/transcribe" : String(request.headers["x-eclipse-target"] ?? ""));
+        const credential = request.headers["x-eclipse-credential"];
+        if (credential !== undefined && (typeof credential !== "string" || !TOKEN_HEADER.test(credential))) throw new ProxyError("invalid_credential", 400);
+        const outgoing = { "user-agent": "eclipse-crew-egress/1", "accept-encoding": "identity" };
+        for (const name of ["content-type", "accept"]) {
+          const value = request.headers[name];
+          if (value !== undefined) { if (typeof value !== "string" || !SIMPLE_HEADER.test(value)) throw new ProxyError("invalid_request", 400); outgoing[name] = value; }
+        }
+        if (credential) outgoing.authorization = `Bearer ${credential}`;
+        let body = await readBody(request, audio ? 3 * 1024 * 1024 : MAX_BODY_BYTES);
+        if (audio) {
+          if (!credential || request.headers["content-type"] !== "audio/wav" || request.headers["x-eclipse-target"] || request.headers["x-eclipse-method"]) throw new ProxyError("invalid_audio", 400);
+          const boundary = "eclipse-asr-" + randomUUID();
+          body = audioMultipart(body, boundary);
+          outgoing["content-type"] = "multipart/form-data; boundary=" + boundary;
+          outgoing.accept = "application/json";
+        }
+        if (method === "GET" && body.length) throw new ProxyError("invalid_request", 400);
+        outgoing["content-length"] = String(body.length);
+        const address = await resolvePublic(host, resolve);
+        const result = await forwardUpstream({ upstream, host, path: targetPath, method, headers: outgoing, body, address, signal: controller.signal, timeoutMs });
+        const clean = redact(result.body, credential);
+        const type = typeof result.contentType === "string" && SIMPLE_HEADER.test(result.contentType) ? result.contentType : "application/octet-stream";
+        send(result.status, clean, { "Content-Type": type, "X-Eclipse-Proxy": "ok" });
+      } finally { clearTimeout(timer); active -= 1; }
+    } catch (error) {
+      if (error instanceof ProxyError) { if (error.status >= 500) log({ event: "proxy_error", code: error.code }); return refuse(error); }
+      log({ event: "proxy_error", code: "internal_error" });
+      refuse(new ProxyError("internal_error", 500));
+    }
+  });
+  server.headersTimeout = 10_000;
+  server.requestTimeout = timeoutMs + 10_000;
+  server.maxHeaderSize = 16 * 1024;
+  return server;
+}
+
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  const port = Number(process.env.PORT ?? 4320);
+  const events = createEventLog();
+  const registry = createRegistry();
+  const server = createProxy({ secret: process.env.EGRESS_PROXY_SECRET, registry, events });
+  server.listen(port, "0.0.0.0", () => console.log(JSON.stringify({ event: "listening", port, configured: /^[0-9a-f]{64}$/.test(process.env.EGRESS_PROXY_SECRET ?? "") })));
+
+  const desktopSecret = process.env.EGRESS_DESKTOP_SECRET ?? "";
+  let desktop;
+  if (/^[0-9a-f]{64}$/.test(desktopSecret)) {
+    const { createDesktopProxy } = await import("./desktop-proxy.mjs");
+    desktop = createDesktopProxy({ desktopSecret, registry, events });
+    desktop.listen(4321, "0.0.0.0", () => console.log(JSON.stringify({ event: "listening", port: 4321, desktop: true })));
+  } else {
+    console.log(JSON.stringify({ event: "desktop_proxy", configured: false }));
+  }
+
+  const sweeper = setInterval(() => registry.sweep(), 30_000);
+  sweeper.unref();
+  for (const signal of ["SIGTERM", "SIGINT"]) process.on(signal, () => {
+    clearInterval(sweeper);
+    registry.closeAll();
+    try { desktop?.close(); } catch { /* already closed */ }
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 2_000).unref();
+  });
+}
+
+export function audioMultipart(wav, boundary = "eclipse-teach-asr-1") {
+  if (!/^[a-zA-Z0-9-]{1,80}$/.test(boundary)) throw new ProxyError("invalid_audio",400);
+  if (wav.length < 44 || wav.length > 3 * 1024 * 1024 || wav.toString("ascii",0,4) !== "RIFF" || wav.toString("ascii",8,12) !== "WAVE" || wav.readUInt32LE(4)!==wav.length-8) throw new ProxyError("invalid_audio",400);
+  let fmt=false, data=false;
+  for(let offset=12; offset<wav.length;) {
+    if(offset+8>wav.length) throw new ProxyError("invalid_audio",400);
+    const name=wav.toString("ascii",offset,offset+4), size=wav.readUInt32LE(offset+4), end=offset+8+size;
+    if(end>wav.length) throw new ProxyError("invalid_audio",400);
+    if(name==="fmt ") { if(fmt || size!==16 || wav.readUInt16LE(offset+8)!==1 || wav.readUInt16LE(offset+10)!==1 || wav.readUInt32LE(offset+12)!==24000 || wav.readUInt32LE(offset+16)!==48000 || wav.readUInt16LE(offset+20)!==2 || wav.readUInt16LE(offset+22)!==16) throw new ProxyError("invalid_audio",400); fmt=true; }
+    else if(name==="data") { if(data || !size || size%2) throw new ProxyError("invalid_audio",400); data=true; }
+    else if(name!=="JUNK") throw new ProxyError("invalid_audio",400);
+    offset=end+(size%2);
+    if(offset>wav.length) throw new ProxyError("invalid_audio",400);
+  }
+  if(!fmt || !data) throw new ProxyError("invalid_audio",400);
+  return Buffer.concat([Buffer.from(('--eclipse-teach-asr-1\r\nContent-Disposition: form-data; name="request"\r\nContent-Type: application/json\r\n\r\n{"mode":"ENDPOINTING","model":"muse-voice-transcribe-1.0","audioEncoding":"WAV"}\r\n--eclipse-teach-asr-1\r\nContent-Disposition: form-data; name="audio"; filename="narration.wav"\r\nContent-Type: audio/wav\r\n\r\n').replaceAll('eclipse-teach-asr-1',boundary)),wav,Buffer.from('\r\n--'+boundary+'--\r\n')]);
+}

@@ -48,6 +48,8 @@ function role(roleName, providerRecord, overrides = {}) {
     model: roleName === "main" ? "muse-spark-1.3" : "sam-3.1",
     useMainKey: false,
     mode: roleName === "main" ? "active" : "meta",
+    routing: "fixed",
+    hardModel: null,
     ...overrides,
   };
 }
@@ -72,7 +74,7 @@ class MemoryStore {
       encryptedKey: input.clearKey ? null : input.encryptedKey ?? previous?.encryptedKey ?? null,
       keyHint: input.clearKey ? null : input.keyHint ?? previous?.keyHint ?? null,
     });
-    this.main = role("main", stored, { model: input.model });
+    this.main = role("main", stored, { model: input.model, routing: input.routing, hardModel: input.hardModel });
     if (this.sam?.useMainKey) {
       this.sam.providerId = stored.id;
       this.sam.provider = stored;
@@ -119,6 +121,8 @@ test("empty model settings expose a safe required Main AI and SAM off", async ()
       model: "muse-spark-1.3",
       hasKey: false,
       keyHint: null,
+      routing: "fixed",
+      hardModel: null,
     },
     sam: {
       configured: false,
@@ -375,4 +379,30 @@ test("model settings schemas reject unknown fields and invalid combinations", ()
     mode: "meta", useMainKey: true, apiKey: CANARY,
   }).success, false);
   assert.equal(testModelSchema.safeParse({ role: "voice" }).success, false);
+});
+
+test("routing is Fixed by default; Auto needs a hard-step model and it round-trips without leaking the key", async () => {
+  await withEncryptionKey(async () => {
+    const store = new MemoryStore();
+    const fixed = await saveMainSettings(store, "owner", { kind: "meta", model: "muse-spark-1.3-contributor", apiKey: CANARY });
+    assert.deepEqual([fixed.main.routing, fixed.main.hardModel], ["fixed", null]);
+
+    const auto = await saveMainSettings(store, "owner", { kind: "meta", model: "muse-spark-1.3-contributor", routing: "auto", hardModel: "muse-wonder-1.0" });
+    assert.deepEqual([auto.main.routing, auto.main.hardModel, auto.main.hasKey], ["auto", "muse-wonder-1.0", true]);
+    assert.ok(!JSON.stringify(auto).includes(CANARY));
+
+    const back = await saveMainSettings(store, "owner", { kind: "meta", model: "muse-spark-1.3-contributor" });
+    assert.deepEqual([back.main.routing, back.main.hardModel], ["fixed", null]);
+  });
+});
+
+test("routing input is validated: auto needs hardModel, fixed rejects it, ids are safe, unknown fields fail", () => {
+  const base = { kind: "meta", model: "muse-spark-1.3-contributor" };
+  assert.equal(mainModelSettingsSchema.safeParse(base).data.routing, "fixed");
+  assert.equal(mainModelSettingsSchema.safeParse({ ...base, routing: "auto", hardModel: "muse-wonder-1.0" }).success, true);
+  for (const bad of [
+    { routing: "auto" }, { routing: "fixed", hardModel: "muse-wonder-1.0" }, { routing: "sometimes" },
+    { routing: "auto", hardModel: "bad model" }, { routing: "auto", hardModel: "" }, { routing: "auto", hardModel: "a".repeat(201) },
+    { routing: "auto", hardModel: "x", extra: 1 },
+  ]) assert.equal(mainModelSettingsSchema.safeParse({ ...base, ...bad }).success, false, JSON.stringify(bad));
 });

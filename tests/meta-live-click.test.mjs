@@ -5,8 +5,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { PassThrough } from "node:stream";
-import { buildLiveContinuation, buildLiveRequest, buildReviewedAcknowledgement, CONFIRMATION_CODE, REVIEW_TIMEOUT_MS, hash, validateViewportGeometry, LiveClickError, MODEL, runLiveClick } from "../scripts/spikes/meta-live-click-core.mjs";
+import { buildLiveContinuation, buildLiveRequest, buildReviewedAcknowledgement, CONFIRMATION_CODE, REVIEW_TIMEOUT_MS, VIEWPORT, hash, validateViewportGeometry, LiveClickError, MODEL, runLiveClick } from "../scripts/spikes/meta-live-click-core.mjs";
 import { minimalBrowserEnv, openLocalDriver, requestAllowed, waitForOwnerReview } from "../scripts/spikes/meta-live-click.mjs";
+import { fixtureResponse, startFixtureServer } from "../scripts/spikes/live-click-fixture.mjs";
 import { renderMaskPng } from "../scripts/spikes/sam-screenshot-core.mjs";
 
 const CANARY = "SYNTHETIC_LIVE_CLICK_CREDENTIAL";
@@ -350,12 +351,13 @@ test("a total budget overrun and stale observation stop before another model req
 });
 
 test("request policy denies foreign pages, credentials, writes, assets-as-navigation and arbitrary local routes", () => {
-  assert.equal(requestAllowed("http://127.0.0.1:3000/", "GET", true), true);
-  assert.equal(requestAllowed("http://127.0.0.1:3000/_next/static/test.js", "GET", false), true);
-  for (const [url, method, navigation] of [["https://example.com/", "GET", true], ["http://127.0.0.1:3000/login", "GET", true],
-    ["http://user:password@127.0.0.1:3000/", "GET", true], ["http://127.0.0.1:3000/", "POST", false],
-    ["http://127.0.0.1:3000/_next/static/test.js", "GET", true], ["http://127.0.0.1:3000/api/secrets", "GET", false]]) {
-    assert.equal(requestAllowed(url, method, navigation), false);
+  const page = "http://127.0.0.1:41234/";
+  assert.equal(requestAllowed(page, "GET", true, page), true);
+  assert.equal(requestAllowed("http://127.0.0.1:41234/favicon.ico", "GET", false, page), true);
+  for (const [url, method, navigation] of [["https://example.com/", "GET", true], ["http://127.0.0.1:41234/login", "GET", true],
+    ["http://user:password@127.0.0.1:41234/", "GET", true], [page, "POST", false], ["http://127.0.0.1:3000/", "GET", true],
+    ["http://127.0.0.1:41234/favicon.ico", "GET", true], ["http://127.0.0.1:41234/api/secrets", "GET", false], ["http://localhost:41234/", "GET", true]]) {
+    assert.equal(requestAllowed(url, method, navigation, page), false);
   }
   const env = minimalBrowserEnv("E:\\private-test", { SystemRoot: "C:\\Windows", MODEL_API_KEY: CANARY, DATABASE_URL: CANARY });
   assert.ok(!JSON.stringify(env).includes(CANARY)); assert.equal(env.USERPROFILE, "E:\\private-test");
@@ -365,7 +367,7 @@ test("real isolated browser rejects wrong/stale points and executes only one per
   const driver = await openLocalDriver();
   try {
     const before = await driver.capture(); const box = before.targetBox;
-    assert.deepEqual(before.geometry, { width: 1280, height: 800, dpr: 1 });
+    assert.deepEqual(before.geometry, { ...VIEWPORT, dpr: 1 });
     const point = { type: "click", button: "left", x: Math.floor(box.x + box.width / 2), y: Math.floor(box.y + box.height / 2) };
     await assert.rejects(driver.execute({ ...point, x: 0, y: 0 }, before), errorCode("wrong_target"));
     await assert.rejects(driver.execute(point, { ...before, fingerprint: "stale" }), errorCode("stale_page"));
@@ -382,4 +384,22 @@ test("CLI help/invalid arguments never load a browser or reveal a supplied crede
   const run = (args) => spawnSync(process.execPath, ["--conditions=react-server", cli, ...args], { encoding: "utf8", timeout: 10000, env: { ...process.env, MODEL_API_KEY: CANARY } });
   assert.equal(run(["--help"]).status, 0);
   const result = run(["--api-key", CANARY]); assert.equal(result.status, 1); assert.ok(!(result.stdout + result.stderr).includes(CANARY));
+});
+
+test("fixture server is loopback-only, GET-only, serves one page and stops on close", async () => {
+  const server = await startFixtureServer();
+  try {
+    assert.match(server.origin, /^http:\/\/127\.0\.0\.1:\d+$/);
+    const page = await fetch(server.url);
+    assert.equal(page.status, 200); assert.equal(page.headers.get("cache-control"), "no-store");
+    assert.match(page.headers.get("content-security-policy"), /default-src 'none'/);
+    const html = await page.text();
+    assert.match(html, /View project status/); assert.ok(!/<script|<a |<input|src=|href=/i.test(html));
+    assert.equal((await fetch(`${server.origin}/favicon.ico`)).status, 204);
+    assert.equal((await fetch(`${server.origin}/login`)).status, 404);
+    assert.equal((await fetch(`${server.origin}/..%2f`)).status, 404);
+    assert.equal((await fetch(server.url, { method: "POST", body: "x" })).status, 405);
+    assert.equal(fixtureResponse("DELETE", "/").status, 405);
+  } finally { await server.close(); }
+  await assert.rejects(fetch(server.url));
 });

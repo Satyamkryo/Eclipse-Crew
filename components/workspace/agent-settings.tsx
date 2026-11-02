@@ -6,6 +6,9 @@ import { LoaderCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AgentForm } from "@/components/workspace/agent-form";
 import { ModalDialog } from "@/components/workspace/modal-dialog";
+import { useRemote } from "@/components/history/use-remote";
+import { classLabel } from "@/lib/agent/risk";
+import type { ActionClass } from "@/lib/agent/risk";
 
 export type AgentSettingsData = {
   id: string;
@@ -43,7 +46,10 @@ export function AgentSettings({ agent, desktopRunning, csrfToken }: { agent: Age
         return;
       }
       if (!response.ok) {
-        setError(action === "pause" ? "Couldn't pause this agent. Try again." : "Couldn't resume this agent. Try again.");
+        const result = await response.json().catch(() => ({}));
+        setError(result.error === "budget_exhausted"
+          ? "This agent is still at its budget limit. Raise the daily or monthly budget, or wait for the next period."
+          : action === "pause" ? "Couldn't pause this agent. Try again." : "Couldn't resume this agent. Try again.");
         return;
       }
       router.refresh();
@@ -76,6 +82,7 @@ export function AgentSettings({ agent, desktopRunning, csrfToken }: { agent: Age
             onSaved={() => router.refresh()} />
         </div>
       </section>
+      <SavedApprovals agentId={agent.id} csrfToken={csrfToken} />
       <section className="rounded-lg border border-border bg-card p-4">
         <h3 className="text-sm font-semibold">Delete agent</h3>
         <p className="mt-1 text-sm text-muted-foreground">Permanently removes this agent&apos;s desktop, browser profile, files and configuration.</p>
@@ -87,6 +94,70 @@ export function AgentSettings({ agent, desktopRunning, csrfToken }: { agent: Age
       </div>
       {confirmingDelete && <DeleteAgentDialog agent={agent} csrfToken={csrfToken} onClose={() => setConfirmingDelete(false)} />}
     </div>
+  );
+}
+
+type SavedPermission = { id: string; site: string; actionClass: ActionClass; maxPerDay: number; createdAt: string };
+
+// TASK-050. Grants are per agent + exact site + action class. Revoking takes effect on the next risky action.
+function SavedApprovals({ agentId, csrfToken }: { agentId: string; csrfToken: string }) {
+  const { data, error, loading, reload } = useRemote<{ permissions: SavedPermission[] }>(
+    `/api/agents/${agentId}/permissions`, () => null,
+  );
+  const [revoking, setRevoking] = useState<string | null>(null);
+  const [revokeError, setRevokeError] = useState<string | null>(null);
+
+  async function revoke(id: string) {
+    if (revoking) return;
+    setRevoking(id);
+    setRevokeError(null);
+    try {
+      const response = await fetch(`/api/permissions/${id}/revoke`, {
+        method: "POST",
+        headers: { "x-csrf-token": csrfToken },
+      });
+      if (!response.ok) {
+        setRevokeError("Couldn't revoke this approval. Try again.");
+        return;
+      }
+      reload();
+    } catch {
+      setRevokeError("Unable to connect. Try again.");
+    } finally {
+      setRevoking(null);
+    }
+  }
+
+  return (
+    <section className="rounded-lg border border-border bg-card p-4">
+      <h3 className="text-sm font-semibold">Saved approvals</h3>
+      <p className="mt-1 text-sm text-muted-foreground">
+        Each saved approval applies only to this agent, one exact site and one action. It is limited per day.
+      </p>
+      {loading && !data ? <p role="status" className="mt-3 text-sm text-muted-foreground">Loading saved approvals…</p> : null}
+      {error && !data ? <p role="alert" className="mt-3 text-sm text-danger">Couldn&apos;t load saved approvals.</p> : null}
+      {data && data.permissions.length === 0 ? <p className="mt-3 text-sm text-muted-foreground">No saved approvals.</p> : null}
+      {data && data.permissions.length > 0 ? (
+        <ul aria-label="Saved approvals" className="mt-3 divide-y divide-border">
+          {data.permissions.map((permission) => (
+            <li key={permission.id} className="flex flex-wrap items-start justify-between gap-3 py-3">
+              <div className="min-w-0">
+                <p className="break-words text-sm font-medium">{permission.site}</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {classLabel(permission.actionClass)} · up to {permission.maxPerDay} per day
+                </p>
+              </div>
+              <Button type="button" variant="destructive" size="sm" disabled={revoking !== null}
+                onClick={() => void revoke(permission.id)}>
+                {revoking === permission.id ? <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" /> : null}
+                Revoke
+              </Button>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {revokeError ? <p role="alert" className="mt-3 text-sm text-danger">{revokeError}</p> : null}
+    </section>
   );
 }
 

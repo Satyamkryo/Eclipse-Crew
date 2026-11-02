@@ -42,6 +42,7 @@ export interface GenerateRequest {
   maxOutputTokens?: number;
   reasoningEffort?: ProviderReasoningEffort;
   computerUse?: boolean;
+  signal?: AbortSignal;
 }
 
 export interface ProviderModel {

@@ -2,11 +2,11 @@ import http from "node:http";
 import dns from "node:dns/promises";
 import { timingSafeEqual } from "node:crypto";
 import { WebSocketServer } from "ws";
-import { CommandSchema, OwnerInputSchema, TakeoverSchema, StreamSchema, UUID_PATTERN } from "./controller-schema.mjs";
+import { TeachSchema, CommandSchema, OwnerInputSchema, TakeoverSchema, StreamSchema, UUID_PATTERN } from "./controller-schema.mjs";
 import { bridgeRfb } from "./rfb-bridge.mjs";
 
 const MAX_BODY = 16384;
-const SAFE_CODES = new Set(["auth_failed", "source_denied", "invalid_command", "invalid_json", "body_too_large", "not_found", "method_not_allowed", "invalid_content_type", "agent_unavailable", "session_not_running", "session_start_failed", "session_start_timeout", "session_cleanup_failed", "stale_generation", "takeover_active", "takeover_conflict", "invalid_lease", "not_in_takeover", "capture_blocked_during_takeover", "viewer_not_active", "viewer_limit", "stream_unavailable", "duplicate_request_id", "queue_full", "uncertain_outcome", "invalid_worker_result", "sensitive_target", "focused_target_unknown", "too_many_pages", "too_many_frames", "page_not_found", "target_not_found", "desktop_command_failed", "desktop_result_too_large", "forbidden_target", "unknown_page", "ambiguous_locator", "invalid_png", "operation_failed", "display_conflict", "profile_busy_or_unsafe", "supervisor_stopping"]);
+const SAFE_CODES = new Set(["auth_failed", "source_denied", "invalid_command", "invalid_json", "body_too_large", "not_found", "method_not_allowed", "invalid_content_type", "agent_unavailable", "session_not_running", "session_start_failed", "session_start_timeout", "session_cleanup_failed", "stale_generation", "takeover_active", "takeover_conflict", "invalid_lease", "not_in_takeover", "capture_blocked_during_takeover", "viewer_not_active", "viewer_limit", "stream_unavailable", "duplicate_request_id", "queue_full", "uncertain_outcome", "invalid_worker_result", "sensitive_target", "focused_target_unknown", "too_many_pages", "too_many_frames", "page_not_found", "target_not_found", "desktop_command_failed", "desktop_result_too_large", "forbidden_target", "unknown_page", "ambiguous_locator", "grounding_unavailable", "invalid_png", "operation_failed", "display_conflict", "profile_busy_or_unsafe", "supervisor_stopping"]);
 export const safeCode = (error) => SAFE_CODES.has(error?.code) ? error.code : "operation_failed";
 const reply = (res, status, value) => {
   if (res.headersSent || res.destroyed) return;
@@ -14,20 +14,21 @@ const reply = (res, status, value) => {
   if (Buffer.byteLength(body) > 8 * 1024 * 1024) return reply(res, 502, { outcome: "error", code: "invalid_worker_result" });
   res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" }); res.end(body);
 };
-async function readBody(req) {
+async function readBody(req, limit = MAX_BODY) {
   const declared = req.headers["content-length"];
-  if (declared !== undefined && (!/^[0-9]+$/.test(declared) || +declared > MAX_BODY)) throw Object.assign(Error(), { code: "body_too_large" });
+  if (declared !== undefined && (!/^[0-9]+$/.test(declared) || +declared > limit)) throw Object.assign(Error(), { code: "body_too_large" });
   let size = 0; const chunks = [];
   const timer = setTimeout(() => req.destroy(), 2000);
   try {
-    for await (const chunk of req) { size += chunk.length; if (size > MAX_BODY) throw Object.assign(Error(), { code: "body_too_large" }); chunks.push(chunk); }
+    for await (const chunk of req) { size += chunk.length; if (size > limit) throw Object.assign(Error(), { code: "body_too_large" }); chunks.push(chunk); }
     try { return JSON.parse(Buffer.concat(chunks).toString("utf8")); } catch { throw Object.assign(Error(), { code: "invalid_json" }); }
   } finally { clearTimeout(timer); }
 }
-export function createController(manager, secret, { resolveApp = () => dns.lookup("app", { all: true }) } = {}) {
+// Shared by every listener on this container: only the app (by address) holding the secret may call.
+export function createAuthenticator(secret, resolveApp = () => dns.lookup("app", { all: true })) {
   if (!/^[0-9a-f]{64}$/.test(secret ?? "")) throw Error("invalid_secret");
   const secretBytes = Buffer.from(secret, "hex");
-  async function authenticate(req) {
+  return async function authenticate(req) {
     if (req.headers.origin !== undefined) return "source_denied";
     const address = req.socket.remoteAddress?.replace(/^::ffff:/, ""); let addresses; let timer;
     try { addresses = await Promise.race([resolveApp(), new Promise((_, reject) => { timer = setTimeout(() => reject(Error()), 1000); })]); }
@@ -36,22 +37,27 @@ export function createController(manager, secret, { resolveApp = () => dns.looku
     const token = /^Bearer ([0-9a-f]{64})$/.exec(req.headers.authorization ?? "")?.[1];
     if (!token || !timingSafeEqual(secretBytes, Buffer.from(token, "hex"))) return "auth_failed";
     return null;
-  }
+  };
+}
+export function createController(manager, secret, { resolveApp = () => dns.lookup("app", { all: true }) } = {}) {
+  const authenticate = createAuthenticator(secret, resolveApp);
   const server = http.createServer(async (req, res) => {
     try {
       const denied = await authenticate(req); if (denied) return reply(res, denied === "auth_failed" ? 401 : 403, { outcome: "error", code: denied });
       if (req.method !== "POST") return reply(res, 405, { outcome: "error", code: "method_not_allowed" });
       if ((req.headers["content-type"] ?? "").split(";")[0].trim() !== "application/json") return reply(res, 415, { outcome: "error", code: "invalid_content_type" });
-      const match = /^\/v1\/agents\/([^/]+)\/(commands|takeover|handback|input)$/.exec(req.url ?? "");
+      const match = /^\/v1\/agents\/([^/]+)\/(commands|takeover|handback|input|teach)$/.exec(req.url ?? "");
       if (!match || !UUID_PATTERN.test(match[1])) return reply(res, 404, { outcome: "error", code: "not_found" });
-      const raw = await readBody(req); const kind = match[2]; let parsed;
-      if (kind === "commands") parsed = CommandSchema.safeParse(raw);
+      const raw = await readBody(req, match[2] === "teach" ? 4 * 1024 * 1024 + 4096 : MAX_BODY); const kind = match[2]; let parsed;
+      if (kind === "teach") parsed = TeachSchema.safeParse(raw);
+      else if (kind === "commands") parsed = CommandSchema.safeParse(raw);
       else if (kind === "input") parsed = OwnerInputSchema.safeParse(raw);
       else if (raw && typeof raw === "object" && !Object.hasOwn(raw, "operation")) parsed = TakeoverSchema.safeParse({ ...raw, operation: kind });
       else parsed = { success: false };
       if (!parsed.success || parsed.data.agentId !== match[1]) return reply(res, 400, { outcome: "error", code: "invalid_command" });
       const c = parsed.data; let result;
-      if (kind === "takeover") result = await manager.takeOver(c.ownerId, c.agentId, c);
+      if (kind === "teach") result = await manager.teach(c.ownerId, c.agentId, c);
+      else if (kind === "takeover") result = await manager.takeOver(c.ownerId, c.agentId, c);
       else if (kind === "handback") result = await manager.handBack(c.ownerId, c.agentId, c);
       else if (kind === "input") result = await manager.ownerInput(c.ownerId, c.agentId, c.operation, c, c);
       else if (c.operation === "session.start") result = await manager.start(c.ownerId, c.agentId);

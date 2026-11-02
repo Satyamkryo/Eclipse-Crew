@@ -19,6 +19,8 @@ export type MainModelSettings = {
   model: string;
   hasKey: boolean;
   keyHint: string | null;
+  routing: "fixed" | "auto";
+  hardModel: string | null;
 };
 
 export type SamModelSettings = {
@@ -57,6 +59,8 @@ function mainView(main: StoredModelRole | null): MainModelSettings {
     model: main?.model ?? MAIN_MODEL,
     hasKey: Boolean(main?.provider?.encryptedKey),
     keyHint: main?.provider?.keyHint ?? null,
+    routing: main?.routing === "auto" && main.hardModel ? "auto" : "fixed",
+    hardModel: main?.routing === "auto" ? main.hardModel : null,
   };
 }
 
@@ -113,6 +117,8 @@ export async function saveMainSettings(
     kind: value.kind,
     baseUrl: normalizedBaseUrl,
     model: value.model,
+    routing: value.routing,
+    hardModel: value.routing === "auto" ? value.hardModel ?? null : null,
     ...(providerChanged && !apiKey ? { clearKey: true } : encryptedFields(apiKey)),
   });
   return readModelSettings(store, ownerId);
