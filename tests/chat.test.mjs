@@ -56,6 +56,38 @@ test("chat cards normalize valid message, clarification, tool connection and rou
     budgetCents: 300,
     catchUp: "run_once",
   });
+  assert.deepEqual(schema.chatCardSchema.parse({
+    type: "approval",
+    approvalId: MESSAGE,
+    actionClass: "download",
+    site: " vendor.example ",
+    controlName: " Download PDF ",
+  }), {
+    type: "approval",
+    approvalId: MESSAGE,
+    actionClass: "download",
+    site: "vendor.example",
+    controlName: "Download PDF",
+  });
+  assert.deepEqual(schema.chatCardSchema.parse({
+    type: "skill_update",
+    proposalId: MESSAGE,
+    scriptName: " Download invoice ",
+    fromVersion: 1,
+    toVersion: 2,
+    failedStep: 2,
+    changedSteps: 2,
+    failureCode: "target_missing",
+  }), {
+    type: "skill_update",
+    proposalId: MESSAGE,
+    scriptName: "Download invoice",
+    fromVersion: 1,
+    toVersion: 2,
+    failedStep: 2,
+    changedSteps: 2,
+    failureCode: "target_missing",
+  });
 });
 
 test("chat cards reject unknown, unsafe, malformed and unbounded fields", async () => {
@@ -85,6 +117,15 @@ test("chat cards reject unknown, unsafe, malformed and unbounded fields", async 
     { ...routine, steps: [] },
     { ...routine, catchUp: "retry_forever" },
     { ...routine, steps: Array.from({ length: 33 }, (_, index) => `Step ${index}`) },
+    { type: "approval", approvalId: MESSAGE, actionClass: "download", site: "vendor.example", controlName: "" },
+    { type: "approval", approvalId: "not-a-uuid", actionClass: "download", site: "vendor.example", controlName: "Download PDF" },
+    { type: "approval", approvalId: MESSAGE, actionClass: "run", site: "vendor.example", controlName: "Download PDF" },
+    { type: "approval", approvalId: MESSAGE, actionClass: "download", site: "bad\u0000site", controlName: "Download PDF" },
+    { type: "skill_update", proposalId: MESSAGE, scriptName: "Download invoice", fromVersion: 1, toVersion: 3, failedStep: 2, changedSteps: 2, failureCode: "target_missing" },
+    { type: "skill_update", proposalId: MESSAGE, scriptName: "Download invoice", fromVersion: 1, toVersion: 2, failedStep: 2, changedSteps: 2, failureCode: "input_missing" },
+    { type: "skill_update", proposalId: "not-a-uuid", scriptName: "Download invoice", fromVersion: 1, toVersion: 2, failedStep: 2, changedSteps: 2, failureCode: "target_missing" },
+    { type: "skill_update", proposalId: MESSAGE, scriptName: "Download invoice", fromVersion: 1, toVersion: 2, failedStep: 2, changedSteps: 41, failureCode: "target_missing" },
+    { type: "skill_update", proposalId: MESSAGE, scriptName: "Download invoice", fromVersion: 1, toVersion: 2, failedStep: 2, changedSteps: 2, failureCode: "target_missing", extra: true },
   ]) assert.equal(schema.chatCardSchema.safeParse(invalid).success, false, JSON.stringify(invalid));
 });
 

@@ -5,6 +5,7 @@ import { modelErrorResponse } from "@/lib/models/http";
 import { checkModelTestRateLimit } from "@/lib/models/rate-limit";
 import { testModelSchema } from "@/lib/models/schema";
 import { testSavedRole } from "@/lib/models/testing";
+import { proxyTransportFor } from "@/lib/models/transport";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -21,7 +22,7 @@ export async function POST(request: Request) {
     const parsed = testModelSchema.safeParse(await readBoundedJson(request, 4096));
     if (!parsed.success) return Response.json({ error: "invalid_input" }, { status: 400 });
     const store = createModelSettingsStore(await getDatabase());
-    return Response.json(await testSavedRole(store, session.ownerId, parsed.data.role));
+    return Response.json(await testSavedRole(store, session.ownerId, parsed.data.role, undefined, proxyTransportFor));
   } catch (error) {
     return modelErrorResponse(error);
   }

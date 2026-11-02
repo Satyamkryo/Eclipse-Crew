@@ -49,19 +49,20 @@ test("isolated stack enforces CSP, persists writable artifacts, and safely repai
   const appPassword = randomBytes(24).toString("hex");
   const migrationPassword = randomBytes(24).toString("hex");
   const controlSecret = randomBytes(32).toString("hex");
+  const egressSecret = randomBytes(32).toString("hex");
   const ownerPassword = randomBytes(24).toString("hex");
   const env = { ...process.env, COMPOSE_PROJECT_NAME: project,
     COMPOSE_FILE: [path.resolve("docker-compose.yml"), override].join(path.delimiter),
     COMPOSE_ENV_FILES: empty,
     POSTGRES_BOOTSTRAP_PASSWORD: bootstrap, POSTGRES_APP_PASSWORD: appPassword,
-    POSTGRES_MIGRATOR_PASSWORD: migrationPassword, DESKTOP_CONTROL_SECRET: controlSecret,
+    POSTGRES_MIGRATOR_PASSWORD: migrationPassword, DESKTOP_CONTROL_SECRET: controlSecret, EGRESS_PROXY_SECRET: egressSecret,
     APP_ORIGIN: "http://127.0.0.1:3000",
     DATABASE_URL: `postgresql://eclipse_app:${appPassword}@postgres:5432/eclipse`,
     MIGRATION_DATABASE_URL: `postgresql://eclipse_migrator:${migrationPassword}@postgres:5432/eclipse` };
   const docker = (...args) => spawnSync("docker", args, { env, encoding: "utf8", timeout: 300000 });
   const check = (result, label) => {
     const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
-    for (const secret of [bootstrap, appPassword, migrationPassword, controlSecret, ownerPassword]) assert.ok(!output.includes(secret), `${label}: credential leak`);
+    for (const secret of [bootstrap, appPassword, migrationPassword, controlSecret, egressSecret, ownerPassword]) assert.ok(!output.includes(secret), `${label}: credential leak`);
     assert.equal(result.status, 0, `${label}: ${output}`);
     return result.stdout.trim();
   };

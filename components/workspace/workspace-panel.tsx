@@ -19,7 +19,7 @@ const emptyCopy: Record<Exclude<TabId, "desktop" | "settings">, string> = {
   memory: "No memory entries yet.",
 };
 
-export function WorkspacePanel({ desktop, settings }: { desktop?: ReactNode; settings?: ReactNode }) {
+export function WorkspacePanel({ desktop, settings, history }: { desktop?: ReactNode; settings?: ReactNode; history?: ReactNode }) {
   const [active, setActive] = useState<TabId>("desktop");
   const buttons = useRef<Array<HTMLButtonElement | null>>([]);
 
@@ -68,7 +68,8 @@ export function WorkspacePanel({ desktop, settings }: { desktop?: ReactNode; set
             </div>
           </div>
         ))}
-        {active !== "desktop" && active !== "settings" && <Empty title={tabs.find((tab) => tab.id === active)?.label ?? ""} body={emptyCopy[active]} />}
+        {active === "history" && (history ?? <Empty title="History" body={emptyCopy.history} />)}
+        {active !== "desktop" && active !== "settings" && active !== "history" && <Empty title={tabs.find((tab) => tab.id === active)?.label ?? ""} body={emptyCopy[active]} />}
       </div>
     </div>
   );

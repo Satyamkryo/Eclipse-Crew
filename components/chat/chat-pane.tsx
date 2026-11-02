@@ -1,20 +1,24 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { LoaderCircle, MessageSquare, RefreshCw } from "lucide-react";
+import { FileText, LoaderCircle, MessageSquare, Paperclip, RefreshCw, X } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { ChatCard } from "@/components/chat/chat-card";
 import {
   chatHistoryResponseSchema,
   chatMessageResponseSchema,
+  outboxRefreshResponseSchema,
   type ChatMessage,
 } from "@/lib/chat/schema";
+import { formatBytes, precheckFile, uploadErrorMessage, uploadFile, UploadError } from "@/lib/chat/upload";
 
+type Upload = { key: string; file: File; loaded: number; state: "queued" | "uploading" | "error"; error?: string };
+const MAX_FILES_AT_ONCE = 10;
 type ChatAgent = { id: string; name: string; status: "active" | "paused" };
 type LoadState = "idle" | "loading" | "ready" | "error";
 
-export function ChatPane({ agent, csrfToken }: { agent?: ChatAgent; csrfToken: string }) {
+export function ChatPane({ agent, csrfToken, maxUploadBytes }: { agent?: ChatAgent; csrfToken: string; maxUploadBytes?: number }) {
   const router = useRouter();
   const timeline = useRef<HTMLDivElement>(null);
   const errorRef = useRef<HTMLParagraphElement>(null);
@@ -30,6 +34,10 @@ export function ChatPane({ agent, csrfToken }: { agent?: ChatAgent; csrfToken: s
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  const [uploads, setUploads] = useState<Upload[]>([]);
+  const [dragging, setDragging] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const running = useRef<{ key: string; cancel: () => void } | null>(null);
   const active = agent?.status === "active";
   const agentId = agent?.id;
   const lastId = messages.at(-1)?.id;
@@ -69,9 +77,22 @@ export function ChatPane({ agent, csrfToken }: { agent?: ChatAgent; csrfToken: s
     if (!agentId || loadState !== "ready") return;
     const controller = new AbortController();
     let polling = false;
+    // Files the agent wrote to outbox/ get a card. Failures here stay quiet: the message poll below reports its own.
+    const refreshOutbox = async () => {
+      try {
+        const response = await fetch(`/api/agents/${agentId}/outbox/refresh`, {
+          method: "POST", headers: { "x-csrf-token": csrfToken }, signal: controller.signal, cache: "no-store",
+        });
+        if (!response.ok) return;
+        const parsed = outboxRefreshResponseSchema.safeParse(await response.json().catch(() => null));
+        if (parsed.success && parsed.data.messages.length > 0) setMessages((current) => mergeMessages(current, parsed.data.messages));
+      } catch { /* retried on the next poll */ }
+    };
+    void refreshOutbox();
     const poll = async () => {
       if (polling || document.visibilityState !== "visible") return;
       polling = true;
+      void refreshOutbox();
       try {
         const query = lastId ? `?after=${encodeURIComponent(lastId)}` : "";
         const response = await fetch(`/api/agents/${agentId}/messages${query}`, {
@@ -107,7 +128,7 @@ export function ChatPane({ agent, csrfToken }: { agent?: ChatAgent; csrfToken: s
       window.clearInterval(interval);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [agentId, lastId, loadState, router]);
+  }, [agentId, csrfToken, lastId, loadState, router]);
 
   useEffect(() => {
     if (messages.length === 0) {
@@ -132,6 +153,58 @@ export function ChatPane({ agent, csrfToken }: { agent?: ChatAgent; csrfToken: s
   useEffect(() => {
     if (sendError) errorRef.current?.focus();
   }, [sendError]);
+
+  useEffect(() => () => { running.current?.cancel(); }, []);
+
+  // Files go up one at a time; each is a raw request so the progress bar is real.
+  useEffect(() => {
+    if (!agentId || running.current) return;
+    const next = uploads.find((upload) => upload.state === "queued");
+    if (!next) return;
+    const update = (patch: Partial<Upload>) => setUploads((list) => list.map((upload) => upload.key === next.key ? { ...upload, ...patch } : upload));
+    const handle = uploadFile(agentId, csrfToken, next.file, (loaded) => update({ loaded }));
+    running.current = { key: next.key, cancel: handle.cancel };
+    update({ state: "uploading" });
+    handle.promise.then((message) => {
+      setMessages((current) => mergeMessages(current, [message]));
+      setUploads((list) => list.filter((upload) => upload.key !== next.key));
+    }, (error: unknown) => {
+      const code = error instanceof UploadError ? error.code : "failed";
+      if (error instanceof UploadError && error.status === 401) { router.push("/login"); router.refresh(); return; }
+      if (code === "cancelled") { setUploads((list) => list.filter((upload) => upload.key !== next.key)); return; }
+      update({ state: "error", error: uploadErrorMessage(code, maxUploadBytes) });
+    }).finally(() => { running.current = null; setUploads((list) => [...list]); });
+  }, [uploads, agentId, csrfToken, maxUploadBytes, router]);
+
+  function addFiles(list: FileList | File[] | null, skippedFolders = 0) {
+    const files = Array.from(list ?? []);
+    if (files.length === 0 && skippedFolders === 0) return;
+    if (!agent || !active) { setSendError("Resume this agent to attach files."); return; }
+    setSendError(null);
+    setNotice(skippedFolders > 0 ? "Folders can't be attached. Add them as a zip file instead." : null);
+    const added: Upload[] = files.slice(0, MAX_FILES_AT_ONCE).map((file) => {
+      const problem = precheckFile(file, maxUploadBytes);
+      return { key: crypto.randomUUID(), file, loaded: 0, state: problem ? "error" : "queued",
+        ...(problem ? { error: uploadErrorMessage(problem.code, maxUploadBytes) } : {}) } as Upload;
+    });
+    if (files.length > MAX_FILES_AT_ONCE) setNotice(`Only the first ${MAX_FILES_AT_ONCE} files were added.`);
+    setUploads((current) => [...current, ...added]);
+  }
+
+  function cancelUpload(key: string) {
+    if (running.current?.key === key) running.current.cancel();
+    else setUploads((list) => list.filter((upload) => upload.key !== key));
+  }
+
+  function onDrop(event: React.DragEvent<HTMLDivElement>) {
+    if (!event.dataTransfer.types.includes("Files")) return;
+    event.preventDefault();
+    setDragging(false);
+    const items = Array.from(event.dataTransfer.items ?? []).filter((item) => item.kind === "file");
+    const folders = items.filter((item) => item.webkitGetAsEntry?.()?.isDirectory).length;
+    const files = folders > 0 ? Array.from(event.dataTransfer.files).filter((_, index) => !items[index]?.webkitGetAsEntry?.()?.isDirectory) : event.dataTransfer.files;
+    addFiles(files, folders);
+  }
 
   async function loadEarlier() {
     if (!agent || !messages[0] || loadingEarlier.current) return;
@@ -191,7 +264,17 @@ export function ChatPane({ agent, csrfToken }: { agent?: ChatAgent; csrfToken: s
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="relative flex h-full min-h-0 flex-col"
+      onDragEnter={(event) => { if (agent && event.dataTransfer.types.includes("Files")) { event.preventDefault(); setDragging(true); } }}
+      onDragOver={(event) => { if (agent && event.dataTransfer.types.includes("Files")) event.preventDefault(); }}
+      onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false); }}
+      onDrop={onDrop}>
+      {dragging && agent && (
+        <div aria-hidden="true" className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center gap-2 border border-border-strong bg-background/80 text-sm font-medium">
+          <Paperclip className="size-4" />
+          {active ? `Drop files to attach to ${agent.name}` : "Resume this agent to attach files"}
+        </div>
+      )}
       <div className="flex h-12 shrink-0 items-center gap-3 border-b border-border px-6">
         <h2 className="text-lg font-semibold tracking-tight">Chat</h2>
         {agent && <span className="min-w-0 truncate text-xs text-muted-foreground">{agent.name}</span>}
@@ -232,7 +315,7 @@ export function ChatPane({ agent, csrfToken }: { agent?: ChatAgent; csrfToken: s
                     Background result · <time dateTime={message.createdAt}>{formatTime(message.createdAt)}</time>
                   </p>
                 )}
-                <ChatCard message={message} />
+                <ChatCard message={message} agentId={agent?.id} csrfToken={csrfToken} />
               </div>
             ))}
             <div aria-hidden="true" />
@@ -246,11 +329,25 @@ export function ChatPane({ agent, csrfToken }: { agent?: ChatAgent; csrfToken: s
         <form onSubmit={send} className="shrink-0 border-t border-border p-4">
           <div className="mx-auto flex max-w-[720px] flex-col gap-2">
             <label htmlFor="chat-message" className="text-sm font-medium">Message</label>
+            {uploads.length > 0 && (
+              <ul aria-label="Attachments" className="flex flex-col gap-2">
+                {uploads.map((upload) => <UploadRow key={upload.key} upload={upload} onCancel={() => cancelUpload(upload.key)} />)}
+              </ul>
+            )}
+            <input ref={fileInput} id="chat-attachments" type="file" multiple hidden aria-label="Attach files"
+              onChange={(event) => { addFiles(event.target.files); event.target.value = ""; }} />
             <div className="flex items-end gap-2">
+              <Button type="button" variant="secondary" aria-label="Attach files" title="Attach files" disabled={!active}
+                className="shrink-0" onClick={() => fileInput.current?.click()}>
+                <Paperclip aria-hidden="true" className="size-4" />
+              </Button>
               <textarea id="chat-message" value={text} disabled={!active || sending} rows={2}
                 maxLength={20_000} placeholder={active ? `Message ${agent.name}` : undefined}
                 aria-describedby="chat-message-hint"
                 onChange={(event) => { setText(event.target.value); if (sendError) setSendError(null); }}
+                onPaste={(event) => {
+                  if ((event.clipboardData?.files.length ?? 0) > 0) { event.preventDefault(); addFiles(event.clipboardData.files); }
+                }}
                 onKeyDown={(event) => {
                   if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                     event.preventDefault();
@@ -264,13 +361,43 @@ export function ChatPane({ agent, csrfToken }: { agent?: ChatAgent; csrfToken: s
               </Button>
             </div>
             {!active && <p id="chat-message-hint" className="text-xs text-muted-foreground">Resume this agent to send a message.</p>}
-            {active && !notice && !sendError && <p id="chat-message-hint" className="text-xs text-muted-foreground">Press Enter to send, Shift+Enter for a new line.</p>}
+            {active && !notice && !sendError && <p id="chat-message-hint" className="text-xs text-muted-foreground">Press Enter to send, Shift+Enter for a new line. Attach files with the paperclip, drag them in or paste{maxUploadBytes ? `, up to ${formatBytes(maxUploadBytes)} each` : ""}.</p>}
             {sendError && <p ref={errorRef} id="chat-message-hint" role="alert" tabIndex={-1} className="text-sm text-danger">{sendError}</p>}
             {notice && <p id="chat-message-hint" role="status" className="text-xs text-muted-foreground">{notice}</p>}
           </div>
         </form>
       )}
     </div>
+  );
+}
+
+function UploadRow({ upload, onCancel }: { upload: Upload; onCancel: () => void }) {
+  const percent = Math.min(100, Math.floor((upload.loaded / upload.file.size) * 100));
+  const saving = upload.state === "uploading" && upload.loaded >= upload.file.size;
+  return (
+    <li className="flex flex-col gap-1 rounded-md border border-border px-3 py-2 text-xs">
+      <div className="flex items-center gap-2">
+        <FileText aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1 truncate font-medium">{upload.file.name}</span>
+        <span className="shrink-0 tabular-nums text-muted-foreground">{formatBytes(upload.file.size)}</span>
+        <Button type="button" variant="ghost" size="sm" className="shrink-0 px-2" onClick={onCancel}
+          aria-label={upload.state === "error" ? `Dismiss ${upload.file.name}` : `Cancel upload of ${upload.file.name}`}
+          title={upload.state === "error" ? "Dismiss" : "Cancel upload"}>
+          <X aria-hidden="true" className="size-4" />
+        </Button>
+      </div>
+      {upload.state === "queued" && <p className="text-muted-foreground">Waiting</p>}
+      {upload.state === "uploading" && (
+        <div className="flex items-center gap-2">
+          <div role="progressbar" aria-label={`Uploading ${upload.file.name}`} aria-valuemin={0} aria-valuemax={100} aria-valuenow={percent}
+            className="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-border">
+            <div className="h-full bg-primary" style={{ width: `${percent}%` }} />
+          </div>
+          <span className="shrink-0 tabular-nums text-muted-foreground">{saving ? "Saving" : `${percent}%`}</span>
+        </div>
+      )}
+      {upload.state === "error" && <p role="alert" className="text-danger">{upload.error}</p>}
+    </li>
   );
 }
 

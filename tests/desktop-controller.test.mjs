@@ -26,6 +26,7 @@ test("schema validates operation-specific UUID generations, arguments, key chord
     { operation: "input.key", key: "Control+Shift+ArrowLeft" },
     { operation: "input.scroll", direction: "up", count: 20 },
     { operation: "browser.pages" },
+    { operation: "page.snapshot" }, { operation: "page.snapshot", pageId: randomUUID() },
     { operation: "browser.locator", selector: "input", action: "fill", text: "hello", pageId: randomUUID() },
   ];
   for (const operation of operations) assert.equal(parseCommand({ ...running(), ...operation }).operation, operation.operation);
@@ -38,6 +39,7 @@ test("schema validates operation-specific UUID generations, arguments, key chord
     { operation: "input.key", key: "Control+Control+a" }, { operation: "input.key", key: "arbitrary-command" },
     { operation: "input.scroll", direction: "up", count: 21 }, { operation: "browser.locator", selector: "input", action: "fill" },
     { operation: "exec.shell", command: "anything" }, { operation: "browser.pages", evaluate: "arbitrary" },
+    { operation: "page.snapshot", selector: "input" }, { operation: "page.snapshot", pageId: "not-a-uuid" }, { operation: "page.snapshot", script: "document.cookie" },
   ]) assert.throws(() => parseCommand({ ...running(), ...invalid }));
   for (const key of ["Enter", "Tab", "Control+c", "Meta+l", "Control+Alt+Delete", "Shift+F12"]) assert.equal(validKey(key), true);
 });
@@ -69,6 +71,16 @@ test("operation results reject mismatched types, untagged data and invalid PNG d
   assert.throws(() => validatePng(png, { width:10,height:10 }));
   assert.throws(() => validatePng(Buffer.alloc(20)));
   assert.throws(() => resultFor("capture.screenshot", { width:1024,height:768,base64:png.toString("base64"),source_tag:"tool",untrusted:true }, { crop:{width:100,height:100} }));
+});
+test("page snapshot results are strict, tagged, bounded and carry no field values", () => {
+  const good = { pageId: randomUUID(), href: "https://a.example/", title: "T", frames: 0, source_tag: "tool", untrusted: true,
+    elements: [{ ref: 1, role: "button", name: "Save", tag: "button", x: 10, y: 20, width: 50, height: 30 }] };
+  assert.deepEqual(resultFor("page.snapshot", good), good);
+  const bad = (patch) => () => resultFor("page.snapshot", { ...good, ...patch });
+  assert.throws(bad({ untrusted: false })); assert.throws(bad({ source_tag: "user" })); assert.throws(bad({ frames: 65 }));
+  assert.throws(bad({ elements: Array(151).fill(good.elements[0]) }));
+  for (const patch of [{ name: "x".repeat(81) }, { name: "a\u0007b" }, { x: 1000 }, { y: 760 }, { width: 0 }, { x: 1.5 }, { value: "secret" }, { role: "Button" }])
+    assert.throws(bad({ elements: [{ ...good.elements[0], ...patch }] }), JSON.stringify(patch));
 });
 test("framing reads fragmented/coalesced messages and rejects truncated/invalid/oversized frames", async () => {
   const packed = Buffer.concat([frame({ a:1 }),frame({ b:2 })]);

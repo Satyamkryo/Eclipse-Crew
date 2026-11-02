@@ -27,6 +27,9 @@ export type StoredModelRole = {
   model: string | null;
   useMainKey: boolean;
   mode: "active" | "off" | "meta";
+  // Main only (TASK-027).
+  routing: "fixed" | "auto";
+  hardModel: string | null;
 };
 
 export type StoredModelSettings = {
@@ -38,6 +41,8 @@ export type SaveMainRecord = {
   kind: "meta" | "openai-compatible";
   baseUrl: string | null;
   model: string;
+  routing: "fixed" | "auto";
+  hardModel: string | null;
   encryptedKey?: string;
   keyHint?: string;
   clearKey?: boolean;
@@ -60,6 +65,8 @@ async function selectRoles(database: Store, ownerId: string) {
     model: modelRoles.model,
     useMainKey: modelRoles.useMainKey,
     mode: modelRoles.mode,
+    routing: modelRoles.routing,
+    hardModel: modelRoles.hardModel,
     kind: providers.kind,
     baseUrl: providers.baseUrl,
     encryptedKey: providers.encryptedKey,
@@ -85,6 +92,8 @@ function toStoredRole(row: Awaited<ReturnType<typeof selectRoles>>[number]): Sto
     model: row.model,
     useMainKey: row.useMainKey,
     mode: row.mode as StoredModelRole["mode"],
+    routing: row.routing === "auto" && row.hardModel ? "auto" : "fixed",
+    hardModel: row.hardModel,
   };
 }
 
@@ -98,8 +107,10 @@ async function saveRole(
   transaction: Transaction,
   ownerId: string,
   role: "main" | "sam",
-  values: { providerId: string | null; model: string | null; useMainKey: boolean; mode: string },
+  values: { providerId: string | null; model: string | null; useMainKey: boolean; mode: string; routing?: "fixed" | "auto"; hardModel?: string | null },
 ) {
+  const routing = values.routing ?? "fixed";
+  const hardModel = routing === "auto" ? values.hardModel ?? null : null;
   await transaction.insert(modelRoles).values({
     id: randomUUID(),
     ownerId,
@@ -108,6 +119,8 @@ async function saveRole(
     model: values.model,
     useMainKey: values.useMainKey,
     mode: values.mode,
+    routing,
+    hardModel,
   }).onConflictDoUpdate({
     target: [modelRoles.ownerId, modelRoles.role],
     set: {
@@ -115,6 +128,8 @@ async function saveRole(
       model: values.model,
       useMainKey: values.useMainKey,
       mode: values.mode,
+      routing,
+      hardModel,
       updatedAt: new Date(),
     },
   });
@@ -185,6 +200,8 @@ export function createModelSettingsStore(database: MutationStore): ModelSettings
           model: input.model,
           useMainKey: false,
           mode: "active",
+          routing: input.routing,
+          hardModel: input.hardModel,
         });
       });
     },

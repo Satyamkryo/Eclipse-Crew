@@ -1,7 +1,7 @@
 import "server-only";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { getDatabase } from "../../db/client";
-import { agentPolicies, agents } from "../../db/schema";
+import { agentPolicies, agents, teachRecordings } from "../../db/schema";
 import { defaultSoul, type AgentCreateInput, type AgentUpdateInput } from "./schema";
 
 type Database = Awaited<ReturnType<typeof getDatabase>>;
@@ -33,6 +33,7 @@ export async function listAgentRecords(database: Database, ownerId: string) {
     name: agents.name,
     role: agents.role,
     status: agents.status,
+    attentionReason: sql<string | null>`case when ${agents.attentionReason} is not null then ${agents.attentionReason} when exists (select 1 from ${teachRecordings} where ${teachRecordings.ownerId} = ${agents.ownerId} and ${teachRecordings.agentId} = ${agents.id} and ${teachRecordings.state} = 'paused') then 'teach_paused' else null end`,
   }).from(agents).where(eq(agents.ownerId, ownerId)).orderBy(asc(agents.name));
 }
 

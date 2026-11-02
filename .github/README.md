@@ -51,7 +51,7 @@ Hosted agent products run your bots on someone else's computer. Every bot often 
 
 ### The five standouts
 
-1. **Learn a skill from video.** Record yourself doing a task on an agent's screen, optionally narrating as you go. The agent writes a reusable `SKILL.md` with steps and checks. This works on websites, canvas apps and desktop apps.
+1. **Learn a skill from video.** Record yourself doing a task on an agent's screen, optionally narrating as you go. The agent drafts a validated `SKILL.md` with steps and checks for your approval. Managed-browser capture and screenshot-based skill drafting are implemented; native desktop capture and the video-model path are upcoming.
 2. **Proof receipts.** Every action is located and then verified using page structure, pixel diff and OCR, plus optional SAM 3.1 pixel masks. Each step's evidence is hash-chained and signed, and `eclipse-crew verify` checks a run offline.
 3. **Rewind and branch.** Roll a run back to step N, add a correction and continue without redoing earlier steps.
 4. **Self-healing routines.** When a website changes and a check fails, the agent finds the new way through and proposes a skill update for you to approve.
@@ -69,7 +69,7 @@ Hosted agent products run your bots on someone else's computer. Every bot often 
 - **Budgets:** per agent, routine, day and month, with a cost receipt for every run.
 - **Jobs dashboard** for every run, retry and schedule.
 - **Security Center** with kill switches.
-- **Chat attachments and file cards**, plus a Files tab *(coming)*.
+- **Chat attachments** (button, drag-and-drop, paste) saved to the agent's `inbox/`, and **file cards** for files the agent writes to `outbox/` with Download and Open on the agent's desktop. A Files tab *(coming)*.
 - **Tools:** MCP servers, and Composio with your own key *(coming)*.
 - **Voice dictation and voice commands** *(coming)*, including fully offline with local Whisper.
 - **Multi-agent handoffs, sub-agents and parallel research** *(coming)*.
@@ -94,12 +94,14 @@ Each agent step goes through the same loop:
 
 1. Plan the next action.
 2. Locate the target on screen.
-3. Check permissions and budget.
+3. Check permissions, task scope and budget; risky actions wait for your approval.
 4. Act.
 5. Verify the result.
 6. Write a signed receipt and a checkpoint.
 
 The model never handles your API keys or passwords; the proxy and executor inject them.
+
+**Task scope.** The allowed sites and recipients come from your message, the agent's website list and the page the run starts on. If a step tries to type an address or email you did not name, it is refused before anything is typed and recorded as a blocked step. A second refusal stops the run. This check cannot see where a click or a form submit goes; the per-agent website allowlist is the network backstop.
 
 Full design: [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md).
 
@@ -137,7 +139,7 @@ You need an API key for one model provider (e.g. the Meta Model API), or a local
 
 ## Quickstart (your own PC)
 
-> **Current development status:** Owner setup/login, account settings, agent management and the authenticated three-pane workspace shell are implemented. The desktop has isolated persistent graphical sessions, live noVNC viewing and takeover. Agents are created, edited, paused, resumed and deleted in the workspace with default-deny permissions, a `SOUL.md` persona and daily/monthly budgets. The agent runtime and model settings remain upcoming. The egress proxy is inert.
+> **Current development status:** Owner setup/login, account settings, agent management and the authenticated three-pane workspace shell are implemented. The desktop has isolated persistent graphical sessions, live noVNC viewing and takeover. Managed-browser **Teach capture** is implemented: an explicit Record control on the taken-over desktop, Pause/Resume/Stop/Discard, masked editable fields, sanitized click/key/scroll/drag targets with before/after shots, privacy pauses for logins/OTP/CAPTCHA/unsupported surfaces, optional mic narration, and a saved-recordings list that reopens completed captures after a reload. Skill drafting/approval is implemented; native desktop/terminal capture is owner-deferred for v1. Agents are created, edited, paused, resumed and deleted in the workspace with default-deny permissions, a `SOUL.md` persona and daily/monthly budgets. Model settings and chat-triggered in-process agent runs are implemented when Main AI is configured. The live desktop has an in-app **Full screen** view (it fills the app window, keeps the same stream, and is view-only on phones; Esc exits unless you have taken over). Settings -> Models has an optional **Routing** choice: Fixed (default) always uses your Main model; Auto uses a second model you name only for hard steps and falls back if it is unavailable. Muse Wonder has no Contributor mode, so it is billed at the standard rate. Agents can read attachments (text, CSV, JSON, docx, text-layer PDF, images) and deliver files to chat when their Actions list includes `read_document` and `deliver_file` (new agents start with these and the desktop actions pre-filled; clear the box to deny everything). The egress proxy forwards the app's model-provider requests and adds your API key there. It is also the desktop browser's only way out: each agent can reach only the domains in its **Domains** list, over HTTPS (a plain `http://` request is redirected to HTTPS); unlisted hosts and private, loopback, link-local or cloud-metadata addresses are refused. Add a site to that list before browsing to it by hand, including during takeover. Every executed agent step writes a hash-chained receipt and each run is signed with your install key (`npm run receipt-key`); `verify` checks an exported run offline (see [Check proof receipts](#8-check-proof-receipts)).
 
 To run the local app, use Node.js 24, run `npm ci` and `npm run dev` from the project root, and open `http://127.0.0.1:3000`. Authentication requires the configured private PostgreSQL service; the complete isolated setup below is provided by Compose. `dev` and `start` use the application's Node/Next WebSocket entry point and bind to localhost; do not replace them with `next start` if desktop streaming is required.
 
@@ -156,13 +158,17 @@ In the private `.env` file, set `POSTGRES_BOOTSTRAP_PASSWORD`, `POSTGRES_APP_PAS
 ```powershell
 npm run encryption-key
 npm run desktop:secret
+npm run egress:secret
+npm run receipt-key
 docker compose up -d --build
 docker compose ps
 npm run db:provision
 npm run db:migrate
 ```
 
-Preserve `ENCRYPTION_KEY` with backups: changing or losing it makes existing encrypted credentials unreadable. Keep `DESKTOP_CONTROL_SECRET` private too. `APP_ORIGIN` must exactly match the URL used in the browser, including scheme and port; the default is `http://127.0.0.1:3000`. Use this address consistently instead of switching to `localhost`. Configure the exact HTTPS origin for a TLS deployment.
+`npm run egress:secret` creates two internal secrets, `EGRESS_PROXY_SECRET` and `EGRESS_DESKTOP_SECRET`. Run it again once on an existing install before upgrading; it only fills missing values and never prints them.
+
+Preserve `ENCRYPTION_KEY` with backups: changing or losing it makes existing encrypted credentials unreadable. Keep `DESKTOP_CONTROL_SECRET` private too. `RECEIPT_SIGNING_KEY` signs your proof receipts and is created by `npm run receipt-key`; agents refuse to run without it. Back it up with `.env`: if it is lost, new runs get a new key and fingerprint, and old runs still verify against the public key stored with them. `APP_ORIGIN` must exactly match the URL used in the browser, including scheme and port; the default is `http://127.0.0.1:3000`. Use this address consistently instead of switching to `localhost`. Configure the exact HTTPS origin for a TLS deployment.
 
 Open `http://127.0.0.1:3000` and complete owner setup. To stop the containers while retaining their volumes, run `docker compose down`. The provisioning command checks the existing database and can be repeated; it supports the original owner schema and sessions schema plus the singleton-owner migration, preserving rows and existing LF/CRLF history. It refuses unknown state, multiple legacy owners or mismatched credentials and never deletes an account to repair a conflict. It does not rotate passwords. For an existing project volume, retain the original bootstrap password, back up the volume first, and supply the same role credentials on every run. If preflight refuses the volume, investigate the conflict instead of resetting it. Compose and the commands use shell settings in preference to `.env`; restart Compose after changing settings so its mounted secrets match. `.env` is ignored by Git and excluded from the build context.
 
@@ -178,13 +184,27 @@ The repair command refuses a running app, bind mounts, custom volume-driver opti
 
 Pages render on each request so Next.js scripts receive fresh CSP nonces. Production responses, redirects and errors include security headers. Localhost remains HTTP; production HSTS follows the configured HTTPS `APP_ORIGIN`, never a caller-supplied forwarding header. Keep ingress's forwarding-header overwrite in place and configure the exact origin for a TLS deployment. Provisioning accepts supported LF/CRLF migration variants without rewriting stored history; `.gitattributes` enforces LF for future migration checkouts.
 
-Regression checks: `npm run test:db-client` tests retry recovery; `npm run test:db-roles` checks database privileges and LF/CRLF upgrades; `npm run test:http-security` checks the five-service stack, CSP and artifacts repair using disposable resources. These checks do not require access to personal browsers.
+Regression checks: `npm run test:db-client` tests retry recovery; `npm run test:db-roles` checks database privileges and LF/CRLF upgrades; `npm run test:http-security` checks the five-service stack, CSP and artifacts repair using disposable resources. These checks do not require access to personal browsers. `npm run test:posture` checks the effective Compose posture (ports, mounts, networks, capability sets and secret scoping) and live non-root identities. `npm run test:agent-isolation` starts two real agents in a disposable stack and checks cross-agent process, file, `/tmp`, display and network denials in both directions, saving evidence under `data/spikes/task-048/<uuid>/`. `npm run test:egress-desktop`, `npm run test:egress-policy` and `npm run test:desktop-egress` check the per-agent browser allowlist offline and on a disposable real-Docker stack. `npm run test:canary`, `npm run test:tripwire` and `npm run test:egress-tripwire` check canary matching, tripwire ordering/idempotency and proxy canary detection.
 
 The pinned noVNC 1.6.0 npm artifact has a CommonJS/top-level-await packaging incompatibility. `npm run dev` and `npm run build` automatically run `scripts/prepare-novnc.mjs`, which checks the package version and exact upstream file hash before normalizing only its browser utility module to ESM. It preserves the awaited feature probe and refuses unexpected bytes. `npm run test:novnc-compat` verifies that compatibility step; `npm run test:rfb-bridge` verifies the private view-only protocol.
 
 **TASK-010 desktop image:** `docker compose build desktop` builds the pinned Ubuntu toolchain. The approved lock contains 379 exact Ubuntu archives, verified by byte count/SHA256 before offline installation with networking disabled. Node 24.22.2, upstream Chromium 159.0.8134.0 (snapshot 1731633) and playwright-core 1.64.1 are separately pinned. The upstream browser is a development snapshot; updates require deliberate pinning and revalidation. No Chrome-for-Testing installer is used. The desktop now uses the owner-approved ADR-026 trusted setup role described below, with read-only root, bounded temporary storage and no published ports. Per-agent sessions are available through local administration; the agent runtime remains under development.
 
 `npm run test:desktop-image` runs offline guards and the disposable build/smoke, saving bounded evidence under ignored `data/spikes/task-010/<uuid>/`. Tool inventory, Compose health, Xauthority/Openbox, accepted/rejected VNC authentication, noVNC WebSocket and PNG/video checks pass. TASK-010 is complete: run c66f0dda-e890-428b-8f58-a1df20c978fa verifies genuine Playwright/xdotool clicks in graphical Chromium and confirms its namespace/PID/network and Seccomp-BPF sandboxes active. The desktop-only ADR-025 profile is pinned to the upstream Playwright policy plus Chromium’s required namespace-local chroot; the ordinary container process is still denied chroot. Run Compose from the project checkout so it can load docker/desktop/seccomp_profile.json. Keep this checked-in profile, cap-drop ALL and no-new-privileges; do not use seccomp=unconfined or --no-sandbox. The five-service `test:http-security` regression passes. No model calls or personal-browser data are used.
+
+**TASK-035 mock vendor portal:** The desktop image includes a local synthetic invoice site with two layouts, month filters and four sample PDFs. It requires no vendor login, model key, database or internet. Start it for an existing agent (replace the IDs and Compose project name):
+
+```bash
+npm run mock-vendor -- start --owner OWNER_UUID --agent AGENT_UUID --project main
+npm run mock-vendor -- status --owner OWNER_UUID --agent AGENT_UUID --project main
+npm run mock-vendor -- stop --owner OWNER_UUID --agent AGENT_UUID --project main
+```
+
+`start` prints an ephemeral `http://127.0.0.1:<port>/` URL **inside the desktop container**. Open that URL in the selected agent's Chromium through takeover; it is not a host-browser URL. Start is idempotent. October 2026 initially shows two invoices; December demonstrates the empty state. Expand **Demo controls** to switch between table layout A and billing-card layout B, or reset to A/October. Invoice IDs, amounts and PDF bytes remain the same across layouts. Reset leaves downloaded files alone. These controls demonstrate a site change; agent teaching, replay and self-healing are separate features.
+
+The process runs as the selected agent, binds only loopback and stops on explicit stop or container restart. It serves synthetic data only; it has no owner-app session. Loopback is currently shared by agents in the desktop container, so this fixture does not claim per-agent network isolation. No host port is published. Old desktop images need `docker compose build desktop` and `docker compose up -d desktop` before the commands are available; recreating desktop restarts its active graphical sessions. TASK-035 was validated on a disposable desktop; the running owner stack was not recreated.
+
+For development, `npm run mock-vendor:preview` starts the same fixture on host loopback and prints its URL (Ctrl+C stops it). After changing its React markup, shared tokens or Button styles, run `npm run mock-vendor:build`; `npm run mock-vendor:check` detects stale generated HTML/CSS. Generated assets ship with the source so Docker-only installation does not need this Node developer build step. No external assets/fonts are fetched; the independent site uses the design's system-font fallbacks. HTTP tests: `node --test tests/mock-vendor.test.mjs`; disposable real-browser test: `node --test tests/mock-vendor-desktop.test.mjs` (Docker required). Tests save screenshots, a rendered/text-checked PDF and sanitized evidence under `data/spikes/task035/<run>/` and remove their own containers/volume/network/image.
 
 **TASK-011 agent identities:** Build and start the desktop with your configured Compose environment: `docker compose build desktop`, then `docker compose up -d desktop`. The owner CLI works from this checkout and accepts canonical lowercase UUIDs. Use the actual Compose project name when it differs from the directory name:
 
@@ -227,9 +247,9 @@ Each explicit live invocation makes at most two protocol requests to the fixed e
 
 When valid pending checks exist, the CLI now prints safe codes/counts and a private `safety-review.json` path. That file contains only bounded sanitized explanations, marked untrusted tool data. It omits opaque check IDs, withholds explanations matching credential patterns, and never sends an acknowledgement. Read the specific reason and proposed action before considering any later protocol continuation; do not treat the review text as instructions. The historical flag's discarded explanation remains unknown. Do not rerun repeatedly to make a flag disappear or present an offline fixture as a live result.
 
-**TASK-007 actual-click test:** `npm run spike:meta-live-click -- --live` now uses a fresh automation-managed Firefox context per owner request, never personal browser profiles or tabs. Build/start Eclipse Crew on `127.0.0.1:3000` first. Install the exact driver dependency with the lockfile, then install its matching Firefox on E: using `$env:PLAYWRIGHT_BROWSERS_PATH="E:\Eclipse Crew\main\data\spikes\browser-cache"; node node_modules/playwright-core/cli.js install firefox`. Run `npm run test:meta-live-click` against the local production app for offline protocol and real-browser checks before any model usage.
+**TASK-007 actual-click test:** `npm run spike:meta-live-click -- --live` now uses a fresh automation-managed Firefox context per owner request, never personal browser profiles or tabs. The driver serves its own fixed test page from a loopback-only, GET-only server on an ephemeral port (`scripts/spikes/live-click-fixture.mjs`), so the app does not need to be running. Install the exact driver dependency with the lockfile, then install its matching Firefox on E: using `$env:PLAYWRIGHT_BROWSERS_PATH="E:\Eclipse Crew\main\data\spikes\browser-cache"; node node_modules/playwright-core/cli.js install firefox`. Run `npm run test:meta-live-click` for offline protocol and real-browser checks before any model usage. The viewport is 1862x946 at DPR1, the size of the earlier screenshot that produced an exact-centre proposal; the earlier 1280x800 runs missed. Verified result: Run 21c0933d-7e35-4ec4-be42-a784ab4ec56d (fixture, 1862x946/DPR1): after one screenshot observation the model proposed (657,471) inside the button (571,456)-(746,488); owner approved the specific point; one Firefox click opened the section (closed->open, Project status visible, after.png inspected); the reviewed acknowledgement was accepted and no further action executed. 3 Contributor requests, 21354 input / 527 output tokens (338 reasoning), 15.9 s model time, no caps reached. The earlier 1280x800 misses at (359,483) are historical; the viewport size, not original detail, is the likely cause (one run, not proven). TASK-007 is complete.
 
-The live invocation uses only muse-spark-1.3-contributor with low reasoning, at most three requests / 1024 output tokens each (3072 total), 30 seconds per request and 90 seconds active model time, no retries. Screenshots explicitly use original detail; PNG dimensions must match viewport CSS dimensions at DPR1. Geometry mismatches stop before model usage/input. Fresh local-page pixels drive one genuine coordinate click after schema, target and exact-scene checks. A wrong point stops without a review request. Generic computer_action_requires_confirmation may pause up to five minutes for specific owner chat approval followed by the matching run-scoped stdin token. Silence, denial, stale state or other checks stop. Original provider handles/checks stay in memory; only after specific approval, actual input and verified postconditions are exact checks echoed with the genuine after-image. Never execute further model actions. Results separately record execution, postcondition and acknowledgement; failed acknowledgement cannot undo input. Original-detail run 3e06d19f-8460-4162-968a-7ea98b134318 verified 1280x800/DPR1 and the unchanged screenshot hash, but returned (359,483), below the button ending y=466. One Contributor request used 3559 input / 670 output tokens (584 reasoning); wrong_target stopped before review/input/acknowledgement. Original detail did not resolve the miss; no token cap was reached. TASK-007 remains open for grounding; no automatic retries. Private evidence: data/spikes/task-007-live-click/<uuid>/. This driver is development-only.
+The live invocation uses only muse-spark-1.3-contributor with low reasoning, at most three requests / 1024 output tokens each (3072 total), 30 seconds per request and 90 seconds active model time, no retries. Screenshots explicitly use original detail; PNG dimensions must match viewport CSS dimensions at DPR1. Geometry mismatches stop before model usage/input. Fresh fixture-page pixels drive one genuine coordinate click after schema, target and exact-scene checks. A wrong point stops without a review request. Generic computer_action_requires_confirmation may pause up to five minutes for specific owner chat approval followed by the matching run-scoped stdin token. Silence, denial, stale state or other checks stop. Original provider handles/checks stay in memory; only after specific approval, actual input and verified postconditions are exact checks echoed with the genuine after-image. Never execute further model actions. Results separately record execution, postcondition and acknowledgement; failed acknowledgement cannot undo input. Original-detail run 3e06d19f-8460-4162-968a-7ea98b134318 verified 1280x800/DPR1 and the unchanged screenshot hash, but returned (359,483), below the button ending y=466. One Contributor request used 3559 input / 670 output tokens (584 reasoning); wrong_target stopped before review/input/acknowledgement. Original detail did not resolve the miss; no token cap was reached. The later fixture run above completed TASK-007; no automatic retries. Private evidence: data/spikes/task-007-live-click/<uuid>/. This driver is development-only.
 
 **TASK-008 SAM screenshot probe:** This developer CLI uses `sam-3.1` and the same private `MODEL_API_KEY` to segment the fixed concept `button` on one owner-selected safe PNG. SAM is a separate model, with no Contributor variant selected. It makes at most one non-streaming image request per explicit invocation, with a 30-second request/read deadline, an 8 MiB response cap and no retries. No browser capture or input execution occurs. Free-credit data-use terms apply.
 
@@ -240,7 +260,13 @@ npm run spike:sam-screenshot -- --screenshot "E:\Eclipse Crew\Test\placeholder.p
 
 Results go under ignored `data/spikes/task-008/<run-id>/`: sanitized `result.json` and source-aligned monochrome mask PNGs, without source-image copies, credentials or raw provider text. `validated_masks` means geometry and real mask decoding passed; inspect those masks against the source before confirming the target. `no_matches` is a normal empty result; malformed, oversized and timeout results fail closed. The CLI prints safe stage/reason/schema/parser codes rather than arbitrary provider errors. SAM remains optional/off by default in the planned product; this spike does not implement its settings or perception adapter. Live TASK-008 verification passed on the approved placeholder PNG: one image request returned a valid mask covering View project status, confirmed by visual comparison. Evidence: `data/spikes/task-008/b91a98d6-8c75-408b-9b01-bfbba38c92b0/`. Token usage was reported as zero, which does not imply zero charge: SAM is billed per image. See [SAM documentation](https://dev.meta.ai/docs/sam/overview).
 
-**Full-product quickstart (not yet available):** Current setup requires explicit database provisioning and migration, and the workspace uses **http://127.0.0.1:3000**. The previous one-command quickstart instructions are omitted until the full-product setup is available.
+**One-command install (planned, TASK-080; not yet available):** an `install.sh` (Linux, macOS) and `install.ps1` (Windows) in the repo will replace the manual steps above. Docker will be the only requirement: no Node.js or `npm ci` on your machine. The installer will:
+
+- create `.env` and generate every secret in it, including the three database passwords and their URLs, and never print one;
+- start the stack, then provision and migrate the database inside a pinned Node container;
+- install an `eclipse-crew` command on your PATH (see [CLI reference](#cli-reference)).
+
+Running it again is safe and is also how you update: it only fills in missing values, never replaces an existing key and never resets the database. Until the repository is public, run it from your clone (`./install.sh` or `.\install.ps1`). After that, a one-line `curl ... | sh` and PowerShell form will be published, pinned to a release tag with a checksum, and you can also download the script, read it, then run it. Until the installer exists, use the manual steps above; the workspace uses **http://127.0.0.1:3000**.
 
 ---
 
@@ -265,7 +291,7 @@ The same compose file runs on a Linux VPS, so your crew keeps working while your
 ### 1. Prepare the server
 
 - Ubuntu 22.04/24.04 or similar, sized from [Requirements](#hardware).
-- Attach a block-storage volume for data if your provider offers it, since screenshots and checkpoints grow over time.
+- Attach a block-storage volume for data if your provider offers it, since screenshots and checkpoints grow over time. Every step keeps its screenshots (about 0.1-0.4 MB each) and a checkpoint of the agent's files in the `artifacts` volume, and nothing is cleaned up automatically yet.
 - Install Docker Engine, the Compose plugin and Git, then follow [Quickstart](#quickstart-your-own-pc) steps 1–3 on the server.
 
 The app listens on `127.0.0.1:3000` **only**. Nothing is reachable from the internet until you choose one of the options below.
@@ -371,7 +397,7 @@ Each job gets its own card, so you can mix providers:
 | Open weights / second provider | Muse Spark Open (e.g. on Baseten), Muse Glimmer (local) |
 | Code changes for the Dev agent | Muse Code |
 
-Prices are in Meta's [model docs](https://dev.meta.ai/docs/models). You can edit the price table under **Settings → Models** so cost receipts match your provider.
+Prices are in Meta's [model docs](https://dev.meta.ai/docs/models). You can edit the price table under **Settings → Models** so cost receipts match your provider. Built-in rates are pre-filled for the Meta models above, local OpenAI-compatible endpoints cost $0, and a hosted model with no price is refused before it can spend.
 
 > **Contributor mode** (`muse-spark-1.3-contributor`) is much cheaper, but Meta may use the data to improve its products. It's an explicit opt-in setting and never on by default.
 
@@ -437,20 +463,20 @@ The workspace has three panes. The **left** pane lists your agents. The **center
 2. Pick a template or start blank. Templates *(coming)*: Daily Briefer, Inbox Triage, PR Reviewer, Research Analyst, Dev Agent, Travel & Booking Assistant.
 3. Set the **name**, **role** and **persona** (`SOUL.md`, up to 2,000 characters: identity, tone, boundaries). Leaving it blank uses an editable role-based default.
 4. Set **permissions**: allowed tools, websites, memory scopes and action types. Everything not listed is denied.
-5. Set the required **daily and monthly USD budgets**. Enforcement and warnings arrive with the run/budget tasks.
+5. Set the required **daily and monthly USD budgets**. They warn at 80% and pause the agent before another model call at 100%.
 
 Each agent gets its own Linux user, screen, browser profile and home folder. Select the agent and open **Settings** to edit it, **Pause agent** / **Resume agent**, or **Delete agent**. Deletion warns you to back up first and requires the exact agent name; it removes the user, browser profile, files, persona and permissions.
 
 ### 2. Chat with an agent
 
-- Type a task in plain language: *"Find last month's invoices on the vendor portal and save them as PDFs."* Messages are stored per agent, and per-agent history remains available after a reload. The live agent runtime is not connected yet.
-- When the runtime is connected, replies arrive as cards:
+- Type a task in plain language: *"Find last month's invoices on the vendor portal and save them as PDFs."* Messages are stored per agent, and per-agent history remains available after a reload. Each message starts one in-process agent run when Main AI is configured; runs are lost on app restart.
+- Replies arrive as cards:
   - **message:** a normal reply.
   - **clarification:** the agent needs a missing detail.
   - **tool connection:** connect a tool inline.
   - **routine:** a schedule to confirm.
-- **Attach files** *(coming)* by button, drag-and-drop or paste (images, PDF, Office, CSV/JSON, code, audio, video; up to 250 MB by default). They'll be saved to the agent's `inbox/`.
-- Files the agent produces will appear as **file cards** *(coming)* with **Download**, **Show in Files** and **Open on the agent's desktop**.
+- **Attach files** with the paperclip button, by dragging them onto the chat, or by pasting a screenshot. Images, PDF, Office documents without macros, text, CSV/JSON, source code, audio, video and archives are accepted; programs, shell and Windows scripts and macro documents are refused. The default limit is 250 MB per file (set `MAX_UPLOAD_MB` in `.env`, 1 to 1024, then restart Compose). Files are saved to that agent's `inbox/` and shown as a card. One file uploads at a time.
+- Files the agent writes to its `outbox/` appear as **file cards** within a few seconds (the chat checks while the tab is visible) with **Download** and **Open on desktop**. Open shows images, PDFs, audio, WebM/OGV video and plain text in a new tab of the agent's own browser (start its desktop first); every other kind is download-only. Checked in a real run: PNG images, PDFs (in Chromium's built-in viewer) and WebM video display. The agent's Chromium cannot decode H.264, so `.mp4`, `.mov` and `.mkv` files are download-only (they show **Download** and no Open button). Scripts and programs are never listed. **Show in Files** *(coming)* arrives with the Files tab.
 
 ### 3. Watch and take over
 
@@ -458,7 +484,9 @@ Each agent gets its own Linux user, screen, browser profile and home folder. Sel
 2. Click **Take over** to use the mouse and keyboard yourself. The agent pauses.
 3. Click **Hand back**, and the agent resumes from where it was.
 
-**Planned login handoff:** the agent runtime will stop at login walls, CAPTCHAs, one-time codes and payment checks and ask the owner. Current desktop primitives reject password/OTP text and fill targets; protected credential entry and the runtime handoff remain later work. Existing profile state persists across explicit session restarts. Agents never solve CAPTCHAs.
+**Action verification:** clicks, typing and key presses require agreement between page structure and an independent screenshot check. The agent checks the expected result after acting and stops for you if evidence is missing or conflicting. SAM is optional and off by default; when enabled its masks can support target and object-presence checks. Other visual checks use Main AI. Extra requests are capped per desktop step (up to two Main AI checks at 512 output tokens each and two SAM images, with no automatic retries); deterministic page checks avoid unnecessary postcondition calls. These checks do not prove every external side effect. Step receipts are hash-chained, completed runs are signed, and exported runs can be verified offline. The verification flow is tested with mocked providers; real-model acceptance remains pending.
+
+**Login handoff:** the agent stops at login walls, CAPTCHAs, one-time codes and payment checks and asks the owner. Current desktop primitives reject password/OTP text and fill targets; protected credential entry remains later work. Existing profile state persists across explicit session restarts. Agents never solve CAPTCHAs.
 
 Nothing is recorded while you're in control, unless you press **Record** in teach mode.
 
@@ -466,11 +494,10 @@ Nothing is recorded while you're in control, unless you press **Record** in teac
 
 1. Open the agent's **Desktop**, click **Take over**, then **Record**.
 2. Do the task once at a normal pace. Narrate if you like ("I'm filtering by last month because…").
-3. Click **Stop**. Eclipse Crew captures the video, each click and keypress with its target, before/after screenshots and your narration. Passwords and codes are masked.
-4. The agent drafts a `SKILL.md` with steps, inputs and the check for each step. Review it, edit if needed, and click **Approve**.
-5. The skill is now callable in chat (*"Run the invoice skill"*) and schedulable.
-
-The skill shows how it was learned, e.g. *"Learned from video + steps"*. After approval, the recording is deleted and one reference screenshot per step is kept.
+3. Click **Stop**. Eclipse Crew captures the video, each accepted click/key/scroll/drag with its target, before/after screenshots and any narration you opted into. Passwords, one-time codes and other editable fields are masked. Capture pauses on login/password/OTP/CAPTCHA pages, dialogs, uninspectable frames and unsupported surfaces — check the browser, then press **Resume**.
+4. Review the saved capture now, or reopen it later from **Saved recordings**: the video, step list, paired shots and transcript (if narration was on). **Discard** deletes that capture's private artifacts from the recording session; Saved recordings keeps completed captures available for later review.
+5. Click **Generate skill** in the review view. Eclipse Crew drafts a structured `SKILL.md` from the steps, screenshots and transcript. Read it, then **Approve** to make it available to later chat runs and routine cards. Approval deletes the recording and keeps one reference screenshot per step.
+6. Skill drafting currently uses the screenshot path; native desktop capture and the video-model path are upcoming. This build records the agent's managed browser only.
 
 > Tip: keep skills short and focused. Split long tasks into several skills.
 
@@ -479,11 +506,13 @@ The skill shows how it was learned, e.g. *"Learned from video + steps"*. After a
 1. In chat, describe the schedule: *"Every weekday at 9am, download new invoices and email me a summary."*
 2. A **routine card** appears with the goal, skill, schedule, timezone, tools and budget. Relative dates are resolved and shown, so check them.
 3. Choose the **catch-up policy** for missed runs: run once now, skip, or run all missed.
-4. Click **Confirm**. Manage it later in the **Routines** tab.
+4. Click **Confirm**. The validated schedule, IANA timezone and UTC next-run are saved once; reloading shows **Routine saved**. Use **Run now** to start it immediately and watch queued, retrying, the current step, elapsed time and recorded cost update beside the card.
 
-- **Run Now** runs it immediately with live step status.
-- After the first verified run, later runs **replay without the model**. The AI is only called if something on the page doesn't match.
-- If the site changed, the agent **self-heals**: it finds the new path, finishes the step and shows a **skill diff**. Approve it to update the skill.
+- Open **Jobs** from the workspace header to see every run across the crew: outcome, agent, trigger, start, duration and cost, with agent/outcome/date filters, search and paging. A run's page shows its task, final answer, delivered files, failed steps, retry attempts and the full receipt timeline. Cancel a running job, retry a sealed chat or routine run that is not verified, run a routine now with live step status, and pause or resume routines; **Upcoming runs** lists the next occurrences in your timezone.
+- Confirmed routines run once a minute on the app's pg-boss scheduler. A duplicate tick is a no-op, one agent runs at most one job at a time, and transient failures retry with backoff. After downtime, each routine follows its chosen catch-up policy. The scheduler starts with the app. If scheduler startup fails, the app logs that scheduled routines are paused and continues starting; restart the app after resolving the cause. On an existing install, rebuild the app image first, then run `npm run db:migrate` and `npm run db:provision` (or use the installer); the database helper runs inside the app image.
+- A verified routine replays without the model. A failed site check starts a bounded repair on the live screen and proposes a **replay update** for approval.
+- **Replay a verified run without the model.** Open **History**, pick a run that finished with every step verified, and press **Save as replay**. A replay is saved only when each step can be checked from the page itself (a control is present or absent, or the URL path), so a run whose check needed a model's judgement is refused with the step and the reason. Saved replays are listed at the top of **History**: press **Replay**, review the steps first, and fill in any text the replay must type (that text is used once and never saved). A replay makes no model call and costs nothing; it finds each control again by its exact role and name, checks the page, and stops with a "Needs you" card at the first step that doesn't match, for example after the site changed. It uses one check per step (the page's structure) instead of the two-method check of a normal run. Replays are limited to 20 steps.
+- **Self-healing.** When a replay stops because the site changed, the agent runs a short repair on the live screen, verifies it, and proposes the new steps as a red/green diff. The **Skill update proposed** chat card and the **Update proposed** badge under Saved replays open the same review. The current version stays active until you press **Approve update**; the next replay then uses the new version with no model calls. Reject leaves the current version active. The taught `SKILL.md` is not changed, and a repair that needs typed text or hits a login/CAPTCHA hands back to you.
 
 ### 6. Sundance and Moondance *(coming)*
 
@@ -504,30 +533,49 @@ Each routine can get a webhook URL `POST /api/hooks/<id>` with a secret token. C
 ### 8. Check proof receipts
 
 1. Open **History** and pick a run.
-2. Each step shows before/after thumbnails, the target (with the SAM highlight if enabled), the verification method, confidence, cost and pass/fail.
-3. **Planned (TASK-030; not yet available):** Once the verifier is implemented, click **Export** to download `run.json` and verify it offline:
+2. Each step shows before/after thumbnails, the target, the verification method (for example "Page structure + SAM 3.1" or "Page structure (SAM off)"), confidence, cost and pass/fail. Open a step to see both screenshots at full width, the expected and actual result, the model, and the receipt hashes. The gold outline appears only when SAM 3.1 found the target; it is a display aid, and the signed receipt covers the screenshot hashes. The header says **Chain verified** only when the stored receipts re-check correctly right now; if a stored receipt was edited, it shows the failure reason and step instead. Each step also says whether a full checkpoint (the agent's state and files) was saved, which a later rewind needs.
+3. **Export and check a run.** Press **Export** in the run's header. It downloads `run-<run id>.json` (the same file is at `http://127.0.0.1:3000/api/runs/<run id>/export` while you are signed in). Then verify it offline. The verifier is a single Node.js file with no dependencies; it needs no database, network or Docker, so anyone you send the file to can check it:
    ```bash
-   docker compose exec app eclipse-crew verify /path/to/run.json
+   node scripts/eclipse-crew.mjs verify run-<run id>.json
    ```
-   A passing verification will mean no step was altered, removed or reordered since it was signed.
+   To check it inside the app container instead (no Node.js needed on your machine):
+   ```powershell
+   Get-Content -Raw run-<run id>.json | docker compose exec -T app node scripts/eclipse-crew.mjs verify -
+   ```
+   After the [installer](#quickstart-your-own-pc) *(planned, TASK-080)* puts `eclipse-crew` on your PATH, the short form is `eclipse-crew verify run.json`.
+
+   `PASS` means no step was altered, removed or reordered since it was signed, and the run was signed by the key inside the file. To check it was **your** install's key, get its fingerprint and pin it:
+   ```bash
+   node --env-file=.env scripts/eclipse-crew.mjs key-id
+   node scripts/eclipse-crew.mjs verify run-<run id>.json --key-id sha256:<that value>
+   ```
+   Without `--key-id` the verifier says the key was not pinned. `FAIL` names the reason and the step (for example `receipt_hash_mismatch  step 2`); exit code 1 means failed, 2 means the file could not be read.
+
+   **What a receipt doesn't prove:** the app holds the signing key, so an attacker who takes over the app could sign a run it made up. Receipts catch later edits to the database or the export file, and with the pin, runs signed by any other key. They hold the task text and control names, so treat an export as private data; they never hold typed text, file contents or credentials.
 
 ### 9. Rewind and branch
 
-1. In **History**, open a run and click the step you want to return to.
-2. Click **Rewind here**, add a correction ("use the March invoice, not February"), and **Continue**.
-3. The run continues as a **new branch**. The original stays visible.
+1. In **History**, open a run. Expand a step whose checkpoint is saved and press **Rewind to here**, or press **Rewind and branch** to start from before the first step.
+2. Choose the checkpoint, add a correction ("use the March invoice, not February"), and press **Create branch**.
+3. The agent continues as a **new branch** from the saved state and files. The original run, its receipts and its signature stay unchanged, and both runs stay visible in **History**.
 
-Rewind restores the agent's state and files. It **can't** undo things that already happened outside the machine, such as sent emails or placed orders.
+Rewind restores the agent's state and files, not the world around it. It **can't** undo sent emails, placed orders or other external actions, and it does not restore the browser page, tabs or logins: the new branch starts from a fresh screenshot of the desktop as it is now.
+
+Files are saved in the agent's own `inbox`, `work`, `downloads` and `outbox` before the first step and after every step. Files over 4 MiB are listed but cannot be restored, and a step whose checkpoint was incomplete says so and cannot be rewound to. Files that did not exist at the chosen step are moved to a hidden `.rewound/` folder in the same area, never deleted.
 
 ### 10. Approvals and permissions
 
-When an agent tries something risky (send, delete, purchase, post, a new site), you get a prompt:
+When an agent is about to download, send, post, delete, purchase or submit, it pauses and asks in chat:
 
 - **Allow once:** just this time.
-- **Always allow:** saved for this agent + site + action, optionally with a limit (e.g. purchases ≤ ₹4,000). It's never global.
-- **Deny.**
+- **Always allow:** saved for this agent, this exact site and this action. It is limited to 20 uses per rolling 24 hours and is never global.
+- **Deny:** the run stops.
 
-Review, edit, set expiry or revoke saved permissions on the **Permissions** page *(coming)*.
+A request waits up to 10 minutes. While it waits, the agent shows **Needs you** in the workspace and the Jobs page says **Waiting for approval**. If the page changes while you decide, the agent re-checks it and stops rather than acting on a stale screen. Saved approvals are listed under the agent's **Settings → Saved approvals**, where you can revoke one; the next risky action asks again. Saved replays never wait: a risky replay step runs only when a saved approval still has capacity.
+
+The action is classified from the control's name and the agent's expected result, so treat this as a safety net rather than a guarantee. Pressing Enter to submit a form is not classified, and a page that labels a destructive button neutrally can still mislead it.
+
+Astra Mode is the only thing that removes this prompt; scope checks, receipts, budgets and the tripwire stay on.
 
 ### 11. Astra Mode
 
@@ -576,8 +624,10 @@ Use the **Files** tab *(coming)* to browse, preview, download, upload to `inbox/
 
 ### 15. Budgets and costs
 
-- Set budgets per agent, routine, day and month. You're warned at 80%, and the agent **pauses and asks** at 100%.
-- Each run has a **cost receipt**: tokens in/out/cached, the model per step, and cost in USD.
+- Daily and monthly agent budgets are checked against the live ledger before every model call. You're warned at 80%; at 100% the agent pauses, gets a gold **Needs you** ring and shows a chat card and toast. Resume works only after you raise the budget or the next period starts. Routine budgets follow when routines land.
+- Each run has a **cost receipt** at `GET /api/runs/<id>/cost`: tokens in/out/cached, the model per call and step, cost in whole micro-USD, and failed, invalid or cancelled calls. Signed step receipts also carry their cost.
+- Each run stops at 20 steps, 200,000 input + output tokens, 15 minutes, or the third identical step. The same limits apply in cost mode; a stopped run still seals its proof.
+- Edit provider/model rates under **Settings → Models**. Changes affect later calls, never old receipts.
 - Routine cards show an estimate before saving *(coming)*, e.g. *"≈ $0.03/run, ≈ $0.90/month"*.
 - Local models count as $0.
 
@@ -591,6 +641,8 @@ To keep costs down, let routines replay, use Spark for most steps, and use Sunda
 - **Upcoming** shows the next scheduled runs in your local time.
 
 ### 17. Security Center and kill switches
+
+**Leak tripwire.** Each agent has a bait file, `inbox/passwords-backup.txt`, containing a unique canary key. If the agent tries to type that key, or the browser sends it in a host name or plain-HTTP header, the request is refused, the desktop is stopped, the agent is paused with a red **Security stop** alert, and one security event is recorded. The app checks the text the model is about to type; the proxy checks browser traffic before it connects. HTTPS bodies and paths are not inspected, and chat or takeover typing is not scanned. Fix the cause, then **Resume** the agent; resume clears the trip and re-arms the canary. Deleting the decoy is fine; it is not recreated.
 
 - **Security Center** lists tripwire events, blocked actions and flagged prompt-injection attempts.
 - **Stop agent** halts one agent immediately. **Stop crew** halts every agent.
@@ -667,7 +719,7 @@ Found a vulnerability? See [SECURITY.md](../docs/SECURITY.md). Please don't open
 | See / end sessions | **Settings → Account → Active sessions**, then **Sign out everywhere** to end every other session while keeping this one. |
 | Turn on 2FA *(coming)* | **Settings → Account → Two-factor**: scan the QR code with an authenticator app (Google/Microsoft Authenticator, Authy, 2FAS, Aegis…) and save the 10 recovery codes |
 | Forgot password | On the host: `npm run reset-password`, supplying the new password through private stdin as shown below. This revokes all owner sessions. |
-| Lost phone and recovery codes *(coming)* | On the host: `docker compose exec app eclipse-crew reset-2fa` |
+| Lost phone and recovery codes *(coming)* | On the host: `eclipse-crew reset-2fa` (after the installer) |
 
 Password recovery verifies the current Compose app image and private database network and runs with the least-privilege application role. It refuses password command-line arguments. On PowerShell, use a hidden prompt without putting the password in command history:
 
@@ -693,7 +745,7 @@ Run from the project root with the existing private `.env` and Docker Desktop ru
 - **Backup:** **Settings → Backup** creates an encrypted ZIP containing the database, memory, skills, agent files and artifacts. Save it to a local folder or an S3-compatible bucket. Nightly backups can run automatically via Moondance. The UI shows when the last backup ran.
 - **Restore:**
   ```bash
-  docker compose exec app eclipse-crew restore /path/to/backup.zip
+  eclipse-crew restore /path/to/backup.zip
   ```
 - **PC → VPS:**
   1. Make a backup on the PC.
@@ -710,7 +762,7 @@ git pull
 docker compose up -d --build
 ```
 
-Database migrations are currently explicit: after starting the stack, run `npm run db:provision` and `npm run db:migrate`. Make a backup before major updates.
+Database migrations are currently explicit: after starting the stack, run `npm run db:provision` and `npm run db:migrate`. Make a backup before major updates. Once the installer exists (planned, TASK-080), updating is `git pull` followed by running the installer again; it keeps your keys and data.
 
 ---
 
@@ -739,7 +791,7 @@ Docker volumes:
 | Receipt thumbnails and hashes | Permanently |
 | Rewind checkpoints | 7 days |
 | Failed runs | 30 days |
-| Teaching recordings | Deleted after skill approval; one reference shot per step kept |
+| Teaching recordings | Kept locally until you discard the capture or approve its skill; approval keeps one reference screenshot per step |
 
 You can delete any run or agent's data immediately from the UI. Each agent has a storage limit *(coming, default 10 GB)*.
 
@@ -756,10 +808,15 @@ npm run desktop:agent -- --help
 
 | Command | Purpose |
 |---|---|
-| `verify <run.json>` *(coming)* | Verify a run's receipt chain and signature offline |
 | `npm run reset-password` | Reset the owner password and revoke owner sessions |
-| `reset-2fa` | Turn off two-factor login *(coming)* |
-| `restore <backup.zip>` | Restore a backup *(coming)* |
+| `node scripts/eclipse-crew.mjs verify <run.json\|-> [--key-id sha256:...] [--json]` (short form `eclipse-crew verify` after the installer, TASK-080) | Verify a run's receipt chain and signature offline. Exit 0 verified, 1 failed, 2 unreadable input |
+| `node --env-file=.env scripts/eclipse-crew.mjs key-id` | Print this install's public signing-key fingerprint, never the key |
+| `npm run receipt-key` | Create the receipt signing key in `.env` once; agents do not run without it |
+| `eclipse-crew up` / `status` *(coming, TASK-080)* | Start the stack / show service health |
+| `eclipse-crew reset-2fa` | Turn off two-factor login *(coming)* |
+| `eclipse-crew restore <backup.zip>` | Restore a backup *(coming)* |
+
+The `eclipse-crew` command itself is installed by the one-command installer *(coming, TASK-080)*. It is a small wrapper around `docker compose` in your install folder, so it needs only Docker.
 
 ---
 
@@ -776,8 +833,9 @@ npm run desktop:agent -- --help
 | Clicks land in the wrong place on canvas or desktop apps | Turn on **Vision precision (SAM 3.1)** |
 | Routine didn't run while the PC was off | It runs according to its catch-up policy when the stack starts again. Use a VPS for always-on. |
 | Agent paused: budget reached | Raise the budget in agent or routine settings, or wait for the next period |
+| Agent says receipt signing is not set up | Run `npm run receipt-key`, then `docker compose up -d` so the app sees the new value, and send the message again |
 | Wrong times in schedules | Check your timezone in **Settings → Account**. Schedules store the timezone, so DST changes are handled. |
-| Forgot password | `docker compose exec app eclipse-crew reset-password` |
+| Forgot password | `npm run reset-password` on the host; see [Account and recovery](#account-and-recovery) |
 
 ---
 

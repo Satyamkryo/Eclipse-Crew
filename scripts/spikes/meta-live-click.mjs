@@ -6,7 +6,8 @@ import { mkdir } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 import path from "node:path";
-import { LOCAL_PAGE, LiveClickError, REVIEW_TIMEOUT_MS, hash, validateViewportGeometry, reservePrivateDirectory, runLiveClick } from "./meta-live-click-core.mjs";
+import { startFixtureServer } from "./live-click-fixture.mjs";
+import { VIEWPORT, LiveClickError, REVIEW_TIMEOUT_MS, hash, validateViewportGeometry, reservePrivateDirectory, runLiveClick } from "./meta-live-click-core.mjs";
 
 export function waitForOwnerReview(info, { input = process.stdin, emit = (value) => console.log(JSON.stringify(value)) } = {}) {
   return new Promise((resolve) => {
@@ -37,15 +38,18 @@ export function minimalBrowserEnv(runtime, source = process.env) {
   return { ...env, TEMP: runtime, TMP: runtime, USERPROFILE: runtime,
     LOCALAPPDATA: path.join(runtime, "local"), APPDATA: path.join(runtime, "roaming") };
 }
-export function requestAllowed(url, method, navigation) {
+export function requestAllowed(url, method, navigation, pageUrl) {
   try {
-    const parsed = new URL(url);
-    return method === "GET" && parsed.origin === new URL(LOCAL_PAGE).origin && !parsed.username && !parsed.password &&
-      (navigation ? parsed.href === LOCAL_PAGE : parsed.pathname === "/" || parsed.pathname.startsWith("/_next/static/") || parsed.pathname === "/favicon.ico");
+    const parsed = new URL(url); const page = new URL(pageUrl);
+    return method === "GET" && parsed.origin === page.origin && !parsed.username && !parsed.password &&
+      (navigation ? parsed.href === page.href : parsed.pathname === "/" || parsed.pathname === "/favicon.ico");
   } catch { return false; }
 }
 export async function openLocalDriver({ headless = true } = {}) {
-  const runtime = await reservePrivateDirectory(path.resolve("data/spikes/browser-runs"));
+  const fixture = await startFixtureServer(); const LOCAL_PAGE = fixture.url;
+  let runtime;
+  try { runtime = await reservePrivateDirectory(path.resolve("data/spikes/browser-runs")); }
+  catch (error) { await fixture.close(); throw error; }
   const cache = path.resolve("data/spikes/browser-cache");
   await mkdir(path.join(runtime.directory, "local")); await mkdir(path.join(runtime.directory, "roaming"));
   process.env.PLAYWRIGHT_BROWSERS_PATH = cache;
@@ -53,11 +57,11 @@ export async function openLocalDriver({ headless = true } = {}) {
   let browser; let context;
   try {
     browser = await firefox.launch({ headless, env: minimalBrowserEnv(runtime.directory), timeout: 20000 });
-    context = await browser.newContext({ viewport: { width: 1280, height: 800 }, deviceScaleFactor: 1,
+    context = await browser.newContext({ viewport: { ...VIEWPORT }, deviceScaleFactor: 1,
       colorScheme: "dark", reducedMotion: "reduce", acceptDownloads: false, permissions: [], serviceWorkers: "block" });
     await context.route("**/*", async (route) => {
       const request = route.request();
-      if (!requestAllowed(request.url(), request.method(), request.isNavigationRequest())) await route.abort();
+      if (!requestAllowed(request.url(), request.method(), request.isNavigationRequest(), LOCAL_PAGE)) await route.abort();
       else await route.continue();
     });
     await context.routeWebSocket("**/*", (socket) => socket.close());
@@ -129,10 +133,10 @@ export async function openLocalDriver({ headless = true } = {}) {
         const geometry = validateViewportGeometry(bytes, verified.geometry);
         return { closedBefore: true, openAfter: after.open, statusVisible: after.statusVisible, bytes, geometry };
       },
-      async close() { await context.close(); await browser.close(); },
+      async close() { await context.close().catch(() => {}); await browser.close().catch(() => {}); await fixture.close(); },
     };
   } catch (error) {
-    await context?.close().catch(() => {}); await browser?.close().catch(() => {});
+    await context?.close().catch(() => {}); await browser?.close().catch(() => {}); await fixture.close();
     throw error instanceof LiveClickError ? error : new LiveClickError("browser_error");
   }
 }
@@ -145,13 +149,13 @@ async function main() {
     catch { throw new LiveClickError("invalid_arguments"); }
     if (values.help) {
       console.log("Usage: npm run spike:meta-live-click -- --live");
-      console.log("Fresh Firefox, local placeholder only, one click, at most three 1024-token low-reasoning Contributor requests; no retries. Specific review waits up to five minutes."); return;
+      console.log("Fresh headless Firefox, self-contained local test page only, one click, at most three 1024-token low-reasoning Contributor requests; no retries. Specific review waits up to five minutes."); return;
     }
     if (!values.live) throw new LiveClickError("live_required");
     try { nextEnv.loadEnvConfig(process.cwd(), false, { info() {}, error() { throw new LiveClickError("configuration_error"); } }); }
     catch { throw new LiveClickError("configuration_error"); }
     if (!process.env.MODEL_API_KEY) throw new LiveClickError("missing_key");
-    driver = await openLocalDriver({ headless: false });
+    driver = await openLocalDriver();
     const { summary, runId } = await runLiveClick({ driver, apiKey: process.env.MODEL_API_KEY, live: true, confirmAction: waitForOwnerReview });
     console.log(JSON.stringify({ ...summary, evidence: `data/spikes/task-007-live-click/${runId}/result.json` }));
     if (summary.outcome !== "verified_click") process.exitCode = summary.outcome === "safety_review_required" ? 2 : 1;

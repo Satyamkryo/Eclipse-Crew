@@ -1,18 +1,27 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AlertTriangle, Loader2, Maximize2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { getForwardedKeyChord } from "@/lib/desktop/key-chord";
+import { ExpandedView } from "@/components/desktop/expanded-view";
+import { TeachControls } from "@/components/desktop/teach-controls";
+import { useTeachCapture } from "@/lib/teach/client";
 
 type Lease = { generation: string; connectionId: string; leaseId: string };
 type ActiveView = { generation: string; connectionId: string; csrfToken: string; disposed: boolean; lease: Lease | null; pending: number; inputBlocked: boolean };
-type Viewer = { viewOnly: boolean; scaleViewport: boolean; resizeSession: boolean; disconnect(): void; addEventListener(type: string, callback: EventListener): void };
+type Viewer = { background: string; viewOnly: boolean; scaleViewport: boolean; resizeSession: boolean; disconnect(): void; addEventListener(type: string, callback: EventListener): void };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export function LiveView({ agentId, agentName }: { agentId: string; agentName?: string }) {
+export function LiveView({ agentId, agentName, modelName }: { agentId: string; agentName?: string; modelName?: string }) {
   const frameRef = useRef<HTMLDivElement>(null);
-  const screenRef = useRef<HTMLDivElement>(null);
+  // The noVNC target. React never owns it: it is moved between the inline slot and the expanded slot, so opening or
+  // closing the expanded view never reconnects the stream or drops a takeover.
+  const screenRef = useRef<HTMLDivElement | null>(null);
+  const inlineSlotRef = useRef<HTMLDivElement>(null);
+  const expandedSlotRef = useRef<HTMLDivElement | null>(null);
+  const fullScreenButtonRef = useRef<HTMLButtonElement>(null);
+  const wasExpanded = useRef(false);
   const textRef = useRef<HTMLTextAreaElement>(null);
   const activeRef = useRef<ActiveView | null>(null);
   const composingRef = useRef(false);
@@ -22,8 +31,50 @@ export function LiveView({ agentId, agentName }: { agentId: string; agentName?: 
   const [takenOver, setTakenOver] = useState(false);
   const [busy, setBusy] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  const [expanded, setExpanded] = useState(false);
+  const [phone, setPhone] = useState(false);
+  const [connectedAt, setConnectedAt] = useState<number | null>(null);
+  const getTeachSession = useCallback(() => activeRef.current, []);
+  const teach = useTeachCapture(agentId, getTeachSession, takenOver && status === "live" && !phone);
+  const stopMicRef = useRef(teach.stopMic);
+  useLayoutEffect(() => { stopMicRef.current = teach.stopMic; }, [teach.stopMic]);
+  const pointerStart = useRef<{ x: number; y: number; at: number; id: number } | null>(null);
 
+  useLayoutEffect(() => {
+    if (!screenRef.current) {
+      const stage = document.createElement("div");
+      stage.className = "absolute inset-0 overflow-hidden";
+      stage.setAttribute("aria-label", "Agent screen");
+      screenRef.current = stage;
+    }
+    const slot = expanded ? expandedSlotRef.current : inlineSlotRef.current;
+    if (slot && screenRef.current.parentElement !== slot) slot.appendChild(screenRef.current);
+  });
+  useEffect(() => () => { screenRef.current?.remove(); }, []);
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 767px)");
+    const update = () => setPhone(query.matches);
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+  // Esc leaves the expanded view, except during a takeover: then Esc belongs to the desktop and only the buttons exit.
+  useEffect(() => {
+    if (!expanded) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !activeRef.current?.lease) { event.preventDefault(); setExpanded(false); }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [expanded]);
+  useEffect(() => {
+    if (!expanded && wasExpanded.current) fullScreenButtonRef.current?.focus();
+    wasExpanded.current = expanded;
+  }, [expanded]);
+
+  const setExpandedSlot = useCallback((element: HTMLDivElement | null) => { expandedSlotRef.current = element; }, []);
   const release = useCallback((keepalive = false, active = activeRef.current) => {
+    stopMicRef.current();
     if (!active?.lease) return Promise.resolve();
     const lease = active.lease;
     return fetch(`/api/desktop/${agentId}/handback`, {
@@ -62,11 +113,13 @@ export function LiveView({ agentId, agentName }: { agentId: string; agentName?: 
         viewer = new RFB(screen, url.href);
         // Always view-only: owner input uses the separately guarded HTTP API.
         viewer.viewOnly = true; viewer.scaleViewport = true; viewer.resizeSession = false;
-        viewer.addEventListener("connect", () => { if (!active.disposed) { setStatus("live"); setError(null); } });
+        // docs/DESIGN.md: the desktop frame letterboxes in black (noVNC defaults to grey).
+        viewer.background = "rgb(0, 0, 0)";
+        viewer.addEventListener("connect", () => { if (!active.disposed) { setStatus("live"); setError(null); setConnectedAt(Date.now()); } });
         viewer.addEventListener("disconnect", () => {
           if (active.disposed) return;
           void release(true, active).catch(() => {});
-          setTakenOver(false); setStatus("error");
+          setTakenOver(false); setStatus("error"); setConnectedAt(null);
           setError("Desktop disconnected. Reconnect to check the current agent session.");
         });
         viewer.addEventListener("securityfailure", () => { if (!active.disposed) setError("Desktop authentication failed. Reconnect to try again."); });
@@ -75,7 +128,7 @@ export function LiveView({ agentId, agentName }: { agentId: string; agentName?: 
       }
     };
     // State belongs to this external connection lifecycle.
-    queueMicrotask(() => { if (!active.disposed) { setStatus("connecting"); setError(null); setTakenOver(false); setBusy(false); } });
+    queueMicrotask(() => { if (!active.disposed) { setStatus("connecting"); setError(null); setTakenOver(false); setBusy(false); setConnectedAt(null); } });
     void connect();
     window.addEventListener("pagehide", pagehide);
     return () => {
@@ -87,7 +140,7 @@ export function LiveView({ agentId, agentName }: { agentId: string; agentName?: 
     };
   }, [agentId, attempt, release]);
 
-  useEffect(() => { if (takenOver) textRef.current?.focus(); }, [takenOver]);
+  useEffect(() => { if (takenOver) textRef.current?.focus(); }, [takenOver, expanded]);
 
   const takeOver = async () => {
     const active = activeRef.current;
@@ -148,6 +201,13 @@ export function LiveView({ agentId, agentName }: { agentId: string; agentName?: 
     event.preventDefault();
     sendInput({ operation: "input.key", key });
   };
+  const desktopPoint = (clientX: number, clientY: number) => {
+    const canvas = screenRef.current?.querySelector("canvas");
+    if (!canvas) return null;
+    const rect = canvas.getBoundingClientRect();
+    if (!rect.width || !rect.height || clientX < rect.left || clientX >= rect.right || clientY < rect.top || clientY >= rect.bottom) return null;
+    return { x: Math.min(canvas.width - 1, Math.floor((clientX - rect.left) * canvas.width / rect.width)), y: Math.min(canvas.height - 1, Math.floor((clientY - rect.top) * canvas.height / rect.height)) };
+  };
   const click = (event: React.MouseEvent, button: "left" | "right") => {
     if (!activeRef.current?.lease) return;
     const canvas = screenRef.current?.querySelector("canvas");
@@ -158,6 +218,39 @@ export function LiveView({ agentId, agentName }: { agentId: string; agentName?: 
     sendInput({ operation: "input.click", button, x: Math.min(canvas.width - 1, Math.floor((event.clientX - rect.left) * canvas.width / rect.width)), y: Math.min(canvas.height - 1, Math.floor((event.clientY - rect.top) * canvas.height / rect.height)) });
   };
 
+  // Takeover input layer and the connecting/offline cover. Rendered in whichever view is showing the stream.
+  const inputBlocked = phone; // phones are always view-only
+  const overlay = (
+    <>
+      {takenOver && !inputBlocked && <div className="absolute inset-0 cursor-crosshair" onPointerDown={(event) => {
+        if (event.button !== 0) return;
+        const point = desktopPoint(event.clientX, event.clientY);
+        if (!point) return;
+        event.preventDefault(); textRef.current?.focus(); event.currentTarget.setPointerCapture(event.pointerId);
+        pointerStart.current = { ...point, at: performance.now(), id: event.pointerId };
+      }} onPointerUp={(event) => {
+        const start = pointerStart.current; pointerStart.current = null;
+        if (!start || start.id !== event.pointerId) return;
+        const end = desktopPoint(event.clientX, event.clientY);
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+        if (!end) return;
+        event.preventDefault();
+        if (Math.hypot(end.x - start.x, end.y - start.y) >= 4) sendInput({ operation: "input.drag", x: start.x, y: start.y, toX: end.x, toY: end.y });
+        else sendInput({ operation: "input.click", button: "left", x: end.x, y: end.y });
+      }} onPointerCancel={() => { pointerStart.current = null; }} onLostPointerCapture={() => { pointerStart.current = null; }} onContextMenu={(event) => click(event, "right")} onWheel={(event) => { sendInput({ operation: "input.scroll", direction: event.deltaY < 0 ? "up" : "down", count: 1 }); }}>
+        <textarea ref={textRef} className="sr-only" aria-label="Type into agent desktop" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={(event) => { composingRef.current = false; sendText(event.currentTarget.value); event.currentTarget.value = ""; }} onChange={(event) => { if (!composingRef.current) { sendText(event.currentTarget.value); event.currentTarget.value = ""; } }} onPaste={(event) => { event.preventDefault(); sendText(event.clipboardData.getData("text/plain")); }} />
+      </div>}
+      {status !== "live" && <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-background p-6 text-center">
+        {status === "connecting" ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-hidden="true" /> : <AlertTriangle className="h-4 w-4 text-muted-foreground" aria-hidden="true" />}
+        <p className="text-sm text-muted-foreground">{status === "connecting" ? "Connecting to agent desktop…" : error ?? "Agent is not running."}</p>
+        {status !== "connecting" && <Button variant="secondary" size="sm" onClick={() => setAttempt((value) => value + 1)}>Reconnect</Button>}
+      </div>}
+    </>
+  );
+
+  const teachControls = <TeachControls capture={teach.capture} saved={teach.saved} busy={teach.busy} error={teach.error} narrationAllowed={teach.narrationAllowed}
+    canRecord={takenOver && status === "live" && !phone} onAction={teach.act} onRetryTranscription={teach.retryTranscription} />;
+
   return (
     <div ref={frameRef} aria-label={agentName ? `Live view of ${agentName}` : "Live desktop view"} className={`flex flex-col overflow-hidden rounded-xl border bg-background ${takenOver ? "border-corona" : "border-border"}`}>
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-surface px-3 py-2">
@@ -167,24 +260,29 @@ export function LiveView({ agentId, agentName }: { agentId: string; agentName?: 
           <span className="text-muted-foreground" role="status">{status === "live" ? "Live" : status === "connecting" ? "Connecting…" : "Offline"}</span>
         </div>
         <div className="flex items-center gap-2">
-          {status === "live" && <Button size="sm" variant={takenOver ? "primary" : "secondary"} disabled={busy} onClick={takenOver ? handBack : takeOver}>{busy && <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />}{takenOver ? "Hand back" : "Take over"}</Button>}
-          <Button size="sm" variant="ghost" title="Full screen" aria-label="Full screen" onClick={() => { void frameRef.current?.requestFullscreen?.().catch(() => setError("Full screen is unavailable in this browser.")); }}><Maximize2 aria-hidden="true" className="h-4 w-4" /></Button>
+          {status === "live" && !phone && <Button size="sm" variant={takenOver ? "primary" : "secondary"} disabled={busy} onClick={takenOver ? handBack : takeOver}>{busy && <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />}{takenOver ? "Hand back" : "Take over"}</Button>}
+          <Button ref={fullScreenButtonRef} size="sm" variant="ghost" title="Full screen" aria-label="Full screen" aria-haspopup="dialog" aria-expanded={expanded} onClick={() => setExpanded(true)}><Maximize2 aria-hidden="true" className="h-4 w-4" /></Button>
         </div>
       </div>
+      {!expanded && (takenOver || teach.capture || teach.saved.length > 0) && teachControls}
       {takenOver && <p className="bg-corona/12 px-3 py-2 text-center text-xs text-corona">You&apos;re in control. The agent is paused. Hand back to resume.</p>}
       <div className="relative aspect-[4/3] min-h-0 w-full bg-background" onKeyDown={handleKeyDown}>
-        <div ref={screenRef} className="absolute inset-0 overflow-hidden" aria-label="Agent screen" />
-        {takenOver && <div className="absolute inset-0 cursor-crosshair" onClick={(event) => click(event, "left")} onContextMenu={(event) => click(event, "right")} onWheel={(event) => { sendInput({ operation: "input.scroll", direction: event.deltaY < 0 ? "up" : "down", count: 1 }); }}>
-          <textarea ref={textRef} className="sr-only" aria-label="Type into agent desktop" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={(event) => { composingRef.current = false; sendText(event.currentTarget.value); event.currentTarget.value = ""; }} onChange={(event) => { if (!composingRef.current) { sendText(event.currentTarget.value); event.currentTarget.value = ""; } }} onPaste={(event) => { event.preventDefault(); sendText(event.clipboardData.getData("text/plain")); }} />
-        </div>}
-        {status !== "live" && <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-background p-6 text-center">
-          {status === "connecting" ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-hidden="true" /> : <AlertTriangle className="h-4 w-4 text-muted-foreground" aria-hidden="true" />}
-          <p className="text-sm text-muted-foreground">{status === "connecting" ? "Connecting to agent desktop…" : error ?? "Agent is not running."}</p>
-          {status !== "connecting" && <Button variant="secondary" size="sm" onClick={() => setAttempt((value) => value + 1)}>Reconnect</Button>}
-        </div>}
-        {status === "live" && !takenOver && <span className="pointer-events-none absolute bottom-2 right-2 rounded-md bg-surface px-2 py-1 text-xs text-muted-foreground">view-only</span>}
+        {expanded ? (
+          <div className="absolute inset-0 flex items-center justify-center p-6 text-center text-sm text-muted-foreground">This desktop is open in full screen.</div>
+        ) : (
+          <>
+            <div ref={inlineSlotRef} className="absolute inset-0" />
+            {overlay}
+            {status === "live" && !takenOver && <span className="pointer-events-none absolute bottom-2 right-2 rounded-md bg-surface px-2 py-1 text-xs text-muted-foreground">view-only</span>}
+          </>
+        )}
       </div>
       {error && status === "live" && <p role="alert" className="border-t border-border px-3 py-2 text-xs text-danger">{error}</p>}
+      {expanded && (
+        <ExpandedView agentName={agentName ?? "Agent desktop"} status={status} takenOver={takenOver} busy={busy} phone={phone} modelName={modelName}
+          teachControls={(takenOver || teach.capture || teach.saved.length > 0) ? teachControls : null} connectedAt={connectedAt} error={error} slotRef={setExpandedSlot} overlay={overlay} onScreenKeyDown={handleKeyDown}
+          onTakeOver={takeOver} onHandBack={handBack} onExit={() => setExpanded(false)} />
+      )}
     </div>
   );
 }

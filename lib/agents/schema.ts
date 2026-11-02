@@ -16,7 +16,7 @@ const soulMd = z.string().trim().min(1).max(MAX_SOUL).refine(
 const token = z.string()
   .transform((value) => value.trim().toLowerCase())
   .pipe(z.string().min(1).max(64).regex(/^[a-z0-9][a-z0-9._:-]*$/));
-const domain = z.string()
+export const domain = z.string()
   .transform((value) => value.trim().toLowerCase())
   .pipe(z.string().max(253).regex(/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/));
 const memoryScope = z.enum(["global", "agent", "private"]);

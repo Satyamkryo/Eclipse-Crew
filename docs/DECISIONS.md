@@ -43,6 +43,10 @@ Rules for AI agents:
 | 025 | Desktop Chromium sandbox seccomp profile | Superseded by ADR-026 |
 | 026 | Trusted desktop setup and unprivileged agent identities | Accepted |
 | 027 | Master encryption key and authenticated AES-256-GCM envelopes | Accepted |
+| 028 | Shell action for software development | Accepted |
+| 029 | Composio integration, opt-in | Accepted |
+| 030 | Screenless subagents | Accepted |
+| 031 | Chrome for Testing as the desktop browser | Accepted (supersedes ADR-006 after the TASK-078 spike passes) |
 
 ---
 
@@ -192,3 +196,27 @@ Status: Accepted · 2026-11-01 · Owner approved
 Decision: Keep one server-only 256-bit `ENCRYPTION_KEY` (64 lowercase hex characters) in `.env` and encrypt sensitive values with AES-256-GCM using a fresh 12-byte nonce and 16-byte tag. Store a versioned canonical base64url envelope `v1.<nonce>.<tag>.<ciphertext>`; reject malformed, tampered, unsupported and wrong-key values with a generic error.
 Reason: Node's built-in authenticated encryption covers future provider keys, connection tokens and sensitive blobs without another dependency; the versioned format leaves explicit room for migration.
 Rejected: unauthenticated encryption, storing plaintext, exposing the key to browser/desktop/models, and silent key rotation that would make existing ciphertext unreadable.
+
+## ADR-028: Shell action for software development
+Status: Accepted · 2026-11-01 · Owner approved
+Decision: Agents may run shell commands through a `shell` action, as their own Linux user, confined to their home, in a private per-agent network namespace whose only way out is the egress proxy. No sudo, time and output limits, output tagged `tool` and untrusted. Committing, pushing to a new branch and opening a PR need no approval; pushing or force-pushing to the default branch, deploying and deleting remote branches or repositories need approval, enforced at the proxy rather than by parsing commands. Astra Mode may remove those prompts (ADR-019). Extends ADR-008, which covers screen actions only.
+Reason: Owner decision to support software development and PR work in v1; containment comes from the OS and the proxy, not the prompt.
+Rejected: root or sudo for agents, a shared `localhost` between agents, approval rules based only on command text.
+
+## ADR-029: Composio integration, opt-in
+Status: Accepted · 2026-11-01 · Owner approved
+Decision: Composio is an opt-in integration using the owner's own Composio key, saved encrypted (ADR-027). Calls go through the egress proxy and accounts are connected per agent. Connected-account tokens are held in Composio's cloud, and the README says so plainly. MCP remains the path that keeps tokens on the owner's machine.
+Reason: Owner decision to offer breadth (1,000+ apps) in v1 without writing each integration.
+Rejected: making Composio required, hiding where its tokens live.
+
+## ADR-030: Screenless subagents
+Status: Accepted · 2026-11-01 · Owner approved
+Decision: An agent may spawn up to 3 subagents per run, one level deep. Subagents have no screen, never more permissions than the parent, inherit its taint, and run within step and time limits (20% of the parent's each; budget slices once budgets exist). Their results return to the parent as untrusted data for checking and show as a tree in chat. The run rule becomes one screen run per agent at a time.
+Reason: Owner decision to support delegation in v1 without per-agent screen contention.
+Rejected: nested subagents, subagents with their own screens in v1 (an [L] item), privilege borrowing.
+
+## ADR-031: Chrome for Testing as the desktop browser
+Status: Accepted · 2026-11-01 · Owner approved · Supersedes ADR-006 once the TASK-078 spike passes
+Decision: Use a pinned Chrome for Testing build, downloaded on the owner's machine at image build time and checked by SHA-256, as the agents' browser. It is never redistributed. Until the spike confirms codecs, grounding and clicks, the pinned Chromium build stays.
+Reason: Owner needs a real browser; Chromium lacks H.264/AAC, which many sites use. Chrome for Testing has fixed versions and permanent download URLs, so it can be pinned.
+Rejected: building Chromium with proprietary codecs (hours per build), swapping a third-party codec library into Chromium, an unpinned Google Chrome stable package, browser forks.

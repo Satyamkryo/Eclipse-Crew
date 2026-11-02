@@ -16,7 +16,7 @@ BASE = "/opt/eclipse/desktop"
 INITIAL = 0x2001C3
 ADMIN = 0x1C3
 PROFILE_HASH = "fa1e603f170044c931a103bfbe3bac6cfc6c935bdc72408e01c4cf6425cde627"
-ENV = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/tmp", "LANG": "C.UTF-8", "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD": "1", "DESKTOP_CONTROL_SECRET": os.environ.get("DESKTOP_CONTROL_SECRET", "")}
+ENV = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/tmp", "LANG": "C.UTF-8", "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD": "1", "DESKTOP_CONTROL_SECRET": os.environ.get("DESKTOP_CONTROL_SECRET", ""), "EGRESS_DESKTOP_SECRET": os.environ.get("EGRESS_DESKTOP_SECRET", "")}
 
 
 def require(value, reason):

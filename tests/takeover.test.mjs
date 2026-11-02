@@ -21,6 +21,16 @@ function fixture() {
 const rejectsCode = (run, code) => assert.rejects(async () => run(), (error) => error.code === code);
 const turn = () => new Promise(setImmediate);
 
+test("page.verify retains owner, generation and takeover guards without worker dispatch", async () => {
+  const f = fixture();
+  const predicate = { kind: "control_present", value: "Save" };
+  await rejectsCode(() => f.manager.executeOperation(randomUUID(), f.agentId, f.generation, randomUUID(), "page.verify", { predicate }), "agent_unavailable");
+  await rejectsCode(() => f.manager.executeOperation(f.ownerId, f.agentId, randomUUID(), randomUUID(), "page.verify", { predicate }), "stale_generation");
+  await f.manager.takeOver(f.ownerId, f.agentId, f.control);
+  await rejectsCode(() => f.manager.executeOperation(f.ownerId, f.agentId, f.generation, randomUUID(), "page.verify", { predicate }), "takeover_active");
+  assert.equal(f.calls.length, 0);
+});
+
 test("takeover/control schemas require complete session, generation and lease metadata and reject extras", () => {
   const { ownerId, agentId, control } = fixture();
   const base = { ownerId, agentId, ...control };

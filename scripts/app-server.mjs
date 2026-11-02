@@ -191,8 +191,21 @@ async function main() {
   await app.prepare();
   const server = createAppServer({ handle: app.getRequestHandler() });
   server.listen(port, hostname, () => console.log(`Eclipse Crew listening on ${hostname}:${port}`));
-  const shutdown = () => { server.closeDesktopStreams(); server.close(); app.close(); };
-  process.once("SIGTERM", shutdown); process.once("SIGINT", shutdown);
+  let shuttingDown = false;
+  const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    const scheduler = globalThis[Symbol.for("eclipse-crew.routine-scheduler")];
+    if (scheduler?.stop) {
+      await Promise.race([
+        scheduler.stop().catch(() => undefined),
+        new Promise((resolve) => { const timer = setTimeout(resolve, 30_000); timer.unref?.(); }),
+      ]);
+    }
+    server.closeDesktopStreams(); server.close(); app.close();
+  };
+  process.once("SIGTERM", () => { void shutdown(); });
+  process.once("SIGINT", () => { void shutdown(); });
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main().catch(() => { console.error("Application startup failed."); process.exitCode = 1; });

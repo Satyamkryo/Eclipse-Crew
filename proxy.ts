@@ -26,7 +26,8 @@ export async function proxy(request: NextRequest) {
     if (status === 401 && !pathname.startsWith("/api/")) response = NextResponse.redirect(new URL("/login", requireAppOrigin()));
     else response = NextResponse.json({ error: error instanceof RequestError ? error.code : "service_unavailable" }, { status });
   }
-  response.headers.set("Content-Security-Policy", csp);
+  // API answers are data or downloads, never pages: nothing in them may run script or load anything in the app origin.
+  response.headers.set("Content-Security-Policy", pathname.startsWith("/api/") ? "default-src 'none'; frame-ancestors 'none'; sandbox" : csp);
   response.headers.set("Cache-Control", "private, no-store");
   response.headers.set("X-Content-Type-Options", "nosniff");
   response.headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
@@ -34,4 +35,6 @@ export async function proxy(request: NextRequest) {
   if (!isDev && new URL(requireAppOrigin()).protocol === "https:") response.headers.set("Strict-Transport-Security", "max-age=31536000");
   return response;
 }
-export const config = { matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"] };
+// The upload route is excluded: Next buffers only the first 10 MB of a body that passes through this proxy and
+// passes on the rest cut off. That route checks owner, Origin and CSRF itself (app/api/agents/[agentId]/files).
+export const config = { matcher: ["/((?!_next/static|_next/image|favicon.ico|api/agents/[^/]+/files$).*)"] };

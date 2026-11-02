@@ -16,7 +16,7 @@ export function validateDesktopTarget(value, project, profile) {
       !host.SecurityOpt?.includes("no-new-privileges:true") || Object.keys(host.PortBindings ?? {}).length || Object.keys(value.NetworkSettings?.Ports ?? {}).length ||
       host.Devices?.length || host.DeviceRequests?.length || value.Mounts?.length !== 1 || value.Mounts[0].Type !== "volume" ||
       value.Mounts[0].Destination !== "/workspace" || value.Mounts[0].RW !== true ||
-      !(value.Config.Env ?? []).every((entry) => /^(PATH|HOME|PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD|DESKTOP_CONTROL_SECRET)=/.test(entry))) throw Error("desktop_security_refused");
+      !(value.Config.Env ?? []).every((entry) => /^(PATH|HOME|PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD|DESKTOP_CONTROL_SECRET|EGRESS_DESKTOP_SECRET)=/.test(entry))) throw Error("desktop_security_refused");
   const policies = host.SecurityOpt.filter((value) => value.startsWith("seccomp="));
   if (policies.length !== 1 || JSON.stringify(JSON.parse(policies[0].slice(8))) !== JSON.stringify(profile)) throw Error("desktop_security_refused");
 }

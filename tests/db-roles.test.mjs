@@ -5,6 +5,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const project = `eclipse064test${randomBytes(6).toString("hex")}`;
+const EXPECTED_MIGRATIONS = String(JSON.parse(readFileSync("drizzle/meta/_journal.json", "utf8")).entries.length);
 const bootstrap = randomBytes(24).toString("hex");
 const appPassword = randomBytes(24).toString("hex");
 const migratorPassword = randomBytes(24).toString("hex");
@@ -108,6 +109,17 @@ test("isolated database provisioning and permissions", { timeout: 900000 }, asyn
     checked(sql("INSERT INTO public.sessions(id,owner_id,token_hash,csrf_token,expires_at) SELECT '00000000-0000-0000-0000-000000000010',id,'synthetic-token-hash','synthetic-csrf',now() + interval '1 hour' FROM public.owner", "eclipse_app"), "create synthetic session");
     checked(sql("INSERT INTO public.agents(id,owner_id,name,role,soul_md,status,daily_budget_cents,monthly_budget_cents) SELECT '00000000-0000-0000-0000-000000000020',id,'synthetic','role','soul','paused',100,1000 FROM public.owner", "eclipse_app"), "create synthetic agent");
     checked(sql("INSERT INTO public.agent_policies(agent_id,owner_id,tools,domains,actions,memory_scopes) VALUES ('00000000-0000-0000-0000-000000000020','00000000-0000-0000-0000-000000000001',ARRAY['tool'],ARRAY['example.com'],ARRAY['read'],ARRAY['agent'])", "eclipse_app"), "create synthetic agent policy");
+    // TASK-047: the canary is config (planted_at is claimed once); security events are append-only.
+    checked(sql("INSERT INTO public.agent_canaries(agent_id,owner_id,encrypted_canary,canary_sha256) VALUES ('00000000-0000-0000-0000-000000000020','00000000-0000-0000-0000-000000000001','v1.synthetic',repeat('a',64))", "eclipse_app"), "runtime stores an encrypted canary");
+    checked(sql("UPDATE public.agent_canaries SET planted_at = now()", "eclipse_app"), "runtime claims canary planting once");
+    assert.notEqual(sql("DELETE FROM public.agent_canaries", "eclipse_app").status, 0, "runtime cannot delete canaries directly");
+    checked(sql("INSERT INTO public.security_events(id,owner_id,agent_id,kind,source,source_ref) VALUES ('00000000-0000-0000-0000-000000000050','00000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000020','canary_leak','typed_text','typed_text:synthetic:1')", "eclipse_app"), "runtime appends a security event");
+    assert.notEqual(sql("INSERT INTO public.security_events(id,owner_id,agent_id,kind,source,source_ref) VALUES ('00000000-0000-0000-0000-000000000051','00000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000020','other','typed_text','typed_text:synthetic:2')", "eclipse_app").status, 0, "unknown security event kind is refused");
+    assert.notEqual(sql("UPDATE public.security_events SET source='proxy_host'", "eclipse_app").status, 0, "runtime cannot rewrite security events");
+    assert.notEqual(sql("DELETE FROM public.security_events", "eclipse_app").status, 0, "runtime cannot delete security events");
+    assert.notEqual(sql("UPDATE public.agents SET attention_reason='unknown'", "eclipse_app").status, 0, "unknown attention reason is refused");
+    checked(sql("UPDATE public.agents SET attention_reason='budget_warning'", "eclipse_app"), "runtime stores budget attention");
+    checked(sql("UPDATE public.agents SET attention_reason='security_stop'", "eclipse_app"), "runtime stores security attention");
     assert.equal(checked(sql("SELECT count(*) FROM public.agent_policies", "eclipse_app"), "runtime reads agent policies"), "1");
     checked(sql("INSERT INTO public.chat_sessions(id,owner_id,agent_id) VALUES ('00000000-0000-0000-0000-000000000030','00000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000020')", "eclipse_app"), "create synthetic chat session");
     checked(sql("INSERT INTO public.messages(id,owner_id,session_id,role,card_type,content,source_tag) VALUES ('00000000-0000-0000-0000-000000000031','00000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-000000000030','user','message','{\"type\":\"message\",\"text\":\"Synthetic\"}'::jsonb,'user')", "eclipse_app"), "create synthetic chat message");
@@ -125,7 +137,111 @@ test("isolated database provisioning and permissions", { timeout: 900000 }, asyn
     assert.notEqual(sql("DELETE FROM public.agent_policies", "eclipse_app").status, 0, "runtime cannot delete policies directly");
     checked(sql("DELETE FROM public.agents WHERE id='00000000-0000-0000-0000-000000000020'", "eclipse_app"), "runtime deletes owned agent and cascades policy and chat");
     assert.equal(checked(sql("SELECT count(*) FROM public.agent_policies", "eclipse_app"), "agent policy cascade"), "0");
+    assert.equal(checked(sql("SELECT count(*) FROM public.agent_canaries", "eclipse_app"), "canary cascade"), "0");
+    assert.equal(checked(sql("SELECT count(*) FROM public.security_events", "eclipse_app"), "security events survive agent deletion"), "1");
     assert.equal(checked(sql("SELECT (SELECT count(*) FROM public.chat_sessions), (SELECT count(*) FROM public.messages)", "eclipse_app"), "chat cascade"), "0|0");
+    // TASK-029 receipts: the runtime inserts and reads steps, seals a run once, and can never rewrite or delete proof.
+    const runId = "00000000-0000-0000-0000-000000000050";
+    const ownerId = "00000000-0000-0000-0000-000000000001";
+    checked(sql(`INSERT INTO public.runs(id,owner_id,agent_id,header_json,header_hash,key_id,public_key,started_at) VALUES ('${runId}','${ownerId}','00000000-0000-0000-0000-000000000020','{}',repeat('a',64),'sha256:'||repeat('b',64),'k',now())`, "eclipse_app"), "runtime starts a run (agent row is gone: no foreign key)");
+    checked(sql(`INSERT INTO public.steps(id,owner_id,run_id,idx,receipt_json,receipt_hash,prev_hash) VALUES ('00000000-0000-0000-0000-000000000051','${ownerId}','${runId}',1,'{}',repeat('c',64),repeat('a',64))`, "eclipse_app"), "runtime appends a receipt");
+    assert.notEqual(sql(`INSERT INTO public.steps(id,owner_id,run_id,idx,receipt_json,receipt_hash,prev_hash) VALUES ('00000000-0000-0000-0000-000000000052','${ownerId}','${runId}',1,'{}',repeat('d',64),repeat('c',64))`, "eclipse_app").status, 0, "a step index cannot repeat in a run");
+    assert.notEqual(sql("UPDATE public.steps SET receipt_json = '{\"x\":1}'", "eclipse_app").status, 0, "runtime cannot rewrite receipts");
+    assert.notEqual(sql("DELETE FROM public.steps", "eclipse_app").status, 0, "runtime cannot delete receipts");
+    assert.notEqual(sql("DELETE FROM public.runs", "eclipse_app").status, 0, "runtime cannot delete runs");
+    assert.notEqual(sql(`UPDATE public.runs SET signature = 's' WHERE id = '${runId}'`, "eclipse_app").status, 0, "a half-set seal is refused by the check");
+    checked(sql(`UPDATE public.runs SET status='finished', ended_at=now(), step_count=1, head_hash=repeat('c',64), usage='{}'::jsonb, signature='s' WHERE id='${runId}' AND signature IS NULL`, "eclipse_app"), "runtime seals a run once");
+    checked(sql(`UPDATE public.runs SET status='x' WHERE id='${runId}' AND signature IS NULL`, "eclipse_app"), "second seal attempt matches nothing");
+    assert.equal(checked(sql(`SELECT status FROM public.runs WHERE id='${runId}'`, "eclipse_app"), "seal stays as first written"), "finished");
+    assert.equal(checked(sql("SELECT (SELECT count(*) FROM public.runs), (SELECT count(*) FROM public.steps)", "eclipse_app"), "runtime reads proof"), "1|1");
+    checked(provision(), "provisioning with populated receipts");
+    checked(sql("ALTER TABLE public.steps ADD COLUMN unexpected text"), "unknown steps schema fixture");
+    assert.notEqual(provision().status, 0, "unknown steps columns fail closed");
+    checked(sql("ALTER TABLE public.steps DROP COLUMN unexpected"), "restore steps schema");
+    checked(sql("GRANT UPDATE ON public.steps TO eclipse_app"), "widen steps grant fixture");
+    assert.notEqual(provision().status, 0, "extra steps privilege fails preflight");
+    checked(sql("REVOKE UPDATE ON public.steps FROM eclipse_app"), "restore steps grant");
+    // TASK-031 step evidence: display data next to a receipt. The runtime may add and read it, never rewrite or delete it.
+    checked(sql(`INSERT INTO public.step_evidence(id,owner_id,run_id,idx,before_hash,after_hash,width,height,sam_box) VALUES ('00000000-0000-0000-0000-000000000053','${ownerId}','${runId}',1,repeat('e',64),repeat('f',64),1024,768,'{"x1":1,"y1":2,"x2":3,"y2":4}'::jsonb)`, "eclipse_app"), "runtime stores step evidence");
+    assert.notEqual(sql(`INSERT INTO public.step_evidence(id,owner_id,run_id,idx) VALUES ('00000000-0000-0000-0000-000000000054','${ownerId}','${runId}',1)`, "eclipse_app").status, 0, "evidence cannot repeat for a step");
+    assert.notEqual(sql("UPDATE public.step_evidence SET sam_box = NULL", "eclipse_app").status, 0, "runtime cannot rewrite evidence");
+    assert.notEqual(sql("DELETE FROM public.step_evidence", "eclipse_app").status, 0, "runtime cannot delete evidence");
+    assert.equal(checked(sql("SELECT count(*) FROM public.step_evidence", "eclipse_app"), "runtime reads evidence"), "1");
+    checked(provision(), "provisioning with populated evidence");
+    checked(sql("ALTER TABLE public.step_evidence ADD COLUMN unexpected text"), "unknown evidence schema fixture");
+    assert.notEqual(provision().status, 0, "unknown evidence columns fail closed");
+    checked(sql("ALTER TABLE public.step_evidence DROP COLUMN unexpected"), "restore evidence schema");
+    checked(sql("GRANT UPDATE ON public.step_evidence TO eclipse_app"), "widen evidence grant fixture");
+    assert.notEqual(provision().status, 0, "extra evidence privilege fails preflight");
+    checked(sql("REVOKE UPDATE ON public.step_evidence FROM eclipse_app"), "restore evidence grant");
+    // TASK-032 checkpoints: pointers to stored state. The runtime may add and read them, never rewrite or delete them.
+    checked(sql(`INSERT INTO public.checkpoints(id,owner_id,run_id,idx,state_hash,manifest_hash,file_count,restorable_count,status) VALUES ('00000000-0000-0000-0000-000000000055','${ownerId}','${runId}',0,repeat('a',64),repeat('b',64),2,1,'complete')`, "eclipse_app"), "runtime stores a checkpoint");
+    checked(sql(`INSERT INTO public.checkpoints(id,owner_id,run_id,idx,state_hash,status,reason) VALUES ('00000000-0000-0000-0000-000000000056','${ownerId}','${runId}',1,repeat('a',64),'partial','files_unreadable')`, "eclipse_app"), "runtime stores a partial checkpoint with no manifest");
+    assert.notEqual(sql(`INSERT INTO public.checkpoints(id,owner_id,run_id,idx,state_hash,status) VALUES ('00000000-0000-0000-0000-000000000057','${ownerId}','${runId}',1,repeat('a',64),'complete')`, "eclipse_app").status, 0, "a checkpoint index cannot repeat in a run");
+    assert.notEqual(sql(`INSERT INTO public.checkpoints(id,owner_id,run_id,idx,state_hash,status) VALUES ('00000000-0000-0000-0000-000000000058','${ownerId}','${runId}',2,repeat('a',64),'bogus')`, "eclipse_app").status, 0, "status is limited to complete or partial");
+    assert.notEqual(sql("UPDATE public.checkpoints SET status = 'complete'", "eclipse_app").status, 0, "runtime cannot rewrite checkpoints");
+    assert.notEqual(sql("DELETE FROM public.checkpoints", "eclipse_app").status, 0, "runtime cannot delete checkpoints");
+    assert.equal(checked(sql("SELECT count(*) FROM public.checkpoints", "eclipse_app"), "runtime reads checkpoints"), "2");
+    checked(provision(), "provisioning with populated checkpoints");
+    checked(sql("ALTER TABLE public.checkpoints ADD COLUMN unexpected text"), "unknown checkpoints schema fixture");
+    assert.notEqual(provision().status, 0, "unknown checkpoints columns fail closed");
+    checked(sql("ALTER TABLE public.checkpoints DROP COLUMN unexpected"), "restore checkpoints schema");
+    checked(sql("GRANT UPDATE ON public.checkpoints TO eclipse_app"), "widen checkpoints grant fixture");
+    assert.notEqual(provision().status, 0, "extra checkpoints privilege fails preflight");
+    checked(sql("REVOKE UPDATE ON public.checkpoints FROM eclipse_app"), "restore checkpoints grant");
+    // TASK-034 prices are owner-editable; spend rows are append-only and idempotent per model call.
+    checked(sql(`INSERT INTO public.model_prices(id,owner_id,provider_id,model,input_micro_usd_per_million,cached_micro_usd_per_million,output_micro_usd_per_million,image_micro_usd_per_thousand) VALUES ('00000000-0000-0000-0000-000000000060','${ownerId}','00000000-0000-0000-0000-000000000040','muse-spark-1.3',1250000,150000,4250000,0)`, "eclipse_app"), "runtime saves a model price");
+    checked(sql("UPDATE public.model_prices SET output_micro_usd_per_million = 4250001", "eclipse_app"), "runtime edits a model price");
+    assert.equal(checked(sql("SELECT input_micro_usd_per_million FROM public.model_prices", "eclipse_app"), "runtime reads prices"), "1250000");
+    checked(sql(`INSERT INTO public.cost_entries(id,owner_id,run_id,agent_id,provider_id,call_index,model,tokens_in,tokens_out,tokens_cached,cost_micro_usd,outcome,idempotency_key) VALUES ('00000000-0000-0000-0000-000000000061','${ownerId}','${runId}','00000000-0000-0000-0000-000000000020','00000000-0000-0000-0000-000000000040',1,'muse-spark-1.3',1000,100,200,1234,'completed','cost:${runId}:1')`, "eclipse_app"), "runtime appends a cost row");
+    assert.notEqual(sql(`INSERT INTO public.cost_entries(id,owner_id,run_id,agent_id,provider_id,call_index,model,tokens_in,tokens_out,tokens_cached,cost_micro_usd,outcome,idempotency_key) VALUES ('00000000-0000-0000-0000-000000000062','${ownerId}','${runId}','00000000-0000-0000-0000-000000000020','00000000-0000-0000-0000-000000000040',1,'muse-spark-1.3',1,0,0,1,'completed','cost:${runId}:1')`, "eclipse_app").status, 0, "a model-call cost key cannot repeat");
+    assert.notEqual(sql("UPDATE public.cost_entries SET cost_micro_usd = 0", "eclipse_app").status, 0, "runtime cannot rewrite spend");
+    assert.notEqual(sql("DELETE FROM public.cost_entries", "eclipse_app").status, 0, "runtime cannot delete spend");
+    assert.notEqual(sql("DELETE FROM public.model_prices", "eclipse_app").status, 0, "runtime cannot delete price history through the ledger grant");
+    checked(provision(), "provisioning with populated prices and spend");
+    checked(sql("ALTER TABLE public.cost_entries ADD COLUMN unexpected text"), "unknown cost schema fixture");
+    assert.notEqual(provision().status, 0, "unknown cost columns fail closed");
+    checked(sql("ALTER TABLE public.cost_entries DROP COLUMN unexpected"), "restore cost schema");
+    checked(sql("GRANT UPDATE ON public.cost_entries TO eclipse_app"), "widen cost grant fixture");
+    assert.notEqual(provision().status, 0, "spend update privilege fails preflight");
+    checked(sql("REVOKE UPDATE ON public.cost_entries FROM eclipse_app"), "restore cost grant");
+    // TASK-036 extends only the known audio/teach shape and keeps the ledger append-only.
+    const captureId = "00000000-0000-0000-0000-000000000070";
+    checked(sql("INSERT INTO public.teach_recordings(id,owner_id,agent_id,generation,state,timezone,narration) VALUES ('" + captureId + "','" + ownerId + "','00000000-0000-0000-0000-000000000020','00000000-0000-0000-0000-000000000071','complete','UTC',true)", "eclipse_app"), "runtime inserts teach capture");
+    checked(sql("UPDATE public.teach_recordings SET narration_status='complete' WHERE id='" + captureId + "'", "eclipse_app"), "runtime updates teach capture");
+    assert.notEqual(sql("DELETE FROM public.teach_recordings", "eclipse_app").status, 0, "runtime cannot delete teach attribution rows");
+    const audioInsert = "INSERT INTO public.cost_entries(id,owner_id,capture_id,agent_id,provider_id,call_index,model,tokens_in,tokens_out,tokens_cached,cost_micro_usd,outcome,idempotency_key,audio_duration_ms) VALUES ('00000000-0000-0000-0000-000000000072','" + ownerId + "','" + captureId + "','00000000-0000-0000-0000-000000000020','00000000-0000-0000-0000-000000000040',1,'muse-voice-transcribe-1.0',0,0,0,50,'asr_complete','teach:" + captureId + ":asr:0',1000)";
+    checked(sql(audioInsert, "eclipse_app"), "runtime appends audio cost without fake run");
+    assert.notEqual(sql(audioInsert, "eclipse_app").status, 0, "audio segment cost cannot repeat");
+    assert.notEqual(sql(audioInsert.replace("00000000-0000-0000-0000-000000000072", "00000000-0000-0000-0000-000000000073").replace("capture_id,agent_id", "capture_id,run_id,agent_id").replace("'" + captureId + "','00000000", "'" + captureId + "','" + runId + "','00000000"), "eclipse_app").status, 0, "both run and capture attribution are denied");
+    checked(sql("UPDATE public.model_prices SET audio_micro_usd_per_hour=180000", "eclipse_app"), "runtime saves audio hourly override");
+    assert.notEqual(sql("UPDATE public.model_prices SET audio_micro_usd_per_hour=-1", "eclipse_app").status, 0, "negative audio rate is denied");
+    checked(provision(), "provision populated teach/audio schema");
+    for (const [mutate, restore, description] of [
+      ["ALTER TABLE public.teach_recordings ADD COLUMN unexpected text", "ALTER TABLE public.teach_recordings DROP COLUMN unexpected", "unknown teach column"],
+      ["ALTER TABLE public.teach_recordings ALTER COLUMN narration_status SET DEFAULT 'pending'", "ALTER TABLE public.teach_recordings ALTER COLUMN narration_status SET DEFAULT 'off'", "changed teach default"],
+      ["ALTER TABLE public.teach_recordings ALTER COLUMN narration DROP NOT NULL", "ALTER TABLE public.teach_recordings ALTER COLUMN narration SET NOT NULL", "nullable teach flag"],
+      ["DROP INDEX public.teach_recordings_agent_id_idx; CREATE INDEX teach_recordings_agent_id_idx ON public.teach_recordings(owner_id)", "DROP INDEX public.teach_recordings_agent_id_idx; CREATE INDEX teach_recordings_agent_id_idx ON public.teach_recordings(agent_id)", "wrong known-name teach index"],
+      ["GRANT DELETE ON public.teach_recordings TO eclipse_app", "REVOKE DELETE ON public.teach_recordings FROM eclipse_app", "widened teach delete grant"],
+      ["ALTER TABLE public.model_prices ALTER COLUMN audio_micro_usd_per_hour SET DEFAULT 1", "ALTER TABLE public.model_prices ALTER COLUMN audio_micro_usd_per_hour SET DEFAULT 0", "changed audio rate default"],
+    ]) {
+      checked(sql(mutate), description + " fixture");
+      try { assert.notEqual(provision().status, 0, description + " fails closed"); }
+      finally { checked(sql(restore), "restore " + description); }
+    }
+    for (const [table, constraint, weak] of [
+      ["teach_recordings", "teach_recordings_bounds_check", "active_ms >= 0"],
+      ["cost_entries", "cost_entries_source_check", "run_id IS NOT NULL OR capture_id IS NOT NULL"],
+      ["cost_entries", "cost_entries_audio_duration_check", "audio_duration_ms >= 0"],
+      ["model_prices", "model_prices_rates_check", "audio_micro_usd_per_hour >= 0"],
+    ]) {
+      const original = checked(sql("SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid='public." + table + "'::regclass AND conname='" + constraint + "'"), "read exact constraint");
+      checked(sql("ALTER TABLE public." + table + " DROP CONSTRAINT " + constraint + "; ALTER TABLE public." + table + " ADD CONSTRAINT " + constraint + " CHECK (" + weak + ")"), "weaken " + constraint);
+      try { assert.notEqual(provision().status, 0, constraint + " definition fails closed"); }
+      finally { checked(sql("ALTER TABLE public." + table + " DROP CONSTRAINT " + constraint + "; ALTER TABLE public." + table + " ADD CONSTRAINT " + constraint + " " + original), "restore " + constraint); }
+    }
+    checked(provision(), "restored exact teach/audio contracts");
+    checked(sql("TRUNCATE public.cost_entries, public.model_prices, public.step_evidence, public.steps, public.runs CASCADE"), "clear synthetic receipts, prices and spend");
     checked(provision(), "populated sessions and singleton provisioning");
     assert.equal(checked(sql("SELECT count(*) FROM public.sessions"), "preserve sessions"), "1");
     checked(sql("ALTER TABLE public.sessions ADD COLUMN unexpected text"), "unknown sessions schema fixture");
@@ -161,7 +277,7 @@ test("isolated database provisioning and permissions", { timeout: 900000 }, asyn
     checked(sql("ALTER TABLE public.owner OWNER TO eclipse_bootstrap; ALTER TABLE drizzle.__drizzle_migrations OWNER TO eclipse_bootstrap; ALTER SCHEMA drizzle OWNER TO eclipse_bootstrap"), "simulate existing bootstrap-owned database");
     checked(provision(), "populated provisioning");
     assert.equal(checked(sql("SELECT count(*) FROM public.owner"), "preserve owner"), "1");
-    assert.equal(checked(sql("SELECT count(*) FROM drizzle.__drizzle_migrations"), "preserve history"), "6");
+    assert.equal(checked(sql("SELECT count(*) FROM drizzle.__drizzle_migrations"), "preserve history"), EXPECTED_MIGRATIONS);
     assert.equal(checked(sql("SELECT pg_get_userbyid(relowner) FROM pg_class WHERE oid = 'public.owner'::regclass"), "transfer owner table"), "eclipse_migrator");
     checked(sql("COMMENT ON ROLE eclipse_app IS 'unrelated fixture'"), "simulate role collision");
     assert.notEqual(provision().status, 0, "preflight must reject unrelated roles");
@@ -195,7 +311,8 @@ test("isolated database provisioning and permissions", { timeout: 900000 }, asyn
     assert.equal(inspectResult.status, 0, "inspect app environment");
     const inspection = inspectResult.stdout;
     assert.ok(!inspection.includes(bootstrap) && !inspection.includes(migratorPassword));
-    checked(compose("logs", "--no-color"), "check service logs");
+    // Every fail-closed fixture above makes Postgres log the whole provisioning statement, so the logs outgrow spawnSync's 1 MiB default.
+    checked(docker(["compose", "logs", "--no-color"], { maxBuffer: 128 * 1024 * 1024 }), "check service logs");
   } finally {
     cleanup();
   }
@@ -234,10 +351,35 @@ test(`upgrade existing bootstrap-owned ${depth === 1 ? "owner" : "sessions"} dat
     checked(provision(), "provision upgraded volume again");
     checked(spawnSync(process.execPath, ["scripts/db-migrate.mjs"], { env, encoding: "utf8", timeout: 120000 }), "repeat legacy migration");
     const result = docker(["exec", container, "psql", "-U", "eclipse_bootstrap", "-d", "eclipse", "-Atc", "SELECT (SELECT count(*) FROM public.owner), (SELECT count(*) FROM drizzle.__drizzle_migrations), pg_get_userbyid((SELECT relowner FROM pg_class WHERE oid = 'public.owner'::regclass))"]);
-    assert.equal(checked(result, "verify legacy data and ownership"), "1|6|eclipse_migrator");
+    assert.equal(checked(result, "verify legacy data and ownership"), `1|${EXPECTED_MIGRATIONS}|eclipse_migrator`);
     assert.equal(checked(docker(["exec", container, "psql", "-U", "eclipse_bootstrap", "-d", "eclipse", "-Atc", "SELECT hash FROM drizzle.__drizzle_migrations WHERE created_at=1793293249789"]), "verify original history is unchanged"), hash);
     assert.equal(checked(docker(["exec", container, "psql", "-U", "eclipse_bootstrap", "-d", "eclipse", "-Atc", "SELECT count(*) FROM public.sessions"]), "verify legacy sessions are preserved"), depth === 2 ? "1" : "0");
   } finally { cleanup(); }
 });
 }
 }
+
+test("known pre-0013 full schema provisions and upgrades without widening contracts", { timeout: 900000 }, () => {
+  try {
+    checked(compose("up", "-d", "app"), "start pre-teach fixture");
+    const container = checked(compose("ps", "-q", "postgres"), "find pre-teach postgres");
+    const sql = (query) => docker(["exec", "-i", container, "psql", "-U", "eclipse_bootstrap", "-d", "eclipse", "-v", "ON_ERROR_STOP=1", "-At", "-f", "-"], { input: query });
+    checked(sql("CREATE SCHEMA drizzle; CREATE TABLE drizzle.__drizzle_migrations (id serial PRIMARY KEY, hash text NOT NULL, created_at bigint);"), "create known migration history");
+    const journal = JSON.parse(readFileSync("drizzle/meta/_journal.json", "utf8"));
+    for (const entry of journal.entries.filter((item) => item.idx < 13)) {
+      const source = readFileSync("drizzle/" + entry.tag + ".sql", "utf8").replace(/\r\n/g, "\n");
+      checked(sql(source), "apply known " + entry.tag);
+      checked(sql("INSERT INTO drizzle.__drizzle_migrations(hash,created_at) VALUES ('" + createHash("sha256").update(source).digest("hex") + "'," + entry.when + ")"), "record known " + entry.tag);
+    }
+    const provision = () => spawnSync(process.execPath, ["scripts/db-provision.mjs"], { env, encoding: "utf8", timeout: 60000 });
+    checked(provision(), "provision exact pre-0013 model/cost shape");
+    checked(provision(), "repeat exact pre-0013 provisioning");
+    assert.equal(checked(sql("SELECT count(*) FROM drizzle.__drizzle_migrations"), "pre-teach history"), "13");
+    checked(sql("ALTER TABLE public.cost_entries ALTER COLUMN run_id DROP NOT NULL"), "partial teach upgrade fixture");
+    try { assert.notEqual(provision().status, 0, "partial upgrade fails strict old contract"); }
+    finally { checked(sql("ALTER TABLE public.cost_entries ALTER COLUMN run_id SET NOT NULL"), "restore pre-teach cost contract"); }
+    checked(spawnSync(process.execPath, ["scripts/db-migrate.mjs"], { env, encoding: "utf8", timeout: 120000 }), "upgrade pre-teach schema");
+    checked(provision(), "provision upgraded teach/audio schema");
+    assert.equal(checked(sql("SELECT count(*) FROM drizzle.__drizzle_migrations"), "upgraded history"), EXPECTED_MIGRATIONS);
+  } finally { cleanup(); }
+});

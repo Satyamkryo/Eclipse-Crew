@@ -465,16 +465,35 @@ test("HTTP, malformed, oversized and timed-out responses fail safely without ret
   assert.equal(hangingTransport.calls.length, 1);
 });
 
+test("caller cancellation aborts the provider transport and is not reported as a timeout", async () => {
+  const transport = createTransport((call) => new Promise((_, reject) => {
+    call.init.signal.addEventListener("abort", () => reject(new Error("transport aborted")), { once: true });
+  }));
+  const connector = createProviderConnector({ kind: "meta", transport, timeoutMs: 1000 });
+  const controller = new AbortController();
+  const pending = connector.generate({
+    model: "muse-spark-1.3",
+    messages: [{ role: "user", content: [{ type: "text", text: "Hello", sourceTag: "user" }] }],
+    signal: controller.signal,
+  });
+  controller.abort();
+  await assert.rejects(pending, (error) => error.code === "aborted");
+  assert.equal(transport.calls.length, 1);
+  assert.equal(transport.calls[0].init.signal.aborted, true);
+});
+
 test("timeouts cancel an open response stream instead of leaving it buffering", async () => {
   let cancelled = false;
+  let timer;
   const transport = createTransport(() => new Response(new ReadableStream({
     start(controller) {
       controller.enqueue(new TextEncoder().encode("{\"data\":["));
-      const timer = setTimeout(() => controller.enqueue(new TextEncoder().encode("]}\u0000")), 200);
+      timer = setTimeout(() => controller.enqueue(new TextEncoder().encode("]}\u0000")), 200);
       timer.unref();
     },
     cancel() {
       cancelled = true;
+      clearTimeout(timer);
     },
   }), { status: 200, headers: { "content-type": "application/json" } }));
   const connector = createProviderConnector({ kind: "meta", transport, timeoutMs: 20 });
