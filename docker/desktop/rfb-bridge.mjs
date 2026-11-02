@@ -22,15 +22,17 @@ function pixelFormatValid(buffer, offset) {
  * and TCP never leave the controller; the browser gets a separate None-auth RFB
  * session that is protocol-filtered to framebuffer requests only.
  */
-export function bridgeRfb(ws, { port, password, onClose, onActivity } = {}) {
-  if (!Number.isInteger(port) || port < 5950 || port > 45949 || typeof password !== "string" || !/^[\x21-\x7e]{8}$/.test(password)) throw new Error("invalid_vnc_transport");
+export function bridgeRfb(ws, { socket, port, password, onClose, onActivity } = {}) {
+  const socketPath = typeof socket === "string" && /^\/run\/eclipse-ns\/[0-9a-f-]{36}\/vnc\.sock$/.test(socket) ? socket : null;
+  if (!socketPath && (!Number.isInteger(port) || port < 5950 || port > 45949)) throw new Error("invalid_vnc_transport");
+  if (typeof password !== "string" || !/^[\x21-\x7e]{8}$/.test(password)) throw new Error("invalid_vnc_transport");
   let closed = false, readyDone = false, tcpState = "version", clientState = "version";
   let upstream = Buffer.alloc(0), client = Buffer.alloc(0);
   let resolveReady, rejectReady;
   const ready = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
   // A caller may use only close/onClose; still consume an early handshake failure.
   void ready.catch(() => {});
-  const tcp = net.connect({ host: "127.0.0.1", port });
+  const tcp = socketPath ? net.connect({ path: socketPath }) : net.connect({ host: "127.0.0.1", port });
   tcp.setNoDelay(true);
   const deadline = setTimeout(() => finish(1008), 5000);
   deadline.unref();

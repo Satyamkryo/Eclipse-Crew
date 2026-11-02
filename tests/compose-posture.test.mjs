@@ -73,7 +73,7 @@ export function validatePosture(config) {
   const binds = {
     postgres: [["db/provision.sql", "/opt/eclipse/provision.sql"]],
     ingress: [["docker/ingress.conf", "/etc/nginx/nginx.conf"]],
-    app: [],
+    app: [["data/memory", "/var/eclipse/memory"]],
     desktop: [],
     "egress-proxy": [],
   };
@@ -91,6 +91,8 @@ export function validatePosture(config) {
       assert.ok(!DOCKER_SOCKET.test(volume.source ?? "") && !DOCKER_SOCKET.test(volume.target ?? ""), `${name} does not mount the Docker socket`);
       assert.ok(!(volume.source ?? "").split(/[\\/]/).includes(".env") && !/\.env(?:\.|$)/.test(path.basename(volume.source ?? "")), `${name} does not mount .env`);
       if (volume.type === "bind") {
+        // TASK-053: the host-visible memory mirror is the one intentional writable bind, and only on `app`.
+        if (name === "app" && volume.target === "/var/eclipse/memory") continue;
         assert.equal(volume.read_only, true, `${name} config bind is read-only`);
         assert.notEqual(path.resolve(volume.source), project, `${name} does not mount the project directory`);
       }

@@ -1,9 +1,11 @@
 "use client";
 import { KNOWN_ACTIONS } from "@/lib/agents/actions";
+import { AGENT_TEMPLATES, type AgentTemplateId } from "@/lib/agents/templates";
 import { useEffect, useRef, useState } from "react";
 import { LoaderCircle } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 export type AgentFormInitial = {
   name: string;
@@ -96,6 +98,10 @@ export function AgentForm({ mode, agentId, csrfToken, initial, onSaved, onCancel
   const [status, setStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [memoryScopes, setMemoryScopes] = useState<string[]>(initial?.memoryScopes ?? []);
+  const [template, setTemplate] = useState<AgentTemplateId | "blank">("blank");
+  const [templateMessage, setTemplateMessage] = useState<string | null>(null);
+  const formRef = useRef<HTMLFormElement>(null);
+  const statusRef = useRef<HTMLParagraphElement>(null);
   const prefix = mode === "create" ? "new-agent" : "agent-settings";
 
   useEffect(() => {
@@ -108,6 +114,30 @@ export function AgentForm({ mode, agentId, csrfToken, initial, onSaved, onCancel
     const first = fields.find((field) => errors[field]);
     if (first) document.getElementById(`${prefix}-${fieldIds[first]}`)?.focus();
   }, [errors, prefix]);
+
+  function applyTemplate(id: AgentTemplateId | "blank") {
+    const selected = id === "blank" ? undefined : AGENT_TEMPLATES.find((item) => item.id === id);
+    const form = formRef.current;
+    setTemplate(id);
+    setErrors({});
+    setError(null);
+    if (form) {
+      const set = (name: string, value: string) => {
+        const field = form.elements.namedItem(name);
+        if (field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement) field.value = value;
+      };
+      set("role", selected?.role ?? "");
+      set("soulMd", selected?.soulMd ?? "");
+      set("dailyBudgetUsd", selected?.dailyBudgetUsd ?? "5.00");
+      set("monthlyBudgetUsd", selected?.monthlyBudgetUsd ?? "50.00");
+      set("tools", (selected?.tools ?? []).join(", "));
+      set("domains", (selected?.domains ?? []).join(", "));
+      set("actions", (selected?.actions ?? KNOWN_ACTIONS).join(", "));
+    }
+    setMemoryScopes(selected?.memoryScopes ?? []);
+    setTemplateMessage(selected ? `Template applied: ${selected.label}. Review the fields before saving.` : "Blank agent. Review the fields before saving.");
+    requestAnimationFrame(() => statusRef.current?.focus());
+  }
 
   function validateOne(name: FieldName, value: string) {
     setErrors((current) => {
@@ -185,7 +215,26 @@ export function AgentForm({ mode, agentId, csrfToken, initial, onSaved, onCancel
   }
 
   return (
-    <form onSubmit={submit} noValidate className="flex flex-col gap-5">
+    <form ref={formRef} onSubmit={submit} noValidate className="flex flex-col gap-5">
+      {mode === "create" && (
+        <div className="flex flex-col gap-2">
+          <span className="text-sm font-medium">Start from</span>
+          <div className="flex flex-wrap gap-2" role="group" aria-label="Agent template">
+            {[{ id: "blank" as const, label: "Blank" }, ...AGENT_TEMPLATES.map((item) => ({ id: item.id, label: item.label }))].map((item) => (
+              <Button key={item.id} type="button" variant="secondary" size="sm" aria-pressed={template === item.id}
+                className={cn(template === item.id && "bg-accent")} onClick={() => applyTemplate(item.id)}>
+                {item.label}
+              </Button>
+            ))}
+          </div>
+          {template !== "blank" && (
+            <p className="text-xs text-muted-foreground">{AGENT_TEMPLATES.find((item) => item.id === template)?.description}</p>
+          )}
+          {templateMessage && (
+            <p ref={statusRef} role="status" aria-live="polite" tabIndex={-1} className="text-sm text-success">{templateMessage}</p>
+          )}
+        </div>
+      )}
       <div className="grid gap-4 sm:grid-cols-2">
         <Field id={`${prefix}-name`} label="Name" error={errors.name}>
           <input id={`${prefix}-name`} name="name" required maxLength={80} defaultValue={initial?.name ?? ""}
@@ -225,7 +274,7 @@ export function AgentForm({ mode, agentId, csrfToken, initial, onSaved, onCancel
         </Field>
       </div>
       <div className="grid gap-4 sm:grid-cols-2">
-        <Field id={`${prefix}-tools`} label="Tools" error={errors.tools} hint="Comma-separated identifiers. Empty denies every tool.">
+        <Field id={`${prefix}-tools`} label="Tools" error={errors.tools} hint="Comma-separated identifiers. For MCP, add the pinned server key (for example github). Empty denies every tool.">
           <textarea id={`${prefix}-tools`} name="tools" rows={2} defaultValue={initial ? listText(initial.tools) : ""}
             onBlur={(event) => validateOnBlur(event, "tools")}
             aria-invalid={errors.tools ? true : undefined}
@@ -238,7 +287,7 @@ export function AgentForm({ mode, agentId, csrfToken, initial, onSaved, onCancel
             aria-describedby={`${prefix}-domains-hint${errors.domains ? ` ${prefix}-domains-error` : ""}`} className={textareaClass} />
         </Field>
       </div>
-      <Field id={`${prefix}-actions`} label="Actions" error={errors.actions} hint={`Comma-separated. Available: ${KNOWN_ACTIONS.join(", ")}. Empty denies every action.`}>
+      <Field id={`${prefix}-actions`} label="Actions" error={errors.actions} hint={`Comma-separated. Available: ${KNOWN_ACTIONS.join(", ")}. MCP tools are opt-in: add tool_call yourself, then add the server key under Tools. Empty denies every action.`}>
         <textarea id={`${prefix}-actions`} name="actions" rows={2} defaultValue={initial ? listText(initial.actions) : KNOWN_ACTIONS.join(", ")}
           onBlur={(event) => validateOnBlur(event, "actions")}
           aria-invalid={errors.actions ? true : undefined}

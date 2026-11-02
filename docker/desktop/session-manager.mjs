@@ -3,12 +3,13 @@ import { createHmac, randomUUID } from "node:crypto";
 import { operationFields, resultFor, TeachSchema } from "./controller-schema.mjs";
 import { lstat, chmod, readFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
-import { AgentError, createAgent, deleteAgent, inspectAgent, launchAgent, requireAdmin, validateIds } from "./agent-store.mjs";
+import { AgentError, createAgent, deleteAgent, ensureNsDirectory, inspectAgent, launchAgent, removeNsDirectory, requireAdmin, validateIds } from "./agent-store.mjs";
+import { createEgressRelay, createGatewayRelay } from "./egress-relay.mjs";
 import { processIdentity, SESSION_FAILURES } from "./session-worker.mjs";
 import { createChannel, writeFramed } from "./controller-channel.mjs";
 
 export const SESSION_SOCKET = "/run/eclipse/sessions.sock";
-const COMMANDS = ["session-start", "session-status", "session-stop"];
+const COMMANDS = ["session-start", "session-status", "session-stop", "session-fixture", "session-fixture-cookie"];
 export function validateSessionRequest(value) {
   if (!value || Object.keys(value).sort().join() !== "agentId,command,ownerId" || !COMMANDS.includes(value.command)) throw new AgentError("invalid_session_request");
   validateIds(value.ownerId, value.agentId); return value;
@@ -77,6 +78,9 @@ export class SessionManager {
       }
       for (let i = 0; i < 60 && entry.child.exitCode === null && entry.child.signalCode === null; i++) await delay(100);
       await this.terminate(entry);
+      await entry.relay?.close().catch(() => {});
+      await entry.gatewayRelay?.close().catch(() => {});
+      await removeNsDirectory(entry.record).catch(() => {});
     })();
     entry.cleanup = cleanup;
     void cleanup.catch(() => { if (entry.cleanup === cleanup) entry.cleanup = null; });
@@ -105,10 +109,21 @@ export class SessionManager {
       if (old) await this.clean(old);
       this.takeovers.delete(agentId); this.requestIds.set(agentId, new Set());
       const { home: _h, downloads: _d, ...identity } = record; void _h; void _d;
+      // TASK-071. The token never enters the agent namespace: the supervisor relay injects it outside.
+      const nsDir = await ensureNsDirectory(record);
       const egressSecret = process.env.EGRESS_DESKTOP_SECRET ?? "";
       const egressToken = /^[0-9a-f]{64}$/.test(egressSecret) ? agentEgressToken(agentId, egressSecret) : null;
-      const child = launchAgent(record, ["node", "/opt/eclipse/desktop/session-worker.mjs", JSON.stringify(identity)], { stdio: ["pipe", "pipe", "ignore"] });
-      const entry = { record, child, state: "starting", generation: randomUUID(), tracked: new Map() }; this.entries.set(agentId, entry); this.generations.set(agentId, entry.generation);
+      if (!egressToken) throw new AgentError("egress_not_configured");
+      const relay = createEgressRelay({ agentId, path: `${nsDir}/egress.sock`, token: egressToken });
+      await relay.listen().catch(() => { throw new AgentError("egress_not_configured"); });
+      const gatewayRelay = createGatewayRelay({ agentId, path: `${nsDir}/gateway.sock`, token: egressToken });
+      await gatewayRelay.listen().catch(async () => { await relay.close().catch(() => {}); throw new AgentError("egress_not_configured"); });
+      let child;
+      try {
+        child = launchAgent(record, ["node", "/opt/eclipse/desktop/session-worker.mjs", JSON.stringify(identity)], { stdio: ["pipe", "pipe", "ignore"],
+          ...(process.env.ECLIPSE_FIXTURES === "1" ? { extraEnv: { ECLIPSE_FIXTURES: "1" } } : {}) });
+      } catch (error) { await gatewayRelay.close().catch(() => {}); await relay.close().catch(() => {}); throw error; }
+      const entry = { record, child, state: "starting", generation: randomUUID(), tracked: new Map(), relay, gatewayRelay, nsDir }; this.entries.set(agentId, entry); this.generations.set(agentId, entry.generation);
       entry.monitor = setInterval(() => { void this.observe(entry).catch(() => {}); }, 200);
       let readyResolve, readyReject; const ready = new Promise((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
       entry.cancelStart = () => readyReject(new AgentError("supervisor_stopping"));
@@ -127,15 +142,32 @@ export class SessionManager {
           }); await entry.runtimeReady;
         } else if (message.state === "vnc_ready") {
           if (message.vncPort !== 5950 + record.uid - 20000 || typeof message.password !== "string" || !/^[A-Za-z0-9+/]{8}$/.test(message.password)) throw Error("invalid_vnc_metadata");
-          entry.vncPort = message.vncPort; entry.vncPassword = message.password; entry.vncReady = true;
+          entry.vncPort = message.vncPort; entry.vncPassword = message.password; entry.vncReady = true; entry.vncSocket = `${nsDir}/vnc.sock`;
         } else if (message.state === "running" && entry.state === "starting") { entry.state = "running"; readyResolve(); }
         else if (message.state === "failed") failed(SESSION_FAILURES.has(message.reason) ? message.reason : "session_component_failed");
         else throw Error("invalid_worker_event");
       } });
-      writeFramed(child.stdin, { command: "egress", token: egressToken }).catch(() => failed("egress_not_configured"));
       void entry.channel.done.then(() => failed());
       try { await ready; await this.observe(entry); return this.state(entry); }
       catch (error) { await this.clean(entry); throw error; } finally { clearTimeout(timer); delete entry.cancelStart; }
+    });
+  }
+  // TASK-071. The optional mock vendor runs inside the session namespace; only enabled in tests/dev.
+  fixture(ownerId, agentId) {
+    validateIds(ownerId, agentId);
+    return this.serialize(agentId, async () => {
+      if (process.env.ECLIPSE_FIXTURES !== "1") throw new AgentError("fixtures_disabled");
+      const entry = this.authorize(ownerId, agentId, undefined);
+      return entry.channel.send({ command: "operation", requestId: randomUUID(), operation: "fixture.mock_vendor", params: { action: "start" } });
+    });
+  }
+  // The cookie fixture keeps its fixed port, so a restarted session sees the same origin and localStorage.
+  fixtureCookie(ownerId, agentId) {
+    validateIds(ownerId, agentId);
+    return this.serialize(agentId, async () => {
+      if (process.env.ECLIPSE_FIXTURES !== "1") throw new AgentError("fixtures_disabled");
+      const entry = this.authorize(ownerId, agentId, undefined);
+      return entry.channel.send({ command: "operation", requestId: randomUUID(), operation: "fixture.mock_vendor", params: { fixture: "cookie", action: "start" } });
     });
   }
   create(ownerId, agentId) {
@@ -188,7 +220,7 @@ export class SessionManager {
   streamInfo(ownerId, agentId, control) {
     const entry = this.authorize(ownerId, agentId, control.generation);
     if (!entry.vncReady || !entry.vncPassword) throw new AgentError("stream_unavailable");
-    return { port: entry.vncPort, password: entry.vncPassword };
+    return { port: entry.vncPort, socket: entry.vncSocket, password: entry.vncPassword };
   }
   registerViewer(ownerId, agentId, control, close) {
     this.streamInfo(ownerId, agentId, control);
@@ -327,7 +359,7 @@ export async function listenSessions(manager) {
       void (async () => {
         try {
           const request = validateSessionRequest(JSON.parse(body));
-          const method = { "session-start": "start", "session-status": "status", "session-stop": "stop" }[request.command];
+          const method = { "session-start": "start", "session-status": "status", "session-stop": "stop", "session-fixture": "fixture", "session-fixture-cookie": "fixtureCookie" }[request.command];
           respond(await manager[method](request.ownerId, request.agentId));
         } catch (error) { respond({ outcome: "refused", reason: error instanceof AgentError ? error.code : "session_request_failed" }); }
       })();

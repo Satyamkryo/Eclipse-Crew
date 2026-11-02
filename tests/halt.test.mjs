@@ -26,9 +26,9 @@ test("haltAgent runs every step once in the fixed order and reports success", as
   const log = [];
   const result = await haltAgent(ports(log), { ownerId: OWNER, agentId: AGENT });
   assert.equal(result.ok, true);
-  assert.deepEqual(result.steps.map((step) => step.step), ["latch_egress", "cancel_runs", "pause", "stop_session", "card"]);
+  assert.deepEqual(result.steps.map((step) => step.step), ["latch_egress", "cancel_runs", "stop_session", "pause", "card"]);
   assert.ok(result.steps.every((step) => step.ok));
-  assert.deepEqual(log.slice(0, 4), ["latch_egress", "cancel_runs", "pause", "stop_session"]);
+  assert.deepEqual(log.slice(0, 4), ["latch_egress", "cancel_runs", "stop_session", "pause"]);
   assert.match(log[4], /^card:Agent stopped\./);
 });
 
@@ -38,7 +38,7 @@ test("a hanging proxy or desktop never blocks the pause or the answer", async ()
   const result = await haltAgent(ports(log, { hang: "latch_egress" }), { ownerId: OWNER, agentId: AGENT, budgetMs: 300 });
   assert.ok(Date.now() - started < 1_000);
   assert.deepEqual(result.steps.map((step) => [step.step, step.ok]), [
-    ["latch_egress", false], ["cancel_runs", true], ["pause", true], ["stop_session", true], ["card", true],
+    ["latch_egress", false], ["cancel_runs", true], ["stop_session", true], ["pause", true], ["card", true],
   ]);
   assert.equal(result.ok, true);
 });

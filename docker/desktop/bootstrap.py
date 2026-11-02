@@ -16,7 +16,7 @@ BASE = "/opt/eclipse/desktop"
 INITIAL = 0x2001C3
 ADMIN = 0x1C3
 PROFILE_HASH = "fa1e603f170044c931a103bfbe3bac6cfc6c935bdc72408e01c4cf6425cde627"
-ENV = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/tmp", "LANG": "C.UTF-8", "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD": "1", "DESKTOP_CONTROL_SECRET": os.environ.get("DESKTOP_CONTROL_SECRET", ""), "EGRESS_DESKTOP_SECRET": os.environ.get("EGRESS_DESKTOP_SECRET", "")}
+ENV = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/tmp", "LANG": "C.UTF-8", "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD": "1", "DESKTOP_CONTROL_SECRET": os.environ.get("DESKTOP_CONTROL_SECRET", ""), "EGRESS_DESKTOP_SECRET": os.environ.get("EGRESS_DESKTOP_SECRET", ""), **({"ECLIPSE_FIXTURES": "1"} if os.environ.get("ECLIPSE_FIXTURES") == "1" else {})}
 
 
 def require(value, reason):
@@ -142,7 +142,7 @@ def main():
         require(hashlib.sha256(source.read().replace(b"\r\n", b"\n")).hexdigest() == PROFILE_HASH, "profile_pin_invalid")
     args = sys.argv[1:]
     if args:
-        require(args[0] == "--admin" and len(args) >= 2 and args[1] in ("create", "inspect", "exec", "health", "session-start", "session-status", "session-stop"), "invalid_admin_command")
+        require(args[0] == "--admin" and len(args) >= 2 and args[1] in ("create", "inspect", "exec", "health", "session-start", "session-status", "session-stop", "session-fixture", "session-fixture-cookie"), "invalid_admin_command")
         verify_setup()
         reduce_privileges()
         os.execve("/usr/local/bin/node", ["node", BASE + "/agent-admin.mjs"] + args[1:], ENV)

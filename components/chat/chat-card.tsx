@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { Archive, CalendarClock, CircleHelp, FileText, Gauge, Image as ImageIcon, Music, MessageSquare, Plug, ShieldQuestion, Sparkles, Video } from "lucide-react";
 import type { ChatMessage } from "@/lib/chat/schema";
 import { formatBytes } from "@/lib/chat/upload";
@@ -5,6 +6,7 @@ import { FileCardActions } from "@/components/chat/file-card-actions";
 import { RoutineCardActions } from "@/components/chat/routine-card-actions";
 import { SkillUpdateReview } from "@/components/heal/skill-update-review";
 import { ApprovalActions } from "@/components/approvals/approval-actions";
+import { ChangeActions } from "@/components/memory/change-actions";
 
 const FILE_ICONS = { image: ImageIcon, pdf: FileText, document: FileText, text: FileText, audio: Music, video: Video, archive: Archive } as const;
 const FILE_KIND_LABELS = { image: "Image", pdf: "PDF", document: "Document", text: "Text", audio: "Audio", video: "Video", archive: "Archive" } as const;
@@ -15,9 +17,10 @@ export function ChatCard({ message, agentId, csrfToken }: { message: ChatMessage
     : card.type === "teach_paused" ? "Recording needs you"
     : card.type === "skill_update" ? "Skill update proposed"
     : card.type === "approval" ? "Approval needed"
+    : card.type === "memory_change" ? "Memory change proposed"
     : card.type === "budget_warning" || card.type === "budget_paused" ? "Budget alert"
       : message.sourceTag === "user" ? "Your message" : "Agent message";
-  const needsYou = card.type === "budget_warning" || card.type === "budget_paused" || card.type === "teach_paused" || card.type === "skill_update" || card.type === "approval";
+  const needsYou = card.type === "budget_warning" || card.type === "budget_paused" || card.type === "teach_paused" || card.type === "skill_update" || card.type === "approval" || card.type === "memory_change";
   return (
     <article aria-label={label} data-card-type={card.type}
       className={`rounded-lg border bg-card p-4 text-sm text-card-foreground ${needsYou ? "border-corona" : "border-border"}`}>
@@ -47,6 +50,9 @@ export function ChatCard({ message, agentId, csrfToken }: { message: ChatMessage
           <CardTitle icon={Plug} title={`Connect ${card.name}`} />
           <p className="mt-3 break-words leading-6 text-muted-foreground">{card.description}</p>
           <p className="mt-3 text-xs font-medium text-muted-foreground">Connection required</p>
+          <p className="mt-2 text-sm">
+            <Link href="/settings/connections" className="underline underline-offset-4">Open Connections</Link>
+          </p>
         </>
       )}
 
@@ -108,6 +114,19 @@ export function ChatCard({ message, agentId, csrfToken }: { message: ChatMessage
           {csrfToken
             ? <ApprovalActions approvalId={card.approvalId} csrfToken={csrfToken} />
             : <p className="mt-3 text-sm text-muted-foreground">Open this chat to allow or deny the action.</p>}
+        </>
+      )}
+
+      {card.type === "memory_change" && (
+        <>
+          <div className="flex flex-wrap items-center gap-2">
+            <CardTitle icon={Sparkles} title="Memory change proposed" />
+            <span className="rounded-md bg-corona/12 px-2 py-0.5 text-xs text-corona">Needs you</span>
+          </div>
+          <p className="mt-3 break-words leading-6">{card.title}</p>
+          {csrfToken
+            ? <ChangeActions changeId={card.changeId} csrfToken={csrfToken} />
+            : <p className="mt-3 text-sm text-muted-foreground">Open the Memory tab to review this request.</p>}
         </>
       )}
 

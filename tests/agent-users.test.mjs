@@ -33,9 +33,10 @@ test("owner CLI refuses unsafe container and workspace identities", () => {
       SecurityOpt: ["no-new-privileges:true", `seccomp=${JSON.stringify(profile)}`] }, NetworkSettings: { Ports: {} },
     Mounts: [{ Type: "volume", Name: `${project}_workspace`, Destination: "/workspace", RW: true }] };
   validateDesktopTarget(value, project, profile);
+  validateDesktopTarget({ ...value, Config: { ...value.Config, Env: [...value.Config.Env, "ECLIPSE_FIXTURES=1"] } }, project, profile);
   for (const change of [(v) => { v.HostConfig.Privileged = true; }, (v) => { v.HostConfig.CapAdd = ["ALL"]; },
     (v) => { v.HostConfig.Init = true; }, (v) => { v.Mounts[0].Type = "bind"; },
-    (v) => { v.Config.Env.push("MODEL_API_KEY=synthetic"); }, (v) => { v.Config.Labels["com.docker.compose.project"] = "main"; },
+    (v) => { v.Config.Env.push("MODEL_API_KEY=synthetic"); }, (v) => { v.Config.Env.push("ECLIPSE_FIXTURES=0"); }, (v) => { v.Config.Labels["com.docker.compose.project"] = "main"; },
     (v) => { v.HostConfig.SecurityOpt = ["seccomp=unconfined"]; }]) {
     const changed = structuredClone(value); change(changed); assert.throws(() => validateDesktopTarget(changed, project, profile));
   }

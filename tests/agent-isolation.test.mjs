@@ -17,6 +17,7 @@ test("agent A cannot reach agent B's processes, files, tmp state, VNC or control
   const secrets = {
     DESKTOP_CONTROL_SECRET: hex(32),
     EGRESS_PROXY_SECRET: hex(32),
+    EGRESS_DESKTOP_SECRET: hex(32),
     ENCRYPTION_KEY: hex(32),
     RECEIPT_SIGNING_KEY: hex(32),
     POSTGRES_BOOTSTRAP_PASSWORD: hex(24),
@@ -71,61 +72,42 @@ test("agent A cannot reach agent B's processes, files, tmp state, VNC or control
     assert.equal(sa.state, "running"); assert.equal(sb.state, "running"); assert.notEqual(sa.display, sb.display);
 
     current = "loopback";
-    for (const [self, _peer, peerSession] of [[a, b, sb], [b, a, sa]]) {
+    for (const self of [a, b]) {
       const output = JSON.parse(agent(self.agentId, `
+        import fs from 'node:fs';
         import net from 'node:net';
         import http from 'node:http';
         import assert from 'node:assert/strict';
-        const vnc = await new Promise((resolve, reject) => {
-          const socket = net.connect({ host: '127.0.0.1', port: ${peerSession.vncPort} });
-          let data = Buffer.alloc(0); let state = 'version'; let done = false;
-          const finish = (error, value) => { if (done) return; done = true; clearTimeout(timer); socket.destroy(); if (error) reject(error); else resolve(value); };
-          const timer = setTimeout(() => finish(Error('vnc_timeout')), 5000);
-          socket.on('error', (error) => finish(error));
-          socket.on('close', () => finish(Error('vnc_closed_before_result')));
-          socket.on('data', (chunk) => {
-            if (done) return;
-            data = Buffer.concat([data, chunk]);
-            try {
-              if (state === 'version') {
-                if (data.length < 12) return;
-                assert.equal(data.subarray(0, 12).toString('ascii'), 'RFB 003.008' + String.fromCharCode(10), 'vnc_version');
-                data = data.subarray(12); state = 'security'; socket.write('RFB 003.008' + String.fromCharCode(10));
-              } else if (state === 'security') {
-                if (!data.length || data.length < data[0] + 1) return;
-                const count = data[0]; const types = [...data.subarray(1, count + 1)];
-                assert.ok(types.includes(2), 'vnc_auth_offered'); assert.ok(!types.includes(1), 'vnc_none_not_offered');
-                data = data.subarray(count + 1); state = 'challenge'; socket.write(Buffer.from([2]));
-              } else if (state === 'challenge') {
-                if (data.length < 16) return;
-                data = data.subarray(16); state = 'result'; socket.write(Buffer.alloc(16));
-              } else {
-                if (data.length < 4) return;
-                const result = data.readUInt32BE(0); assert.notEqual(result, 0, 'vnc_empty_password_refused');
-                finish(null, result);
-              }
-            } catch (error) { finish(error); }
-          });
+        // TASK-071: this process is in its own user+network namespace with only loopback.
+        const { networkInterfaces } = await import('node:os');
+        assert.deepEqual(Object.keys(networkInterfaces()), ['lo'], 'only_lo');
+        assert.equal(fs.readFileSync('/proc/self/status', 'utf8').split(String.fromCharCode(10)).find((line) => line.startsWith('CapEff:')).split(':')[1].trim(), '0000000000000000', 'zero_caps');
+        const server = http.createServer((_req, res) => res.end('own-marker'));
+        await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+        const ownPort = server.address().port;
+        const own = await new Promise((resolve) => {
+          http.get({ host: '127.0.0.1', port: ownPort }, (res) => { let body = ''; res.on('data', (chunk) => { body += chunk; }); res.on('end', () => resolve(body)); })
+            .on('error', () => resolve('error'));
         });
-        const request = (port, headers) => new Promise((resolve, reject) => {
-          const req = http.request({ host: '127.0.0.1', port, path: '/v1/agents/${A}/commands', method: 'POST',
-            headers: { 'content-type': 'application/json', ...headers } }, (res) => {
-            let body = ''; res.on('data', (chunk) => { body += chunk; }); res.on('end', () => resolve({ status: res.statusCode, body }));
-          });
-          req.setTimeout(4000, () => { req.destroy(); reject(Error('http_timeout')); }); req.on('error', reject); req.end('{}');
+        assert.equal(own, 'own-marker', 'own_loopback_works');
+        const unreachable = (port) => new Promise((resolve) => {
+          const socket = net.connect({ host: '127.0.0.1', port });
+          const done = (value) => { socket.destroy(); resolve(value); };
+          socket.setTimeout(1500, () => done(true));
+          socket.once('connect', () => done(false));
+          socket.once('error', () => done(true));
         });
-        const without = await request(4310, {});
-        const wrong = await request(4310, { authorization: 'Bearer ' + '${"0".repeat(64)}' });
-        const files = await request(4311, {});
-        const filesWrong = await request(4311, { authorization: 'Bearer ' + '${"0".repeat(64)}' });
-        for (const result of [without, wrong, files, filesWrong]) { assert.equal(result.status, 403); assert.equal(JSON.parse(result.body).code, 'source_denied'); }
-        console.log(JSON.stringify({ vnc: 'handshake_only_empty_password_refused', controlWithoutToken: 403, controlWrongToken: 403, files: 403, filesWrongToken: 403 }));
+        for (const port of [${sb.vncPort}, ${sa.vncPort}, 4310, 4311]) assert.equal(await unreachable(port), true, 'unreachable_' + port);
+        server.close();
+        console.log(JSON.stringify({ interfaces: ['lo'], ownLoopback: true, peerVnc: false, controller: false, files: false }));
       `));
-      record(`loopback_authenticated_not_unreachable_${self.agentId}`, { ...output, boundary: "authenticated_not_network_isolated" });
+      record(`loopback_private_${self.agentId}`, { ...output, boundary: "private_loopback" });
     }
 
     current = "proc";
-    const findWorker = (executor, peerUid) => JSON.parse(agent(executor, `
+    // A single-uid user namespace cannot see the peer uid on /proc, so the container root finds
+    // the pid; every denial probe below still runs as the agent.
+    const findWorker = (peerUid) => JSON.parse(root(`
       import fs from 'node:fs';
       const found = [];
       for (const entry of fs.readdirSync('/proc')) {
@@ -140,7 +122,7 @@ test("agent A cannot reach agent B's processes, files, tmp state, VNC or control
       console.log(JSON.stringify(found));
     `));
     for (const [self, peer, peerSession] of [[a, b, sb], [b, a, sa]]) {
-      const [peerPid] = findWorker(self.agentId, peer.uid); assert.ok(peerPid, "peer session worker visible");
+      const [peerPid] = findWorker(peer.uid); assert.ok(peerPid, "peer session worker visible");
       const output = JSON.parse(agent(self.agentId, `
         import fs from 'node:fs';
         import assert from 'node:assert/strict';
@@ -202,7 +184,7 @@ test("agent A cannot reach agent B's processes, files, tmp state, VNC or control
 
     current = "process_control";
     for (const [self, peer] of [[a, b], [b, a]]) {
-      const [peerPid] = findWorker(self.agentId, peer.uid); assert.ok(peerPid);
+      const [peerPid] = findWorker(peer.uid); assert.ok(peerPid);
       const output = JSON.parse(agent(self.agentId, `
         import assert from 'node:assert/strict';
         const pid = ${peerPid};
@@ -244,7 +226,8 @@ print('{"ptrace":"EPERM","process_vm_readv":"EPERM"}')
         const runtime = fs.readdirSync('/tmp').filter((name) => name.startsWith('ec-' + peerUid + '-')).map((name) => '/tmp/' + name);
         assert.ok(runtime.length >= 1, 'peer runtime directory visible by name');
         for (const directory of runtime) {
-          assert.equal(fs.statSync(directory).uid, peerUid); assert.equal(fs.statSync(directory).mode & 0o777, 0o700);
+          // A single-uid user namespace sees the peer uid as the overflow uid, never as its own.
+          assert.notEqual(fs.statSync(directory).uid, process.getuid()); assert.equal(fs.statSync(directory).mode & 0o777, 0o700);
           assert.throws(() => fs.readdirSync(directory), (error) => error.code === 'EACCES');
           assert.throws(() => fs.openSync(directory + '/Xauthority', 'r'), (error) => error.code === 'EACCES');
         }
@@ -252,7 +235,7 @@ print('{"ptrace":"EPERM","process_vm_readv":"EPERM"}')
         assert.equal(fs.statSync('/tmp/.X11-unix').mode & 0o1000, 0o1000);
         const socket = '/tmp/.X11-unix/X' + display; const lock = '/tmp/.X' + display + '-lock';
         for (const target of [socket, lock]) {
-          assert.equal(fs.statSync(target).uid, peerUid);
+          assert.notEqual(fs.statSync(target).uid, process.getuid());
           assert.throws(() => fs.unlinkSync(target), (error) => ['EPERM', 'EACCES'].includes(error.code));
           assert.throws(() => fs.renameSync(target, target + '.moved'), (error) => ['EPERM', 'EACCES'].includes(error.code));
         }
@@ -337,17 +320,13 @@ print('{"ptrace":"EPERM","process_vm_readv":"EPERM"}')
         await denied('1.1.1.1', 443);
         const rows = fs.readFileSync('/proc/net/route', 'utf8').trim().split(String.fromCharCode(10)).slice(1)
           .map((line) => line.trim().split(String.fromCharCode(9)).filter(Boolean)).filter((fields) => fields.length > 7);
+        // TASK-071 leaves only loopback routes in the agent's network namespace.
         const connected = rows.find((fields) => fields[1] !== '00000000' && fields[7] !== '00000000');
-        assert.ok(connected, 'connected subnet route');
-        const octets = (value) => { const out = []; for (let index = 3; index >= 0; index--) out.push(parseInt(value.slice(index * 2, index * 2 + 2), 16)); return out; };
-        const destination = octets(connected[1]); const mask = octets(connected[7]);
-        const network = destination.map((value, index) => value & mask[index]); network[3] += 1;
-        const gateway = network.join('.');
-        await denied(gateway, 4320);
-        await denied(gateway, 2375);
+        assert.equal(connected, undefined, 'no connected subnet route');
         await assert.rejects(dns.lookup('egress-proxy'));
         await denied('${egressIp}', 4320);
-        console.log(JSON.stringify({ public: 'denied', gateway, gatewayPorts: [4320, 2375], proxyDns: 'denied', proxyIp: 'denied' }));
+        await denied('${egressIp}', 4321);
+        console.log(JSON.stringify({ public: 'denied', subnetRoute: 'none', proxyDns: 'denied', proxyIp: 'denied' }));
       `));
       record(`no_direct_egress_from_agent_user_${self.agentId}`, output);
     }

@@ -188,7 +188,7 @@ Regression checks: `npm run test:db-client` tests retry recovery; `npm run test:
 
 The pinned noVNC 1.6.0 npm artifact has a CommonJS/top-level-await packaging incompatibility. `npm run dev` and `npm run build` automatically run `scripts/prepare-novnc.mjs`, which checks the package version and exact upstream file hash before normalizing only its browser utility module to ESM. It preserves the awaited feature probe and refuses unexpected bytes. `npm run test:novnc-compat` verifies that compatibility step; `npm run test:rfb-bridge` verifies the private view-only protocol.
 
-**TASK-010 desktop image:** `docker compose build desktop` builds the pinned Ubuntu toolchain. The approved lock contains 379 exact Ubuntu archives, verified by byte count/SHA256 before offline installation with networking disabled. Node 24.22.2, upstream Chromium 159.0.8134.0 (snapshot 1731633) and playwright-core 1.64.1 are separately pinned. The upstream browser is a development snapshot; updates require deliberate pinning and revalidation. No Chrome-for-Testing installer is used. The desktop now uses the owner-approved ADR-026 trusted setup role described below, with read-only root, bounded temporary storage and no published ports. Per-agent sessions are available through local administration; the agent runtime remains under development.
+**TASK-010 desktop image:** `docker compose build desktop` builds the pinned Ubuntu toolchain. The approved lock contains 388 exact Ubuntu archives, verified by byte count/SHA256 before offline installation with networking disabled. Node 24.22.2, upstream Chromium 159.0.8134.0 (snapshot 1731633) and playwright-core 1.64.1 are separately pinned. The upstream browser is a development snapshot; updates require deliberate pinning and revalidation. No Chrome-for-Testing installer is used. The desktop now uses the owner-approved ADR-026 trusted setup role described below, with read-only root, bounded temporary storage and no published ports. Per-agent sessions are available through local administration; the agent runtime remains under development.
 
 `npm run test:desktop-image` runs offline guards and the disposable build/smoke, saving bounded evidence under ignored `data/spikes/task-010/<uuid>/`. Tool inventory, Compose health, Xauthority/Openbox, accepted/rejected VNC authentication, noVNC WebSocket and PNG/video checks pass. TASK-010 is complete: run c66f0dda-e890-428b-8f58-a1df20c978fa verifies genuine Playwright/xdotool clicks in graphical Chromium and confirms its namespace/PID/network and Seccomp-BPF sandboxes active. The desktop-only ADR-025 profile is pinned to the upstream Playwright policy plus Chromium’s required namespace-local chroot; the ordinary container process is still denied chroot. Run Compose from the project checkout so it can load docker/desktop/seccomp_profile.json. Keep this checked-in profile, cap-drop ALL and no-new-privileges; do not use seccomp=unconfined or --no-sandbox. The five-service `test:http-security` regression passes. No model calls or personal-browser data are used.
 
@@ -584,7 +584,7 @@ Astra Mode lets one agent act **without approval prompts**.
 1. Open the agent's **Settings** and toggle **Astra Mode**.
 2. Read the warning and click **Enable Astra Mode**. A red **ASTRA MODE** badge then appears on that agent everywhere.
 
-These stay on even in Astra Mode: receipts, audit log, rewind, budget caps, leak tripwire and key isolation. A run that has read untrusted content still can't send data to destinations outside the task. Astra Mode never changes the model's own safety behaviour.
+These stay on even in Astra Mode: receipts, audit log, rewind, budget caps, leak tripwire and key isolation. A run that has read untrusted content still can't send data to destinations outside the task. Astra Mode never changes the model's own safety behaviour. The approval gate still records an `auto_allowed` decision, and the step receipt carries `astra_allowed`, so History shows exactly what ran unattended. Scheduled routine runs use the agent's Astra setting too; a non-Astra routine still waits for an approval and stops if nobody answers.
 
 **When to use it:** for well-tested routines on sites you trust, with tight domain limits and a budget cap.
 **When not to:** with payments, email to new recipients, trading, or any agent that reads untrusted content and also has access to sensitive accounts.
@@ -598,10 +598,10 @@ These stay on even in Astra Mode: receipts, audit log, rewind, budget caps, leak
 | `MEMORY.md` | The agent's notes: environment, conventions, lessons | That agent |
 
 - Every save has a scope: **global**, **agent** or **private** (only chosen agents).
-- New memories show as diffs, e.g. *"Daily Briefer learned: timezone is IST"*, with **Undo**.
-- **Pin** facts so they're never rewritten. Edit entries and view version history in the **Memory** tab.
-- Anything learned from websites, emails or documents needs your approval before it enters shared memory.
-- A Markdown copy is kept in `./data/memory` on the host, so you can read it with any editor.
+- New memories show as diffs, e.g. *"Daily Briefer learned: timezone is IST"*, with **Undo**. Releases are listed under **Memory → Change requests** and as a card in chat; nothing an agent asks to remember is saved until you approve it.
+- **Pin** facts so they're never rewritten. Edit entries and view version history in the **Memory** tab. Undo adds a new version; it never edits history.
+- Anything learned from websites, emails or documents needs your approval before it enters shared memory. A scanner rejects hidden characters, markup, standing instructions and secrets before you ever see a request.
+- A Markdown copy is kept in `./data/memory` on the host, so you can read it with any editor. Edits to those files are not read back. On a Linux host the folder must be writable by uid 1000; on Docker Desktop nothing extra is needed.
 
 ### 13. Files
 
@@ -644,9 +644,10 @@ To keep costs down, let routines replay, use Spark for most steps, and use Sunda
 
 **Leak tripwire.** Each agent has a bait file, `inbox/passwords-backup.txt`, containing a unique canary key. If the agent tries to type that key, or the browser sends it in a host name or plain-HTTP header, the request is refused, the desktop is stopped, the agent is paused with a red **Security stop** alert, and one security event is recorded. The app checks the text the model is about to type; the proxy checks browser traffic before it connects. HTTPS bodies and paths are not inspected, and chat or takeover typing is not scanned. Fix the cause, then **Resume** the agent; resume clears the trip and re-arms the canary. Deleting the decoy is fine; it is not recreated.
 
-- **Security Center** lists tripwire events, blocked actions and flagged prompt-injection attempts.
-- **Stop agent** halts one agent immediately. **Stop crew** halts every agent.
-- After a security event, the run can be rewound automatically *(coming)*, and you'll see every external action taken since the problem started.
+- **Security Center** lists security events and the signed audit log, with agent and time filters. **Export audit log** downloads the owner's full chain; check it offline with `node scripts/eclipse-crew.mjs verify-audit audit.json`. The header shows **Verified N entries** after the app runs the same verifier.
+- **Stop agent** halts one agent immediately: blocked egress, live runs cancelled, desktop stopped and the agent paused. **Stop crew** sets a crew-wide gate first, then halts every agent; new chat, scheduled, Run Now, retry, heal and replay runs are refused until you press **Resume crew**. Agents stay paused afterwards until you resume each one.
+- Blocked outbound requests appear as **Denied** rows. Stopped events link to the run in Jobs.
+- Audit signing needs `RECEIPT_SIGNING_KEY`. Without it the Security Center shows a banner and entries from that period are not recorded; existing runs already refuse to start without the key.
 
 ### 18. Voice *(coming)*
 
@@ -864,3 +865,13 @@ Eclipse Crew was built from scratch during the **Meta Global AI Developer Hackat
 - **Security policy and development security requirements:** [`docs/SECURITY.md`](../docs/SECURITY.md)
 - **Contributing:** issues and pull requests are welcome. Read the contributor checklist in `docs/SECURITY.md` before submitting code.
 - **License:** Apache-2.0 (planned; final confirmation pending). Chromium is bundled under its own license. Google Chrome is never redistributed. SAM weights are never shipped; they're downloaded on your machine under Meta's SAM License.
+
+
+## Tool connections, MCP and Composio
+
+- **Settings → Connections** saves a tool token per agent. It is encrypted on this machine; agents, models, logs and receipts never see it. The egress proxy adds it only for the exact hosts it belongs to. GitHub presets cover the hosted MCP server, the REST API and HTTPS git.
+- **MCP servers** (same screen) are pinned: Eclipse Crew records the exact tool list and its hash. A server that changes its tools blocks calls until you review and re-pin. Agents need `tool_call` in Actions and the server key under Tools.
+- **Composio (optional)** connects apps through Composio. Your Composio key is encrypted here; connected-app tokens are stored by Composio, not on this computer. Destructive tools are never pinnable. Use an MCP server if you want tokens to stay on your machine.
+- **Templates:** Create agent → PR Reviewer or Dev Agent prefills a least-privilege setup; a Setup checklist shows the missing connection or pin. `fixtures/demo-red-build` is a ready failing project for the Dev Agent flow.
+- **Shell** is opt-in. It runs as the agent inside its own network namespace: only the agent allowlist is reachable, no tool token is in its environment, and output/time are capped.
+- **Git** is in the pinned image. HTTPS git to `github.com` goes through the egress gateway: add `github.com` and `api.github.com` to Domains and a GitHub connection. Clone, fetch and pushes to a new or non-default branch work; pushes to the default branch, remote branch/tag deletes and tag moves are refused with 403. You cannot approve them yet; an approval card for them is planned (TASK-073c). Until then, have the agent push a branch and open a pull request, then merge it yourself. SSH remotes and GitHub Enterprise are unsupported, and pack data is not canary-scanned.

@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Closed shadow</title>
+<script>window.__spikeClicks = []; window.__spikeClick = (name) => { window.__spikeClicks = [...(window.__spikeClicks || []), name]; };</script>
+<style>body { margin: 0; font: 14px sans-serif; } x-book { display: block; position: absolute; left: 20px; top: 20px; }</style>
+</head>
+<body>
+<x-book></x-book>
+<script>
+customElements.define("x-book", class extends HTMLElement {
+  connectedCallback() {
+    if (this.shadowRoot) return;
+    // Deliberately not kept reachable: no handle to the closed root survives this function.
+    this.attachShadow({ mode: "closed" }).innerHTML =
+      `<button style="display:block;width:220px;height:36px" onclick="__spikeClick('Book test drive')">Book test drive</button>`;
+  }
+});
+</script>
+</body>
+</html>

@@ -99,7 +99,17 @@ export function createDesktopProxy({
       response.writeHead(status, { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", ...headers });
       response.end();
     };
-    const deny = (agent, host, reason) => log({ event: "egress_blocked", agent, host, reason });
+    // TASK-052. Allowlist refusals become audit rows in the app. One per agent + host per minute bounds the ring.
+    const denied = new Map();
+    const deny = (agent, host, reason) => {
+      log({ event: "egress_blocked", agent, host, reason });
+      if (!agent || (reason !== "not_allowed" && reason !== "forbidden_target")) return;
+      const key = `${agent}:${host ?? ""}`;
+      const at = Date.now();
+      if (at - (denied.get(key) ?? 0) < 60_000) return;
+      denied.set(key, at);
+      events?.push({ agentId: agent, source: "proxy_host", kind: "egress_blocked", host });
+    };
     if (typeof desktopSecret !== "string" || !TOKEN_PATTERN.test(desktopSecret)) return send(403);
     const agent = readBasicAgent(request.headers["proxy-authorization"], desktopSecret);
     if (!agent) return send(407, { "Proxy-Authenticate": 'Basic realm="eclipse-crew"' });

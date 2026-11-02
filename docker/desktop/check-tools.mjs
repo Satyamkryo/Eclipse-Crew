@@ -34,6 +34,11 @@ export async function checkTools({ supervisor = false } = {}) {
     websockify: version("dpkg-query", ["-W", "-f=${Version}", "websockify"], /^([\w.+:~\-]+)$/m),
     xvfb: version("dpkg-query", ["-W", "-f=${Version}", "xvfb"], /^([\w.+:~\-]+)$/m),
     novnc: version("dpkg-query", ["-W", "-f=${Version}", "novnc"], /^([\w.+:~\-]+)$/m),
+    // TASK-071: the namespace helper needs python3 and util-linux.
+    git: version("git", ["--version"], /^git version ([\w.+:~\-]+)$/m),
+    python: version("python3", ["--version"], /Python ([\d.]+)/),
+    unshare: version("unshare", ["--version"], /unshare from util-linux ([\d.]+)/),
+    setpriv: version("setpriv", ["--version"], /setpriv from util-linux ([\d.]+)/),
   };
   // Xvfb has no conventional --version; execute its help as well as querying dpkg.
   version("Xvfb", ["-help"], /(use:)/, [0]);
@@ -41,6 +46,7 @@ export async function checkTools({ supervisor = false } = {}) {
   await access("/usr/share/novnc/vnc.html"); await access("/usr/share/novnc/core/rfb.js");
   await access("/opt/chromium/chrome-linux/chrome_100_percent.pak");
   await access("/opt/eclipse/desktop/ubuntu-packages.tsv");
+  await access("/opt/eclipse/desktop/netns-enter.py");
   return inventory;
 }
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

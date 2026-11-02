@@ -88,12 +88,18 @@ export function actionLabel(action: Record<string, unknown>): { text: string; ta
     case "wait": return { text: "Wait", target: null };
     case "read_document": return { text: "Read document", target: text(action.name) || null };
     case "deliver_file": return { text: "Send file", target: text(action.name) || null };
+    case "remember": return { text: "Ask to remember", target: text(action.scope) || null };
+    case "tool_call": return { text: "External action", target: `${text(action.server)}.${text(action.tool)}` || null };
+    case "shell": return { text: "Shell command", target: text(action.program) || null };
     default: return { text: "Step", target: null };
   }
 }
 
 export function methodLabel(methods: readonly { phase: string; method: string; status: string }[], sam: string, kind: string): string {
   if (kind === "read_document" || kind === "deliver_file") return "File action, no screen check";
+  if (kind === "remember") return "Memory request, no screen check";
+  if (kind === "tool_call") return "Tool call, no screen check";
+  if (kind === "shell") return "Shell command, no screen check";
   const passed = [...new Set(methods.filter((item) => item.status === "pass").map((item) => METHOD_NAME[item.method] ?? "Check"))];
   const base = passed.length ? passed.join(" + ") : "No check passed";
   return passed.includes("SAM 3.1") ? base : `${base} (${SAM_NOTE[sam] ?? "SAM off"})`;

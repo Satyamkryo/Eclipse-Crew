@@ -11,6 +11,8 @@ export const owner = pgTable(
     login: text("login").notNull().unique(),
     passwordHash: text("password_hash").notNull(),
     timezone: text("timezone").notNull(),
+    // TASK-052. Set by Stop crew before any agent is halted; cleared only by Resume crew.
+    crewStoppedAt: timestamp("crew_stopped_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
@@ -48,6 +50,8 @@ export const agents = pgTable(
     dailyBudgetCents: integer("daily_budget_cents").notNull(),
     monthlyBudgetCents: integer("monthly_budget_cents").notNull(),
     attentionReason: text("attention_reason"),
+    // TASK-051. Removes only the approval prompt. See ADR-019; every other safety layer is unchanged.
+    astraMode: boolean("astra_mode").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -197,7 +201,7 @@ export const messages = pgTable(
     index("messages_session_created_idx").on(table.sessionId, table.createdAt, table.id),
     index("messages_run_id_idx").on(table.runId),
     check("messages_role_check", sql`${table.role} in ('user', 'agent', 'system')`),
-    check("messages_card_type_check", sql`${table.cardType} in ('message', 'clarification', 'tool_connection', 'routine', 'file', 'budget_warning', 'budget_paused', 'teach_paused', 'skill_update', 'approval')`),
+    check("messages_card_type_check", sql`${table.cardType} in ('message', 'clarification', 'tool_connection', 'routine', 'file', 'budget_warning', 'budget_paused', 'teach_paused', 'skill_update', 'approval', 'memory_change')`),
     check("messages_source_tag_check", sql`${table.sourceTag} in ('user', 'agent', 'tool', 'system')`),
   ],
 );
@@ -610,9 +614,152 @@ export const approvals = pgTable(
   (table) => [
     index("approvals_owner_id_idx").on(table.ownerId),
     check("approvals_action_class_check", sql`${table.actionClass} in ('download', 'send', 'post', 'delete', 'purchase', 'submit')`),
-    check("approvals_state_check", sql`${table.state} in ('pending', 'allowed_once', 'always_allowed', 'denied', 'expired', 'stale')`),
+    check("approvals_state_check", sql`${table.state} in ('pending', 'allowed_once', 'always_allowed', 'denied', 'expired', 'stale', 'auto_allowed')`),
     check("approvals_site_check", sql`char_length(${table.site}) <= 255`),
     check("approvals_control_name_check", sql`char_length(${table.controlName}) between 1 and 120`),
+  ],
+);
+
+// TASK-052. One hash chain per owner, signed per entry. Append-only for the app role; `agent_id` has no foreign key so
+// the record outlives the agent. The canonical entry text is stored so it can be re-hashed and verified offline.
+export const auditLog = pgTable(
+  "audit_log",
+  {
+    id: uuid("id").primaryKey(),
+    ownerId: uuid("owner_id").notNull(),
+    seq: bigint("seq", { mode: "number" }).notNull(),
+    kind: text("kind").notNull(),
+    agentId: uuid("agent_id"),
+    runId: uuid("run_id"),
+    ref: text("ref"),
+    code: text("code"),
+    host: text("host"),
+    sourceRef: text("source_ref"),
+    entryJson: text("entry_json").notNull(),
+    entryHash: text("entry_hash").notNull(),
+    prevHash: text("prev_hash").notNull(),
+    signature: text("signature").notNull(),
+    keyId: text("key_id").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("audit_log_owner_created_idx").on(table.ownerId, table.createdAt.desc()),
+    uniqueIndex("audit_log_owner_seq_idx").on(table.ownerId, table.seq),
+    uniqueIndex("audit_log_owner_source_ref_idx").on(table.ownerId, table.sourceRef).where(sql`${table.sourceRef} is not null`),
+    check("audit_log_seq_check", sql`${table.seq} > 0`),
+    check("audit_log_kind_check", sql`${table.kind} in ('tripwire', 'scope_blocked', 'egress_blocked', 'approval_denied', 'agent_stopped', 'crew_stopped', 'crew_resumed', 'login', 'password_changed', 'email_changed', 'sessions_revoked', 'agent_created', 'agent_updated', 'agent_paused', 'agent_resumed', 'agent_deleted', 'astra_enabled', 'astra_disabled', 'approval_allowed', 'permission_revoked', 'memory_approved', 'memory_rejected', 'memory_undone', 'connection_added', 'connection_replaced', 'connection_removed', 'composio_key_saved', 'composio_key_removed', 'composio_account_connected', 'composio_account_revoked')`),
+    check("audit_log_code_check", sql`${table.code} is null or ${table.code} ~ '^[a-z_]{1,48}$'`),
+    check("audit_log_hash_check", sql`${table.entryHash} ~ '^[0-9a-f]{64}$' and ${table.prevHash} ~ '^[0-9a-f]{64}$' and ${table.keyId} ~ '^sha256:[0-9a-f]{64}$'`),
+    check("audit_log_signature_check", sql`${table.signature} ~ '^[A-Za-z0-9_-]+$'`),
+    check("audit_log_ref_check", sql`${table.ref} is null or char_length(${table.ref}) between 1 and 120`),
+    check("audit_log_host_check", sql`${table.host} is null or char_length(${table.host}) between 1 and 253`),
+  ],
+);
+
+// TASK-053. Owner-approved memory. SOUL.md stays in agents.soul_md (one source of truth); the other three documents
+// are entry lists. Every change appends an immutable version; the entry table holds current state.
+export const memoryEntries = pgTable(
+  "memory_entries",
+  {
+    id: uuid("id").primaryKey(),
+    ownerId: uuid("owner_id").notNull(),
+    doc: text("doc").notNull(),
+    agentId: uuid("agent_id").references(() => agents.id, { onDelete: "cascade" }),
+    scope: text("scope").notNull(),
+    visibleTo: uuid("visible_to").array().notNull().default(sql`'{}'::uuid[]`),
+    title: text("title").notNull(),
+    body: text("body").notNull(),
+    pinned: boolean("pinned").notNull().default(false),
+    trusted: boolean("trusted").notNull().default(true),
+    status: text("status").notNull().default("active"),
+    author: text("author").notNull(),
+    sourceRunId: uuid("source_run_id"),
+    sourceLabel: text("source_label"),
+    version: integer("version").notNull().default(1),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("memory_entries_owner_id_idx").on(table.ownerId),
+    index("memory_entries_owner_doc_idx").on(table.ownerId, table.doc),
+    index("memory_entries_owner_agent_idx").on(table.ownerId, table.agentId),
+    check("memory_entries_doc_check", sql`${table.doc} in ('user', 'memory', 'private')`),
+    check("memory_entries_scope_check", sql`${table.scope} in ('global', 'agent', 'private')`),
+    check("memory_entries_shape_check", sql`(${table.doc} = 'user' and ${table.scope} = 'global' and ${table.agentId} is null and cardinality(${table.visibleTo}) = 0) or (${table.doc} = 'memory' and ${table.scope} = 'agent' and ${table.agentId} is not null and cardinality(${table.visibleTo}) = 0) or (${table.doc} = 'private' and ${table.scope} = 'private' and ${table.agentId} is not null)`),
+    check("memory_entries_visible_check", sql`cardinality(${table.visibleTo}) <= 10`),
+    check("memory_entries_title_check", sql`char_length(${table.title}) between 1 and 80`),
+    check("memory_entries_body_check", sql`char_length(${table.body}) between 1 and 600`),
+    check("memory_entries_status_check", sql`${table.status} in ('active', 'archived')`),
+    check("memory_entries_author_check", sql`${table.author} in ('owner', 'agent')`),
+    check("memory_entries_source_label_check", sql`${table.sourceLabel} is null or char_length(${table.sourceLabel}) between 1 and 120`),
+    check("memory_entries_version_check", sql`${table.version} >= 1`),
+  ],
+);
+
+// TASK-053. Append-only change log per document. `before`/`after` are entry snapshots; an undo is a new row.
+export const memoryVersions = pgTable(
+  "memory_versions",
+  {
+    id: uuid("id").primaryKey(),
+    ownerId: uuid("owner_id").notNull(),
+    docKey: text("doc_key").notNull(),
+    seq: integer("seq").notNull(),
+    entryId: uuid("entry_id"),
+    agentId: uuid("agent_id").references(() => agents.id, { onDelete: "cascade" }),
+    op: text("op").notNull(),
+    before: jsonb("before"),
+    after: jsonb("after"),
+    author: text("author").notNull(),
+    authorAgentId: uuid("author_agent_id"),
+    reason: text("reason"),
+    sourceRunId: uuid("source_run_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("memory_versions_owner_id_idx").on(table.ownerId),
+    index("memory_versions_owner_doc_idx").on(table.ownerId, table.docKey),
+    uniqueIndex("memory_versions_owner_doc_seq_idx").on(table.ownerId, table.docKey, table.seq),
+    check("memory_versions_seq_check", sql`${table.seq} >= 1`),
+    check("memory_versions_doc_key_check", sql`${table.docKey} = 'user' or ${table.docKey} ~ '^agent:[0-9a-f-]{36}:(memory|private|soul)$'`),
+    check("memory_versions_op_check", sql`${table.op} in ('add', 'edit', 'remove', 'pin', 'unpin', 'soul_edit', 'undo')`),
+    check("memory_versions_before_check", sql`${table.before} is null or jsonb_typeof(${table.before}) = 'object'`),
+    check("memory_versions_after_check", sql`${table.after} is null or jsonb_typeof(${table.after}) = 'object'`),
+    check("memory_versions_author_check", sql`${table.author} in ('owner', 'agent')`),
+    check("memory_versions_reason_check", sql`${table.reason} is null or char_length(${table.reason}) between 1 and 200`),
+  ],
+);
+
+// TASK-054. An agent's add-only memory request. It never writes memory itself; only an owner decision applies it,
+// in one transaction with its version row. `agent_id` cascades because the request is scoped to that agent.
+export const memoryChanges = pgTable(
+  "memory_changes",
+  {
+    id: uuid("id").primaryKey(),
+    ownerId: uuid("owner_id").notNull(),
+    agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+    runId: uuid("run_id"),
+    doc: text("doc").notNull(),
+    scope: text("scope").notNull(),
+    title: text("title").notNull(),
+    body: text("body").notNull(),
+    reason: text("reason").notNull(),
+    flags: text("flags").array().notNull().default(sql`'{}'::text[]`),
+    state: text("state").notNull().default("pending"),
+    resultVersionId: uuid("result_version_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+  },
+  (table) => [
+    index("memory_changes_owner_id_idx").on(table.ownerId),
+    index("memory_changes_owner_agent_idx").on(table.ownerId, table.agentId),
+    index("memory_changes_owner_state_idx").on(table.ownerId, table.state),
+    check("memory_changes_doc_check", sql`${table.doc} in ('user', 'memory', 'private')`),
+    check("memory_changes_scope_check", sql`${table.scope} in ('global', 'agent', 'private')`),
+    check("memory_changes_title_check", sql`char_length(${table.title}) between 1 and 80`),
+    check("memory_changes_body_check", sql`char_length(${table.body}) between 1 and 600`),
+    check("memory_changes_reason_check", sql`char_length(${table.reason}) between 1 and 120`),
+    check("memory_changes_flags_check", sql`cardinality(${table.flags}) <= 8`),
+    check("memory_changes_state_check", sql`${table.state} in ('pending', 'approved', 'rejected')`),
   ],
 );
 
@@ -638,6 +785,113 @@ export const permissions = pgTable(
     check("permissions_max_per_day_check", sql`${table.maxPerDay} between 1 and 1000`),
   ],
 );
+
+// TASK-070. One saved token per agent for a tool host. `bindings` lists the exact hosts the token may be sent to
+// (scheme and header included); the ciphertext is decrypted only to push the token to the egress proxy, which keeps
+// it in memory. No model, browser, desktop process, log or receipt ever receives it.
+export const connections = pgTable(
+  "connections",
+  {
+    id: uuid("id").primaryKey(),
+    ownerId: uuid("owner_id").notNull(),
+    agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+    preset: text("preset").notNull(),
+    label: text("label").notNull(),
+    bindings: jsonb("bindings").notNull(),
+    encryptedToken: text("encrypted_token").notNull(),
+    tokenHint: text("token_hint").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("connections_owner_id_idx").on(table.ownerId),
+    uniqueIndex("connections_agent_label_idx").on(table.agentId, table.label),
+    check("connections_preset_check", sql`${table.preset} in ('github', 'custom')`),
+    check("connections_label_check", sql`char_length(${table.label}) between 1 and 60`),
+    check("connections_bindings_check", sql`jsonb_typeof(${table.bindings}) = 'array' and jsonb_array_length(${table.bindings}) between 1 and 4`),
+  ],
+);
+
+// TASK-075. Composio is owner-level and opt-in. The key is encrypted here and injected only at the egress proxy;
+// connected-app tokens are held by Composio, never on this machine.
+export const composioKeys = pgTable(
+  "composio_keys",
+  {
+    id: uuid("id").primaryKey(),
+    ownerId: uuid("owner_id").notNull(),
+    encryptedKey: text("encrypted_key").notNull(),
+    keyHint: text("key_hint").notNull(),
+    injectionCheck: boolean("injection_check").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("composio_keys_owner_idx").on(table.ownerId),
+    check("composio_keys_hint_check", sql`char_length(${table.keyHint}) between 1 and 32`),
+  ],
+);
+
+// TASK-075. One connected account per agent and toolkit. The owner reviews and pins the tool list before any call.
+export const composioAccounts = pgTable(
+  "composio_accounts",
+  {
+    id: uuid("id").primaryKey(),
+    ownerId: uuid("owner_id").notNull(),
+    agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+    toolkit: text("toolkit").notNull(),
+    connectedAccountId: text("connected_account_id"),
+    status: text("status").notNull().default("pending"),
+    toolsHash: text("tools_hash"),
+    tools: jsonb("tools"),
+    pinnedAt: timestamp("pinned_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("composio_accounts_owner_id_idx").on(table.ownerId),
+    index("composio_accounts_owner_agent_idx").on(table.ownerId, table.agentId),
+    uniqueIndex("composio_accounts_agent_toolkit_idx").on(table.agentId, table.toolkit),
+    check("composio_accounts_toolkit_check", sql`${table.toolkit} ~ '^[a-z0-9_]{2,40}$'`),
+    check("composio_accounts_status_check", sql`${table.status} in ('pending', 'active', 'failed', 'revoked', 'changed')`),
+    check("composio_accounts_tools_check", sql`${table.tools} is null or (jsonb_typeof(${table.tools}) = 'array' and pg_column_size(${table.tools}) <= 262144)`),
+    check("composio_accounts_tools_hash_check", sql`${table.toolsHash} is null or ${table.toolsHash} ~ '^[0-9a-f]{64}$'`),
+  ],
+);
+
+// TASK-072. One pinned remote MCP server per agent key. The tool snapshot and its hash are stored so a server that
+// changes its tool list is blocked until the owner reviews and re-pins it. The URL host must match a connection binding.
+export const mcpServers = pgTable(
+  "mcp_servers",
+  {
+    id: uuid("id").primaryKey(),
+    ownerId: uuid("owner_id").notNull(),
+    agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+    key: text("key").notNull(),
+    preset: text("preset").notNull(),
+    url: text("url").notNull(),
+    connectionId: uuid("connection_id").notNull().references(() => connections.id, { onDelete: "restrict" }),
+    serverName: text("server_name").notNull(),
+    serverVersion: text("server_version").notNull(),
+    protocolVersion: text("protocol_version").notNull(),
+    toolsHash: text("tools_hash").notNull(),
+    tools: jsonb("tools").notNull(),
+    status: text("status").notNull().default("pinned"),
+    pinnedAt: timestamp("pinned_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("mcp_servers_owner_id_idx").on(table.ownerId),
+    uniqueIndex("mcp_servers_agent_key_idx").on(table.agentId, table.key),
+    check("mcp_servers_key_check", sql`${table.key} ~ '^[a-z0-9-]{1,32}$'`),
+    check("mcp_servers_preset_check", sql`${table.preset} in ('github', 'custom')`),
+    check("mcp_servers_url_check", sql`${table.url} ~ '^https://[^[:space:]]+$' and char_length(${table.url}) <= 2048`),
+    check("mcp_servers_status_check", sql`${table.status} in ('pinned', 'changed', 'disabled')`),
+    check("mcp_servers_tools_hash_check", sql`${table.toolsHash} ~ '^[0-9a-f]{64}$'`),
+    check("mcp_servers_tools_check", sql`jsonb_typeof(${table.tools}) = 'array' and pg_column_size(${table.tools}) <= 262144`),
+  ],
+);
+
 
 // TASK-050. One row per use of a grant. Counting is a rolling 24 hours; the 21st use asks the owner again.
 export const permissionUses = pgTable(

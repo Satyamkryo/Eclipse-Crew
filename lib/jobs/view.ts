@@ -22,6 +22,8 @@ export interface JobRow {
   runId: string;
   agentId: string;
   agentName: string;
+  // TASK-051. Read from the agent row; the signed run header is never rewritten.
+  astraMode: boolean;
   routineId: string | null;
   label: string;
   trigger: JobTrigger;
@@ -53,6 +55,7 @@ export interface UpcomingRoutine {
   label: string;
   agentId: string;
   agentName: string;
+  astraMode: boolean;
   startAt: string;
   timezone: string;
   schedule: string;
@@ -65,6 +68,7 @@ export interface PausedRoutine {
   label: string;
   agentId: string;
   agentName: string;
+  astraMode: boolean;
   nextRunAt: string;
   timezone: string;
   schedule: string;

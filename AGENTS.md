@@ -38,6 +38,7 @@ All project docs live in `docs/`. The public README is `.github/README.md` (GitH
 | `docs/DESIGN.md` | Visual system and UX rules | Any UI task |
 | `docs/ARCHITECTURE.md` | Full system design and data model | The section the task touches |
 | `docs/PRD.md` | Detailed requirements (private, not in the public repo) | Only when the above don't answer a requirement question |
+| `docs/ROADMAP.md` | Post-v1 plans; not a build list | Only when the owner asks about future work or a new idea is out of v1 scope |
 | `.github/README.md` | User-facing docs: setup, deployment, how to use each feature | Only when a change affects setup or usage |
 
 Read only the files and sections the task needs. Don't re-read a file already in context. Don't scan the whole repo when `docs/MEMORY.md` and the task tell you where to look.

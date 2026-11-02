@@ -12,7 +12,11 @@ try {
     for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => { void fixture.close(); });
   } else {
     if (positionals.length !== 1 || !["start", "status", "stop"].includes(positionals[0])) throw Error("invalid_command");
-    process.exitCode = await desktopAgent({ command: "exec", ownerId: values.owner, agentId: values.agent, project: values.project,
-      argv: ["node", "/opt/eclipse/desktop/mock-vendor/control.mjs", positionals[0]] });
+    if (positionals[0] === "start") {
+      // TASK-071: the fixture runs inside the agent session namespace, so Chromium reaches its own loopback.
+      process.exitCode = await desktopAgent({ command: "session-fixture", ownerId: values.owner, agentId: values.agent, project: values.project });
+    } else {
+      console.log(JSON.stringify({ mode: "session-namespace", note: positionals[0] === "stop" ? "Stop or restart the agent session to end the fixture." : "The fixture runs inside the live agent session." }));
+    }
   }
 } catch { console.error('{"error":"mock_vendor_refused"}'); process.exitCode = 1; }

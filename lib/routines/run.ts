@@ -17,7 +17,7 @@ export interface RoutineRunResult {
   outcome: RunOutcome | null;
   runId: string | null;
   retry: boolean;
-  reason?: "no_model" | "unavailable" | "no_signing_key" | "failed";
+  reason?: "no_model" | "unavailable" | "no_signing_key" | "crew_stopped" | "failed";
 }
 
 export async function runRoutineExecution(
@@ -63,6 +63,7 @@ export async function runRoutineExecution(
       agent: start.persona, task, provider, model: start.model, hardModel: start.hardModel, samConfig, desktop: start.desktop,
       skills: start.skills, timezone: start.timezone, ...(control ? { signal: control.signal } : {}),
       canary: start.canary, approvals: start.approvals, allowedHosts: start.allowedHosts, onScopeBlocked: start.onScopeBlocked,
+      astra: start.astra, memory: start.memory,
       onSecurityStop: start.onSecurityStop
         ? (event) => start.onSecurityStop!({ ...event, runId: receipts?.runId })
         : undefined,

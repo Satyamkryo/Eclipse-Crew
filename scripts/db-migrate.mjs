@@ -112,6 +112,20 @@ if (process.argv.includes("--inside")) {
     await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.approvals TO eclipse_app`);
     await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.permissions TO eclipse_app`);
     await database.execute(sql`GRANT SELECT, INSERT ON public.permission_uses TO eclipse_app`);
+    // TASK-052: the audit log is append-only for the runtime role, enforced by grants rather than convention.
+    await database.execute(sql`GRANT SELECT, INSERT ON public.audit_log TO eclipse_app`);
+    // TASK-053: entry state is editable, the version log is append-only.
+    await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.memory_entries TO eclipse_app`);
+    await database.execute(sql`GRANT SELECT, INSERT ON public.memory_versions TO eclipse_app`);
+    // TASK-054: proposals are decided once (state and decided_at), never deleted.
+    await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.memory_changes TO eclipse_app`);
+    // TASK-070: the owner manages connections; tokens are encrypted and the proxy receives them in memory only.
+    await database.execute(sql`GRANT SELECT, INSERT, UPDATE, DELETE ON public.connections TO eclipse_app`);
+    // TASK-072: pinned MCP servers are owner-managed rows.
+    await database.execute(sql`GRANT SELECT, INSERT, UPDATE, DELETE ON public.mcp_servers TO eclipse_app`);
+    // TASK-075: the owner key and per-agent connected accounts are owner-managed rows.
+    await database.execute(sql`GRANT SELECT, INSERT, UPDATE, DELETE ON public.composio_keys TO eclipse_app`);
+    await database.execute(sql`GRANT SELECT, INSERT, UPDATE, DELETE ON public.composio_accounts TO eclipse_app`);
     console.log("Database migrations applied.");
   } catch {
     console.error(`Database ${stage} failed.`);

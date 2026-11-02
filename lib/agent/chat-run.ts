@@ -18,8 +18,9 @@ import type { ReceiptSink } from "../receipts/fields";
 import { loadReceiptSigner } from "../receipts/signer";
 import { createReceiptRecorder } from "../receipts/store";
 import { createCostedConnector } from "../costs/runtime";
-import { clearAgentAttention, createRunCostSink, setApprovalAttention } from "../costs/store";
+import { createRunCostSink } from "../costs/store";
 import { createApprovalGate } from "../approvals/gate";
+import { refreshApprovalAttention } from "../approvals/attention";
 import type { ApprovalGate } from "../approvals/types";
 import { recordScopeBlocked } from "../security/events";
 import type { ScopeRule } from "./scope";
@@ -29,10 +30,14 @@ import { recordRunMeta } from "../jobs/meta";
 import { ensureCanary } from "../security/canary-store";
 import { createTripwirePorts, isTripped, triggerTripwire } from "../security/tripwire";
 import { listApprovedSkills } from "../skills/store";
+import { loadMemorySnapshot } from "../memory/snapshot";
 import { resolveTimezone } from "../time/clock";
 import type { AgentPersona, AgentSkill } from "./context";
 import { createDesktopPort, type DeliveredFile, type DesktopPort } from "./desktop-port";
-import { runTask, type RunCard, type RunDeps, type RunOutcome, type SecurityStopResult, type SecurityStopSignal } from "./step-loop";
+import { runTask, type MemoryPort, type RunCard, type RunDeps, type RunOutcome, type SecurityStopResult, type SecurityStopSignal } from "./step-loop";
+import { proposeMemory } from "../memory/changes";
+import { createToolPort, type ToolPort } from "../tools/port";
+import { createShellPort, type ShellPort } from "./shell-port";
 
 type Database = Awaited<ReturnType<typeof getDatabase>>;
 
@@ -42,6 +47,7 @@ export const CHAT_RUN_TEXT = {
   no_model: "I cannot answer yet. Save a Main AI model and key in Settings -> Models, then send your message again.",
   unavailable: "I could not start. Check that my desktop is running and try again.",
   no_signing_key: "I cannot run yet because receipt signing is not set up, and I do not act without proof. Run `npm run receipt-key`, then `docker compose up -d`, and send your message again.",
+  crew_stopped: "The crew is stopped. Resume the crew in the Security Center.",
 } as const;
 
 // TASK-042. How this run was started, for the Jobs dashboard. The signed header stays untouched.
@@ -82,8 +88,16 @@ export type ChatRunStart =
       allowedHosts?: readonly string[];
       onScopeBlocked?: (rule: ScopeRule, runId?: string) => void | Promise<void>;
       // TASK-050. Risky clicks wait for the owner or a scoped grant.
-      approvals?: ApprovalGate; }
-  | { ok: false; reason: "no_model" | "unavailable" | "no_signing_key" };
+      approvals?: ApprovalGate;
+      // TASK-051. This agent's Astra Mode setting, read once when the run starts.
+      astra: boolean;
+      // TASK-054. Add-only memory requests bound to this run.
+      memory?: MemoryPort;
+      // TASK-072. Pinned remote tool calls.
+      tools?: ToolPort;
+      // TASK-073. Shell commands in the agent namespace.
+      shell?: ShellPort; }
+  | { ok: false; reason: "no_model" | "unavailable" | "no_signing_key" | "crew_stopped" };
 
 // Everything a chat run reads or writes outside the step loop. Tests replace these; production uses the database,
 // the model settings store, the egress-proxy transport and the desktop controller.
@@ -98,6 +112,10 @@ export interface ChatRunPorts {
 export function createChatRunPorts(database: Database): ChatRunPorts {
   return {
     async prepare(ownerId, agentId, options) {
+      // TASK-052. Stop crew sets the gate before halting anything; no run may prepare while it is set.
+      const ownerRows = await database.select({ timezone: owner.timezone, crewStoppedAt: owner.crewStoppedAt })
+        .from(owner).where(eq(owner.id, ownerId)).limit(1);
+      if (ownerRows[0]?.crewStoppedAt) return { ok: false, reason: "crew_stopped" };
       const agent = await getAgentRecord(database, ownerId, agentId);
       if (!agent || agent.status !== "active") return { ok: false, reason: "unavailable" };
       try { await syncAgentEgress(database, ownerId, agentId); } catch { /* the proxy fails closed; the loop retries */ }
@@ -125,7 +143,7 @@ export function createChatRunPorts(database: Database): ChatRunPorts {
       try { canary = (await ensureCanary(database, ownerId, agentId)).canary; } catch { return { ok: false, reason: "unavailable" }; }
       const runId = randomUUID();
 
-      const rows = await database.select({ timezone: owner.timezone }).from(owner).where(eq(owner.id, ownerId)).limit(1);
+      const rows = ownerRows;
       const timezone = resolveTimezone(rows[0]?.timezone) ?? "UTC";
 
       let generation: string | undefined;
@@ -145,6 +163,20 @@ export function createChatRunPorts(database: Database): ChatRunPorts {
       };
       let approvedSkills: AgentSkill[] = [];
       try { approvedSkills = await listApprovedSkills(database, ownerId, agentId); } catch { approvedSkills = []; }
+      // TASK-053. One frozen snapshot per run: a write during this run is visible to the next one, never this one.
+      let memory: string | undefined;
+      try { memory = (await loadMemorySnapshot(database, ownerId, agentId)).text || undefined; } catch { memory = undefined; }
+      let memoryRequests = 0;
+      const memoryPort: MemoryPort = {
+        propose: async (input) => {
+          const result = await proposeMemory(database, {
+            ownerId, agentId, runId, queuedThisRun: memoryRequests, scope: input.scope,
+            title: input.title, body: input.text, reason: input.reason,
+          });
+          if (result.ok) memoryRequests += 1;
+          return result;
+        },
+      };
       const meta: ChatRunMeta = options?.meta ?? (options?.branch ? { trigger: "branch" } : { trigger: "chat" });
       const onSecurityStop = async (event: SecurityStopSignal & { runId?: string }): Promise<SecurityStopResult> => {
         if (event.cause === "cancelled") return isTripped(ownerId, agentId) ? "duplicate" : "failed";
@@ -157,14 +189,16 @@ export function createChatRunPorts(database: Database): ChatRunPorts {
       const approvals = createApprovalGate({
         database, ownerId,
         postCard: async (card) => { await appendAgentCard(database, ownerId, agentId, { card, sourceTag: "agent", runId }); },
-        setAttention: () => setApprovalAttention(database, ownerId, agentId),
-        clearAttention: () => clearAgentAttention(database, ownerId, agentId, "approval_pending"),
+        setAttention: () => refreshApprovalAttention(database, ownerId, agentId),
+        clearAttention: () => refreshApprovalAttention(database, ownerId, agentId),
       });
       return {
         samConfig, providerInfo, ...(samProviderInfo ? { samProvider: samProviderInfo } : {}),
         ok: true, provider: connector, model: main.model, hardModel: main.routing === "auto" ? main.hardModel : null, timezone, skills: approvedSkills,
-        persona: { id: agent.id, name: agent.name, role: agent.role, soulMd: agent.soulMd, actions: agent.actions },
-        desktop, canary, onSecurityStop, approvals, allowedHosts: agent.domains,
+        persona: { id: agent.id, name: agent.name, role: agent.role, soulMd: agent.soulMd, actions: agent.actions, tools: agent.tools, ...(memory ? { memory } : {}) },
+        tools: createToolPort({ database, ownerId, agentId }),
+        shell: createShellPort({ agentId, ownerId, generation }),
+        desktop, canary, onSecurityStop, approvals, allowedHosts: agent.domains, astra: agent.astraMode, memory: memoryPort,
         onScopeBlocked: (rule, blockedRunId) => recordScopeBlocked(database, ownerId, agentId, blockedRunId ?? runId, rule),
         receipts: (task) => createReceiptRecorder({ database, ownerId, agentId, agentName: agent.name, task, signer, runId,
           ...(options?.branch ? { branch: options.branch } : {}),
@@ -194,7 +228,7 @@ export interface PreparedChatRun {
 // (TASK-043) uses it with the branch header and a resumed task.
 export async function prepareChatRun(
   ports: ChatRunPorts, ownerId: string, agentId: string, text: string, options?: ChatRunPrepareOptions,
-): Promise<{ ok: false; reason: "no_model" | "unavailable" | "no_signing_key" } | ({ ok: true } & PreparedChatRun)> {
+): Promise<{ ok: false; reason: "no_model" | "unavailable" | "no_signing_key" | "crew_stopped" } | ({ ok: true } & PreparedChatRun)> {
   const start = await ports.prepare(ownerId, agentId, options);
   if (!start.ok) return start;
   const receipts = start.receipts?.(text);
@@ -211,21 +245,24 @@ export async function prepareChatRun(
 // Runs one task for a chat message and ends with exactly one card. Never throws.
 export async function runChatMessage(
   ownerId: string, agentId: string, text: string, ports: ChatRunPorts, meta?: ChatRunMeta,
-): Promise<"started" | "busy" | "no_model" | "unavailable" | "no_signing_key" | "failed"> {
+): Promise<"started" | "busy" | "no_model" | "unavailable" | "no_signing_key" | "crew_stopped" | "failed"> {
   const say = async (message: string) => {
     try { await ports.postCard(ownerId, agentId, { type: "message", text: message }); } catch { /* nothing more to report to */ }
   };
   let control: ReturnType<typeof registerRun> | null = null;
+  let toolPort: ToolPort | undefined;
   try {
     const prepared = await prepareChatRun(ports, ownerId, agentId, text, meta ? { meta } : undefined);
     if (!prepared.ok) { await say(CHAT_RUN_TEXT[prepared.reason]); return prepared.reason; }
     const { start, receipts, costs, provider, samConfig } = prepared;
+    toolPort = start.tools;
     if (receipts?.runId) control = registerRun(receipts.runId, ownerId, agentId);
     const result = await ports.run({
       receipts, costs, evidence: start.evidence?.(), checkpoints: start.checkpoints?.(),
       agent: start.persona, task: text, provider, model: start.model, hardModel: start.hardModel, samConfig, desktop: start.desktop,
       skills: start.skills, timezone: start.timezone, ...(control ? { signal: control.signal } : {}),
-      canary: start.canary, approvals: start.approvals, allowedHosts: start.allowedHosts, onScopeBlocked: start.onScopeBlocked,
+      canary: start.canary, approvals: start.approvals, allowedHosts: start.allowedHosts, onScopeBlocked: start.onScopeBlocked, ...(start.tools ? { tools: start.tools } : {}), ...(start.shell ? { shell: start.shell } : {}),
+      astra: start.astra, memory: start.memory,
       onSecurityStop: start.onSecurityStop
         ? (event) => start.onSecurityStop!({ ...event, runId: receipts?.runId })
         : undefined,
@@ -239,6 +276,7 @@ export async function runChatMessage(
     return "failed";
   } finally {
     control?.done();
+    await toolPort?.close?.().catch?.(() => undefined);
   }
 }
 

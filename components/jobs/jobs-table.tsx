@@ -2,6 +2,7 @@
 
 import { Check, ChevronRight, CircleAlert, Loader2, X } from "lucide-react";
 import { formatCost, formatDuration, formatTime, TONE_CLASS } from "@/components/history/format";
+import { AstraBadge } from "@/components/ui/astra-badge";
 import { cn } from "@/lib/utils";
 import { shortRunId, triggerLabel, type JobRow } from "@/lib/jobs/view";
 
@@ -63,7 +64,12 @@ export function JobsTable({ jobs, selectedRunId, timeZone, onSelect }: {
                     {shortRunId(job.runId)}
                   </button>
                 </td>
-                <td className="truncate px-2 py-1.5" title={job.agentName}>{job.agentName}</td>
+                <td className="px-2 py-1.5">
+                  <span className="flex min-w-0 items-center gap-1.5">
+                    <span className="truncate" title={job.agentName}>{job.agentName}</span>
+                    {job.astraMode && <AstraBadge />}
+                  </span>
+                </td>
                 <td className="truncate px-2 py-1.5" title={job.label}>{job.label}</td>
                 <td className="truncate px-2 py-1.5 text-muted-foreground">{triggerLabel(job.trigger)}</td>
                 <td className="whitespace-nowrap px-2 py-1.5 tabular-nums text-muted-foreground">{formatTime(job.startedAt, timeZone)}</td>
@@ -84,7 +90,11 @@ export function JobsTable({ jobs, selectedRunId, timeZone, onSelect }: {
                 selectedRunId === job.runId && "bg-accent")}>
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-sm">{job.label}</span>
-                <span className="mt-0.5 block truncate text-xs text-text-subtle">{job.agentName} · {triggerLabel(job.trigger)}</span>
+                <span className="mt-0.5 flex min-w-0 items-center gap-1 text-xs text-text-subtle">
+                  <span className="truncate">{job.agentName}</span>
+                  {job.astraMode && <AstraBadge />}
+                  <span className="shrink-0">· {triggerLabel(job.trigger)}</span>
+                </span>
                 <span className="mt-0.5 block text-xs text-text-subtle tabular-nums">
                   {formatTime(job.startedAt, timeZone)} · {job.stepCount} {job.stepCount === 1 ? "step" : "steps"} · <Cost micro={job.costMicroUsd} />
                 </span>

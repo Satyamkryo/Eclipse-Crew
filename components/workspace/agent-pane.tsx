@@ -6,10 +6,11 @@ import { Bot, Gauge, Plus, ShieldAlert, ShieldQuestion, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AgentForm } from "@/components/workspace/agent-form";
 import { ModalDialog } from "@/components/workspace/modal-dialog";
+import { AstraBadge } from "@/components/ui/astra-badge";
 import { cn } from "@/lib/utils";
 
 export type AgentAttention = "budget_warning" | "budget_paused" | "teach_paused" | "security_stop" | "approval_pending";
-export type AgentSummary = { id: string; name: string; role: string; status: "active" | "paused"; attention?: AgentAttention | null };
+export type AgentSummary = { id: string; name: string; role: string; status: "active" | "paused"; astraMode: boolean; attention?: AgentAttention | null };
 
 type Props = { agents: AgentSummary[]; selectedAgentId?: string; error?: string; csrfToken: string };
 type Toast = { agentId: string; title: string; text: string; persistent: boolean; security?: boolean; approval?: boolean };
@@ -113,7 +114,10 @@ export function AgentPane({ agents, selectedAgentId, error, csrfToken }: Props) 
                       {initials(agent.name)}
                     </span>
                     <span className="min-w-0 flex-1">
-                      <span className={cn("block truncate text-sm font-medium", agent.status === "paused" && !needsYou && "text-subtle")}>{agent.name}</span>
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        <span className={cn("min-w-0 truncate text-sm font-medium", agent.status === "paused" && !needsYou && "text-subtle")}>{agent.name}</span>
+                        {agent.astraMode && <AstraBadge />}
+                      </span>
                       <span className="block truncate text-xs text-muted-foreground">{agent.role}</span>
                     </span>
                     {needsYou ? <span className="shrink-0 text-xs font-medium text-corona">Needs you</span>

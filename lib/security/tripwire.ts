@@ -9,6 +9,8 @@ import { setAgentAttention } from "../costs/store";
 import { desktopSession } from "../desktop/client";
 import { tripAgent } from "../egress/sync";
 import { cancelAgentRuns } from "../jobs/control";
+import { recordAudit, type AuditExecutor } from "./audit";
+import { haltAgent } from "./halt";
 
 type Database = Awaited<ReturnType<typeof getDatabase>>;
 
@@ -42,7 +44,7 @@ const DESKTOP_NOT_STOPPED_TEXT = " The desktop could not be stopped.";
 const tripped = new Set<string>();
 const tripKey = (ownerId: string, agentId: string) => `${ownerId}:${agentId}`;
 
-// TASK-047. Fixed order so one failure never skips the rest: record, latch, cancel, stop, pause, one card.
+// TASK-047/052. Fixed order so one failure never skips the rest: record, halt (latch, cancel, stop, pause), one card.
 export async function triggerTripwire(ports: TripwirePorts, event: TripwireEvent): Promise<TripwireResult> {
   const key = tripKey(event.ownerId, event.agentId);
   if (tripped.has(key)) return { duplicate: true, cardPosted: true, sessionStopped: true };
@@ -52,12 +54,16 @@ export async function triggerTripwire(ports: TripwirePorts, event: TripwireEvent
   try { inserted = await ports.record(event); } catch { /* fail closed: the agent is still stopped */ }
   if (!inserted) return { duplicate: true, cardPosted: true, sessionStopped: true };
 
-  try { await ports.latch(event.ownerId, event.agentId); } catch { /* the session stop still contains this agent */ }
-  try { ports.cancelRuns(event.ownerId, event.agentId, event.runId ?? undefined); } catch { /* the pause still lands */ }
-
   let sessionStopped = false;
-  try { sessionStopped = await ports.stopSession(event.ownerId, event.agentId); } catch { sessionStopped = false; }
-  try { await ports.pause(event.ownerId, event.agentId); } catch { /* the card still tells the owner */ }
+  try {
+    const halt = await haltAgent({
+      latchEgress: ports.latch,
+      cancelRuns: (ownerId, agentId) => ports.cancelRuns(ownerId, agentId, event.runId ?? undefined),
+      stopSession: ports.stopSession,
+      markPaused: ports.pause,
+    }, { ownerId: event.ownerId, agentId: event.agentId, reason: "agent" });
+    sessionStopped = halt.desktopStopped;
+  } catch { /* the card still tells the owner */ }
 
   let cardPosted = false;
   try { cardPosted = await ports.postCard(event.ownerId, event.agentId, event.runId, sessionStopped); } catch { cardPosted = false; }
@@ -75,16 +81,23 @@ export function isTripped(ownerId: string, agentId: string): boolean {
 export function createTripwirePorts(database: Database): TripwirePorts {
   return {
     async record(event) {
-      const rows = await database.insert(securityEvents).values({
-        id: randomUUID(),
-        ownerId: event.ownerId,
-        agentId: event.agentId,
-        kind: "canary_leak",
-        source: event.source,
-        runId: event.runId ?? null,
-        sourceRef: event.sourceRef,
-      }).onConflictDoNothing({ target: securityEvents.sourceRef }).returning({ id: securityEvents.id });
-      return rows.length > 0;
+      return database.transaction(async (transaction) => {
+        const rows = await transaction.insert(securityEvents).values({
+          id: randomUUID(),
+          ownerId: event.ownerId,
+          agentId: event.agentId,
+          kind: "canary_leak",
+          source: event.source,
+          runId: event.runId ?? null,
+          sourceRef: event.sourceRef,
+        }).onConflictDoNothing({ target: securityEvents.sourceRef }).returning({ id: securityEvents.id });
+        if (!rows.length) return false;
+        await recordAudit(transaction as unknown as AuditExecutor, event.ownerId, {
+          kind: "tripwire", agentId: event.agentId, runId: event.runId ?? null,
+          ref: event.sourceRef, code: event.source,
+        });
+        return true;
+      });
     },
     async latch(ownerId, agentId) {
       // TASK-045/047. The proxy refuses this agent until the owner resumes it; the stop and pause still contain it.

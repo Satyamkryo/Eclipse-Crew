@@ -5,6 +5,8 @@ import { getAgentRecord, listAgentRecords } from "../agents/data";
 import { requireEgressProxySecret } from "../config/server";
 import { EGRESS_PROXY_URL } from "../providers/proxy-transport";
 import { listCanaryHashes } from "../security/canary-store";
+import { loadAgentCredentials, pushAgentCredentials } from "../connections/proxy-credentials";
+import { credentialsVersion } from "../connections/version";
 import type { getDatabase } from "../../db/client";
 
 // TASK-045. The proxy is memory-only and fails closed; `app` pushes each agent's allowlist over the
@@ -29,9 +31,18 @@ interface PushDependencies {
   timeoutMs?: number;
 }
 
+interface PolicyPushResult {
+  ok: boolean;
+  credentialsVersion: string | null;
+}
+
 export async function pushAgentPolicy(policy: AgentEgressPolicy, dependencies: PushDependencies = {}): Promise<boolean> {
+  return (await pushAgentPolicyDetailed(policy, dependencies)).ok;
+}
+
+async function pushAgentPolicyDetailed(policy: AgentEgressPolicy, dependencies: PushDependencies = {}): Promise<PolicyPushResult> {
   let secret: string;
-  try { secret = requireEgressProxySecret(dependencies.secret ?? process.env.EGRESS_PROXY_SECRET); } catch { return false; }
+  try { secret = requireEgressProxySecret(dependencies.secret ?? process.env.EGRESS_PROXY_SECRET); } catch { return { ok: false, credentialsVersion: null }; }
   const send = dependencies.fetchImpl ?? fetch;
   try {
     const response = await send(`${dependencies.baseUrl ?? EGRESS_PROXY_URL}/v1/policy`, {
@@ -49,16 +60,36 @@ export async function pushAgentPolicy(policy: AgentEgressPolicy, dependencies: P
         ...(policy.clearTrip ? { clearTrip: true } : {}),
       }),
     });
-    try { await response.body?.cancel(); } catch { /* the body is not needed */ }
-    return response.ok;
-  } catch { return false; }
+    if (!response.ok) {
+      try { await response.body?.cancel(); } catch { /* the body is not needed */ }
+      return { ok: false, credentialsVersion: null };
+    }
+    let credentialsVersionValue: string | null = null;
+    try {
+      const body = await response.json() as { credentialsVersion?: unknown };
+      if (typeof body.credentialsVersion === "string" && /^[0-9a-f]{64}$/.test(body.credentialsVersion)) {
+        credentialsVersionValue = body.credentialsVersion;
+      }
+    } catch { /* the policy push still succeeded */ }
+    return { ok: true, credentialsVersion: credentialsVersionValue };
+  } catch { return { ok: false, credentialsVersion: null }; }
 }
 
 export async function syncAgentEgress(database: Database, ownerId: string, agentId: string): Promise<boolean> {
   const agent = await getAgentRecord(database, ownerId, agentId);
   const canaryHashes = await listCanaryHashes(database, ownerId, agentId).catch(() => []);
   if (!agent) return pushAgentPolicy({ agentId, domains: [], blocked: true, canaryHashes });
-  return pushAgentPolicy({ agentId, domains: agent.domains, blocked: agent.status !== "active", canaryHashes });
+  const result = await pushAgentPolicyDetailed({ agentId, domains: agent.domains, blocked: agent.status !== "active", canaryHashes });
+  // TASK-070. The proxy remembers a version hash; only a different one needs a credential push. A paused agent never
+  // gets credentials pushed, and its entries were already dropped by the proxy when it was blocked.
+  if (result.ok && agent.status === "active") {
+    try {
+      const entries = await loadAgentCredentials(database, ownerId, agentId);
+      const localVersion = entries.length ? credentialsVersion(entries) : null;
+      if (localVersion !== result.credentialsVersion) await pushAgentCredentials(database, ownerId, agentId);
+    } catch { /* the next 60 s loop retries; no credential means no injection */ }
+  }
+  return result.ok;
 }
 
 // TASK-047. Trip and resume pushes. A failed push is safe: the session stop and the proxy latch fail closed.

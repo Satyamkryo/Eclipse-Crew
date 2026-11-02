@@ -1,7 +1,10 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
 
+import { eq } from "drizzle-orm";
+
 import type { getDatabase } from "../../db/client";
+import { owner } from "../../db/schema";
 import { getAgentRecord } from "../agents/data";
 import { CHAT_RUN_TEXT } from "../agent/chat-run";
 import { createDesktopPort, type DeliveredFile, type DesktopPort } from "../agent/desktop-port";
@@ -34,7 +37,7 @@ export type ReplayStart =
   | { ok: true; persona: { id: string; name: string; actions: readonly string[] }; desktop: DesktopPort;
       receipts: (task: string) => ReceiptSink; evidence: () => EvidenceSink; checkpoints: () => CheckpointSink;
       approvals: (input: { actionClass: ActionClass; site: string | null }) => Promise<"allowed" | "approval_required"> }
-  | { ok: false; reason: "unavailable" | "no_signing_key" };
+  | { ok: false; reason: "unavailable" | "no_signing_key" | "crew_stopped" };
 
 export interface ReplayRunMeta { trigger: "replay"; replayScriptId?: string; label?: string }
 
@@ -50,6 +53,9 @@ export interface ReplayPorts {
 export function createReplayPorts(database: Database): ReplayPorts {
   return {
     async prepare(ownerId, agentId, meta) {
+      // TASK-052. Replays start through their own prepare, so the crew gate is checked here too.
+      const owners = await database.select({ crewStoppedAt: owner.crewStoppedAt }).from(owner).where(eq(owner.id, ownerId)).limit(1);
+      if (owners[0]?.crewStoppedAt) return { ok: false, reason: "crew_stopped" };
       const agent = await getAgentRecord(database, ownerId, agentId);
       if (!agent || agent.status !== "active") return { ok: false, reason: "unavailable" };
       try { await syncAgentEgress(database, ownerId, agentId); } catch { /* the proxy fails closed; the loop retries */ }
@@ -93,7 +99,7 @@ export function createReplayPorts(database: Database): ReplayPorts {
 export async function runSavedReplay(
   ownerId: string, script: Pick<StoredScript, "agentId" | "name" | "steps"> & { id?: string; version?: number },
   inputs: ReadonlyMap<number, string>, ports: ReplayPorts,
-): Promise<"started" | "busy" | "unavailable" | "no_signing_key" | "failed"> {
+): Promise<"started" | "busy" | "unavailable" | "no_signing_key" | "crew_stopped" | "failed"> {
   const say = async (message: string) => {
     try { await ports.postCard(ownerId, script.agentId, { type: "message", text: message }); } catch { /* nothing more to report to */ }
   };

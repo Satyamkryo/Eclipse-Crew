@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Deep outer frame</title>
+<script>window.__spikeClicks = []; window.__spikeClick = (name) => { window.__spikeClicks = [...(window.__spikeClicks || []), name]; };</script>
+<style>body { margin: 8px; font: 14px sans-serif; } iframe { border: 0; }</style>
+</head>
+<body>
+<button style="width:200px;height:36px" onclick="__spikeClick('Outer frame button')">Outer frame button</button>
+<iframe src="/_frame-deep-inner.html" style="display:block;width:260px;height:110px;margin-top:6px"></iframe>
+</body>
+</html>

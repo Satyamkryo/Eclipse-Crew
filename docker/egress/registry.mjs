@@ -30,10 +30,11 @@ export function tokenMatches(provided, expected) {
   return timingSafeEqual(Buffer.from(provided, "hex"), Buffer.from(expected, "hex"));
 }
 
-export function createRegistry({ ttlMs = POLICY_TTL_MS, now = Date.now, maxPerAgent = MAX_TUNNELS_PER_AGENT, maxTotal = MAX_TUNNELS } = {}) {
+export function createRegistry({ ttlMs = POLICY_TTL_MS, now = Date.now, maxPerAgent = MAX_TUNNELS_PER_AGENT, maxTotal = MAX_TUNNELS, onRemove = null } = {}) {
   const agents = new Map();
   const hashToAgent = new Map();
   let tunnels = 0;
+  const removed = (agentId) => { try { onRemove?.(agentId); } catch { /* the policy still fails closed */ } };
 
   function destroyTunnels(entry) {
     for (const socket of entry.tunnels) {
@@ -61,6 +62,7 @@ export function createRegistry({ ttlMs = POLICY_TTL_MS, now = Date.now, maxPerAg
       destroyTunnels(entry);
       removeHashes(entry);
       agents.delete(agentId);
+      removed(agentId);
       return null;
     }
     return entry;
@@ -76,6 +78,7 @@ export function createRegistry({ ttlMs = POLICY_TTL_MS, now = Date.now, maxPerAg
           expiresAt: now() + ttlMs, tunnels: new Set() };
         agents.set(agentId, created);
         installHashes(agentId, nextHashes);
+        if (blocked) removed(agentId);
         return { changed: true, tripped: created.tripped };
       }
       const changed = existing.blocked !== blocked ||
@@ -84,6 +87,7 @@ export function createRegistry({ ttlMs = POLICY_TTL_MS, now = Date.now, maxPerAg
       const hashesChanged = existing.canaryHashes.length !== nextHashes.length ||
         existing.canaryHashes.some((hash, index) => hash !== nextHashes[index]);
       if (changed || options.trip) destroyTunnels(existing);
+      if (blocked) removed(agentId);
       if (hashesChanged) {
         removeHashes(existing);
         installHashes(agentId, nextHashes);
@@ -106,6 +110,7 @@ export function createRegistry({ ttlMs = POLICY_TTL_MS, now = Date.now, maxPerAg
       entry.tripped = true;
       entry.blocked = true;
       destroyTunnels(entry);
+      removed(agentId);
     },
     tripByCanary(hash) {
       if (typeof hash !== "string" || !HASH_PATTERN.test(hash)) return null;
@@ -142,7 +147,7 @@ export function createRegistry({ ttlMs = POLICY_TTL_MS, now = Date.now, maxPerAg
       for (const agentId of [...agents.keys()]) prune(agentId);
     },
     closeAll() {
-      for (const entry of agents.values()) destroyTunnels(entry);
+      for (const entry of agents.values()) { destroyTunnels(entry); removed(entry.agentId); }
       hashToAgent.clear();
       agents.clear();
     },

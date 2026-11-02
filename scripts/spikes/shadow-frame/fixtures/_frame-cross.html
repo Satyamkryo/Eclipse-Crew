@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Cross-site frame</title>
+<script>window.__spikeClicks = []; window.__spikeClick = (name) => { window.__spikeClicks = [...(window.__spikeClicks || []), name]; };</script>
+<style>body { margin: 8px; font: 14px sans-serif; } button { display: block; width: 200px; height: 36px; margin: 0 0 8px; }</style>
+</head>
+<body>
+<button onclick="__spikeClick('Cross-site button')">Cross-site button</button>
+<x-widget></x-widget>
+<script>
+customElements.define("x-widget", class extends HTMLElement {
+  connectedCallback() {
+    if (this.shadowRoot) return;
+    this.attachShadow({ mode: "open" }).innerHTML =
+      `<button style="display:block;width:200px;height:36px" onclick="__spikeClick('Cross-site shadow')">Cross-site shadow</button>`;
+  }
+});
+</script>
+</body>
+</html>

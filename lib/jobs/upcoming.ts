@@ -15,7 +15,7 @@ const MAX_PER_ROUTINE = 50;
 const MAX_TOTAL = 200;
 
 type RoutineRow = {
-  id: string; agentId: string; agentName: string | null; goal: string; schedule: string;
+  id: string; agentId: string; agentName: string | null; astraMode: boolean | null; goal: string; schedule: string;
   scheduleSpec: unknown; timezone: string; nextRunAt: Date; budgetCents: number; catchUp: string; active: boolean;
 };
 
@@ -26,6 +26,7 @@ async function readRoutines(database: Database, ownerId: string, active: boolean
     id: routines.id,
     agentId: routines.agentId,
     agentName: agents.name,
+    astraMode: agents.astraMode,
     goal: routines.goal,
     schedule: routines.schedule,
     scheduleSpec: routines.scheduleSpec,
@@ -80,6 +81,7 @@ export async function listUpcoming(
       if (row.nextRunAt.getTime() <= horizon.getTime()) {
         runs.push({
           routineId: row.id, label: row.goal, agentId: row.agentId, agentName: row.agentName ?? "Unknown agent",
+          astraMode: row.astraMode === true,
           startAt: row.nextRunAt.toISOString(), timezone: routineTimezone, schedule: row.schedule,
           budgetCents: row.budgetCents, catchUp: catchUpOf(row.catchUp),
         });
@@ -95,6 +97,7 @@ export async function listUpcoming(
         label: row.goal,
         agentId: row.agentId,
         agentName: row.agentName ?? "Unknown agent",
+        astraMode: row.astraMode === true,
         startAt: next.toISOString(),
         timezone: routineTimezone,
         schedule: row.schedule,
@@ -121,6 +124,7 @@ export async function listUpcoming(
     label: row.goal,
     agentId: row.agentId,
     agentName: row.agentName ?? "Unknown agent",
+    astraMode: row.astraMode === true,
     nextRunAt: row.nextRunAt.toISOString(),
     timezone: resolveTimezone(row.timezone) ?? "UTC",
     schedule: row.schedule,

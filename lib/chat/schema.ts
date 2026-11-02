@@ -117,6 +117,16 @@ const approvalCardSchema = z.object({
   controlName: singleLine,
 }).strict();
 
+// TASK-054. Memory is add-only for agents. The card names the document and title; the text itself is shown only as an
+// escaped diff on the owner-only change-review route.
+const memoryChangeCardSchema = z.object({
+  type: z.literal("memory_change"),
+  changeId: z.string().uuid(),
+  doc: z.enum(["user", "memory", "private"]),
+  scope: z.enum(["global", "agent", "private"]),
+  title: singleLine,
+}).strict();
+
 export const chatCardSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("teach_paused"), captureId: z.string().uuid(), reason: z.string().regex(/^[a-z_]{1,64}$/) }).strict(),
   messageCardSchema,
@@ -128,6 +138,7 @@ export const chatCardSchema = z.discriminatedUnion("type", [
   budgetPausedCardSchema,
   skillUpdateCardSchema,
   approvalCardSchema,
+  memoryChangeCardSchema,
 ]);
 
 export const userMessageInputSchema = z.object({ text }).strict();

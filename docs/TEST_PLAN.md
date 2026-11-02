@@ -66,7 +66,7 @@ Rules for AI agents:
 
 ## Workspace shell (TASK-018)
 
-- [ ] Nov 3 UI follow-up: check desktop header spacing, aligned pane headers, the thin divider with a 24 px drag target, six tabs fitting at 375/380 px, and slim dark scrollbars. Typecheck and focused ESLint passed in the working checkout; live browser verification pending.
+- [ ] Nov 3 UI follow-up: verify the desktop app header keeps Eclipse Crew, Security and Jobs clear of pane headings; pane headers align, the resize divider is 1 px with a 24 px pointer target, and all six panel tabs fit without scrollbars at 375/380 px. Check slim dark scrollbars on overflowing panels and keyboard resizing at 1280/1440 px.
 
 - [x] Real browser at 1280/1440 px shows the 260 px agent pane, flexible chat and 380 px–50% right panel; pointer and keyboard resizing stay in bounds, including after soft navigation
 - [x] All six right-panel tabs fit at 380 and 375 px, navigate by Arrow/Home/End, control the existing panel, and expose visible focus
@@ -115,7 +115,7 @@ Rules for AI agents:
 ## Desktop image foundation
 
 - [x] TASK-010 offline guards reject host mounts/ports, credentials, root/capability changes and mismatched image identities; dependency/sandbox constraints are checked.
-- [x] TASK-010: approved package lock verifies 379 archives / 218769418 bytes before offline installation; pinned Node/Chromium image builds and every required tool executes. Earlier snapshot outage remains historical.
+- [x] TASK-010: approved package lock verifies 388 archives / 232159408 bytes before offline installation; pinned Node/Chromium image builds and every required tool executes. Earlier snapshot outage remains historical.
 - [x] TASK-010: run 0d69e5bc-7966-4ef3-8e5f-40035b2e00e0 verifies non-root Xauthority/Openbox, accepted/rejected VNC authentication, noVNC WebSocket, 1024x768 PNG and three-frame video; cleanup complete.
 - [x] TASK-010: run c66f0dda-e890-428b-8f58-a1df20c978fa passes genuine Playwright and xdotool clicks in graphical Chromium; chrome://sandbox reports namespace/PID/network and Seccomp-BPF active. Parent has zero capabilities/no-new-privileges and ordinary chroot remains denied.
 - [x] TASK-010: desktop Compose health and runtime isolation settings pass; both five-service http-security tests pass after the package and ADR-025 sandbox revisions.
@@ -346,7 +346,7 @@ Rules for AI agents:
 - [x] Always allow is stored per agent + site + action (+ limit) and doesn't apply to other agents or sites (`test:approvals` real-Postgres: exact host only, subdomain/other class/other agent denied; revoke removes it at once)
 - [x] An action over a saved limit asks again (`test:approvals`: a grant with one use allows once, then creates a new approval and the run waits)
 - [ ] Enabling Astra Mode needs the warning modal; the red ASTRA MODE badge shows everywhere
-- [ ] In Astra Mode, receipts, audit log, budgets, tripwire and key isolation still work
+- [x] In Astra Mode, receipts, audit log, budgets, tripwire and key isolation still work (`test:astra` gate auto-allow/record, `test:agent-step-loop` proves allowlist, task scope, canary, step limit and budget still block; audit rows are covered by `test:audit`)
 
 ## Security
 
@@ -355,9 +355,9 @@ Rules for AI agents:
 - [ ] Credentials are injected by the egress proxy; the model never sees them
 - [x] An agent's canary secret leaving the machine kills the session and logs a security event (`test:canary` 4/4, `test:tripwire` 5/5, `test:egress-tripwire` 7/7, `test:agent-step-loop` 43/43). Limits: no TLS interception, so HTTPS bodies/paths, chat text, owner takeover typing and provider calls are not inspected; the proxy sees `CONNECT` hosts and plain-HTTP request lines/headers, and the app sees `type` text before execution.
 - [x] A malicious page instructing the agent to send data elsewhere does not change the task (TASK-049 offline: `test:agent-scope` 8/8 covers hosts, emails, look-alikes, userinfo tricks, page rule and hostile input; `test:agent-step-loop` proves no desktop input, unchanged task and text-free receipts. Live hostile page pending TASK-055)
-- [ ] Stop agent halts one agent immediately; Stop crew halts all of them
+- [x] Stop agent halts one agent immediately; Stop crew halts all of them (`test:halt`: fixed order, independent steps, time bounds, crew gate first; `test:tripwire` keeps the trip order)
 - [ ] Security Center lists tripwire events and blocked actions
-- [ ] Audit log is append-only and signed
+- [x] Audit log is append-only and signed (`test:audit`: 20 concurrent writers form one gap-free chain, duplicate `source_ref` recorded once, runtime UPDATE/DELETE denied, tampering fails `entry_hash_mismatch`; `test:verify-cli` covers `verify-audit` pass, pin, truncation and tamper)
 
 ### TASK-071 network namespace spike (2026-11-02 IST)
 
@@ -370,9 +370,9 @@ Rules for AI agents:
 - [x] The fixed HTTP bridge reaches only its disposable fixture. Unlisted/private/metadata destinations, simulated forbidden DNS, a forbidden redirect and forged agent identity all return 403. The DNS fixture is deterministic and is not production resolver/allowlist enforcement.
 - [x] Real graphical Chromium loads the bridge fixture, clicks the known button and captures a 4,546-byte PNG in all three sessions. `chrome://sandbox` confirms namespace/PID/network and Seccomp-BPF layers. Existing `startSession` and Playwright private pipes are reused; no production controller integration or noVNC acceptance is claimed.
 - [ ] **Candidate boundary failure (3 assertions):** every session connects to the deliberately world-accessible `/tmp/task071-shared.sock` in the shared filesystem. Network namespaces isolate abstract sockets, but pathname sockets still depend on filesystem permissions/authentication. This is a synthetic counterexample, not a demonstrated exploit of an existing app listener. See [network_namespaces(7)](https://man7.org/linux/man-pages/man7/network_namespaces.7.html), [unix(7)](https://man7.org/linux/man-pages/man7/unix.7.html) and [user_namespaces(7)](https://man7.org/linux/man-pages/man7/user_namespaces.7.html).
-- [ ] **Environment limit:** this Docker Desktop engine advertises seccomp but no AppArmor; both existing desktop and fixture have an empty AppArmor profile. No override or host setting was changed. AppArmor enforcement and Linux-host portability remain unverified.
+- [ ] **Environment limit:** this Docker Desktop engine advertises seccomp but no AppArmor; both existing desktop and fixture have an empty AppArmor profile. No override or host setting was changed. Superseded for the kernel layer by the Oracle probe below (Ubuntu 24.04 aarch64, AppArmor enabled); the full x86-64 suite with the real desktop image and Linux-host portability remain unverified.
 - [x] Named volume, internal network, fixture container/image and temporary base-image tag are removed. Independent run-label enumeration is empty; all pre-existing container IDs/images/running states/start times/restart counts and volume/network identities are preserved.
-- Next bounded validation: inventory the actual desktop's pathname listeners and test that peer agents cannot use them to reach network-capable services. Check private directories and service authentication, including X/Chromium sockets. Approve a separate production prompt only after that boundary is accounted for; an AppArmor-capable Linux run is still needed for that layer.
+- Next bounded validation: inventory the actual desktop's pathname listeners and test that peer agents cannot use them to reach network-capable services. Check private directories and service authentication, including X/Chromium sockets. Approve a separate production prompt only after that boundary is accounted for; the full x86-64 isolation suite (which runs under AppArmor) is still needed for that layer.
 - No real credentials, saved profiles, models, external websites, metadata endpoints or unrelated LAN targets were used. Production allowlists, credential injection, tripwire, approvals and controller integration remain separate acceptance; their existing boxes stay unchecked.
 - Offline harness checks: `node --test tests/network-namespace-spike.test.mjs` (7/7 with Windows child-process access), `npm run lint` and `npm run typecheck` pass. `--test-isolation=none` also passes 7/7 within the restricted sandbox, avoiding its child-process EPERM without changing Docker security.
 
@@ -385,15 +385,39 @@ Rules for AI agents:
 - [x] Plain HTTP from the browser to an allowlisted host is redirected to HTTPS; plaintext is never forwarded.
 - [ ] Live owner-stack check (rebuild with `EGRESS_DESKTOP_SECRET`, browse an allowlisted and a blocked site from an agent desktop) and a chat-run push against the running app.
 
+### Shadow DOM and iframe grounding spike (2026-11-02 IST)
+
+- Reproduce: `node scripts/spikes/shadow-frame/run.mjs`. One throwaway `main-desktop` container, uid `65534:65534`, `--read-only`, `--cap-drop=ALL`, `no-new-privileges`, the pinned seccomp profile, `--network none` and no mounts or ports; the live-page phase is a separate `--live` opt-in and was not run. Evidence: `data/spikes/shadow-frame/<runId>/report.md`. No production file changed.
+- Final run `bdd10ac2f05b` (61.7 s): image `sha256:09f18a2f8398…` created 2026-11-02T00:21:42Z; the image's `page-snapshot.mjs` hash matched the repo copy; cleanup complete; Compose unchanged before/after (5 services, digest `3b39c38a7efa`). Calibration origin `{x:4,y:87}`, viewport 1015×676, real xdotool pointer moves.
+- Columns: **Current** = the image's `scanPage` (top frame only); **A** = open-shadow DOM walk with per-frame offsets and the parent hit test; **B** = CDP `Accessibility.getFullAXTree` + `DOM.getContentQuads`, one session per frame. 9 fixtures, 38 named targets, 27 of them `listed`.
+
+| Scanner | Fixtures pass | Listed targets found / clicked | heavy.html p95 | Safety |
+|---|---|---|---|---|
+| Current | 2/9 | 9 / 27 | 4 ms | pass |
+| A | 8/9 | 26 / 27 | 155 ms | pass |
+| B | 5/9 | 18 / 27 | 240 ms | **fail** |
+
+- [x] Every cross-site frame really ran out of process: CDP `Target.getTargets` reported a `localhost:8082` iframe target for all three fixtures that embed one (`cross-site.html`, `sensitive.html`, `payment.html`).
+- [x] No sensitive or payment control was ever listed by Current or A. All three scanners counted the Stripe-shaped frame, listed none of its controls, and never offered `cc-number`, `cc-exp`, `cc-csc`, a password field or an `one-time-code` field — in open shadow, in a same-origin frame and in a cross-site frame.
+- [x] Speed: p95 on `heavy.html` (50 hosts × 10 open-shadow buttons + 5 frames × 50 buttons) was 155 ms for A and 240 ms for B, both under the 1,500 ms bar; both hit the 150-control production cap on that page, which the report marks.
+- [x] Clicks are verified by real input, not by the scanner's own claim: the page records `window.__spikeClicks` per frame and the click counts only if exactly the named target recorded it.
+- [ ] **Safety failure, B:** `obstruction.html/Covered shadow` — an open-shadow button under a fixed overlay — was listed by B and its click landed. The accessibility tree carries no hit-test information, so B cannot decide what is reachable and must not be a grounding source on its own.
+- [ ] **Coverage gap, A:** `closed-shadow.html/Book test drive` was found by no DOM route (0/1) and only by B (1/1). Closed roots stay unreachable to any in-page script.
+- [ ] **Coverage gap, B:** same-process child frames are unreachable with the prescribed per-frame CDP sessions — `frames.html` 1/7 (only the top-frame button), and the buttons inside the same-origin frames of `sensitive.html` and `obstruction.html` are missing too. Out-of-process frames are fine (3/3).
+- [ ] **Name divergence:** the open-shadow button labelled from a light-DOM id (`Cross label`) is named by A and unnamed to the accessibility tree, so B cannot list it. `docs/ARCHITECTURE.md` §7's cascade would have to keep A's name rules to preserve the current inventory.
+- [x] Verification predicates still behave: `control_present` passed for the 3 sampled targets per scanner per fixture, and `control_absent: Removed target` passed for all three after the real click on "Remove target" (`verifySnapshot`, no ambiguous matches).
+- Offline harness checks: `node --test tests/shadow-frame-spike.test.mjs` (7/7 — container flags and the `--live` one-value diff, classification refuses a pass on missing data, cleanup refuses a foreign or Compose-managed container, report rendering, and the fixture/cases agreement), `npm run lint`, `npm run typecheck`, `git diff --check`.
+- Recommendation from the table: **combine them** — build A as the primary shadow/frame scanner (8/9 fixtures, 26/27 clicks, safety clean) and keep B as the fallback for closed roots only, gated behind A's hit test. Live-site evidence (Shoelace, Porsche, MDN, Stripe) is still owed before the production prompt.
+
 ## Memory
 
 - [ ] `SOUL.md`, `USER.md` and `MEMORY.md` are readable and editable in the Memory tab
-- [ ] Every new entry has a scope (global / agent / private) and provenance
-- [ ] A `private` entry is not visible to agents outside its list
-- [ ] Facts learned from web, email or documents need approval before entering shared memory
-- [ ] New memories show as diffs with Undo; pinned facts are never rewritten
-- [ ] Writes during a session take effect in the next session (frozen snapshot)
-- [ ] Changes are mirrored to `./data/memory` as Markdown
+- [x] Every new entry has a scope (global / agent / private) and provenance (`test:memory-store`: owner writes carry scope, author and version; `test:memory` proves default-deny reads)
+- [x] A `private` entry is not visible to agents outside its list (`test:memory`: scope rule; `test:memory-store`: agent B never sees agent A's MEMORY/private notes in the snapshot)
+- [x] Facts learned from web, email or documents need approval before entering shared memory (`test:memory-changes`: propose writes nothing, approve applies, reject/expired refused; `test:memory-scan` rejects injection and secrets)
+- [x] New memories show as diffs with Undo; pinned facts are never rewritten (`test:memory-changes`: undo appends a restore and stale versions are refused; pinned body refusal is enforced in `undoMemoryVersion`)
+- [x] Writes during a session take effect in the next session (frozen snapshot) (`test:memory-store`: an already-loaded snapshot is unchanged, the next load sees the new entry)
+- [x] Changes are mirrored to `./data/memory` as Markdown (`test:memory-store`: USER.md, SOUL.md, MEMORY.md and PRIVATE.md match the database)
 - [ ] Asked about a fact saved in an earlier session, the agent checks memory and answers with it instead of asking the owner again
 - [ ] "I'll remember that" is only said after a memory write request was made
 
@@ -429,3 +453,24 @@ Rules for AI agents:
 
 - [ ] The demo story runs end to end without manual fixes in 5 consecutive takes
 - [ ] At least 4 Meta models are visibly used (Spark/Wonder, SAM 3.1, Voice Transcribe, Image)
+
+
+## Connections, MCP, Composio, templates, shell and namespaces (TASK-070–075)
+
+- [x] `npm run test:connections`: owner scoping, 8-per-agent cap, label uniqueness, cascade, audit kinds, token never returned.
+- [x] `npm run test:egress-credentials`: bearer/basic/header injection, peer isolation, block/trip/expiry wipe, redaction, canary, header allowlist.
+- [x] `npm run test:mcp`: JSON and SSE replies, session id, pin hash stability, risk table, discovery → pin, changed tools block.
+- [x] `npm run test:composio`: encrypted key, session body (`instant:false`, no sandbox), link mapping, pin, blocked results, per-agent accounts.
+- [x] `npm run test:agent-templates`: templates parse, personas ≤ 2000, no browser actions, fixture is red.
+- [x] `npm run test:agent-step-loop`: `tool_call` allowlist/scope/canary/approval/receipt and `shell` allowlist/canary/exit/timeout/receipt.
+- [x] `npm run test:egress-relay` (Linux): client Proxy-Authorization replaced, token never echoed, malformed head closed, two identities kept.
+- [x] `npm run test:netns` (Linux): helper rejects malformed args; a non-root process either isolates or returns a fixed code.
+- [x] `npm run test:shell`: fixed shell environment with no secret, proxy and git-gateway rewrite, credential helper disabled, bounded result schema/formatting, `exit_code`/`stdout_contains` expectations, invalid input refused before spawn.
+- [x] `npm run test:git-gateway`: pkt-line create/update/delete/multiple/capabilities/truncation/`push-cert`/over-64 KiB; classification for default, non-default, new, delete, tag and lookup failure; forged preface; client `Authorization` stripped and Basic injected; blocked push 403 without contacting GitHub; gzip 415; missing credential 403; token absent from logs and responses.
+- [x] `npm run test:egress-relay` (Linux): the gateway relay writes its own `ECLIPSE-AGENT` preface before any client bytes.
+- [x] `git --version` executes in the rebuilt pinned image (`2.43.0`); the lock is 388 archives / 232159408 bytes.
+- [ ] Live git: clone and push a branch from an agent namespace; push to `main` is refused; `env` shows no token. Not run: needs an owner GitHub token and a live egress-proxy rebuild; offline coverage passes.
+- [ ] Live owner checks: GitHub Test with a real token; GitHub MCP discovery/pin and a read + comment; Composio link/pin/read/write; shell + git.
+- [ ] Linux host + AppArmor run of the isolation suite.
+- [x] Live `npm run test:agent-sessions` passes (6/6): the cookie fixture now starts inside each session namespace through `session-fixture-cookie`, so Chromium reaches only its own loopback; the container's own loopback has no listener. Fixes the `ECLIPSE_FIXTURES` flag that `bootstrap.py` previously dropped before the supervisor and the worker. Loopback is now an explicit proxy bypass, and the test's capability check accepts the namespaced session worker alongside Chromium.
+- [x] Kernel/AppArmor probe (Oracle Ubuntu 24.04 aarch64, Docker 29.9.2, AppArmor enabled, `kernel.apparmor_restrict_unprivileged_userns = 1`, `user.max_user_namespaces = 47461`): `unshare --user --net --map-user=20001 --map-group=20001` as uid 20001 with `--cap-drop ALL` and no-new-privileges. Default Docker seccomp blocks it (`Operation not permitted`); project seccomp + default AppArmor works (uid map `20001 20001 1`, only `lo`); unconfined seccomp works; project seccomp + `apparmor=unconfined` fails at `write /proc/self/uid_map` (unconfined counts as unprivileged under the sysctl). No custom profile or sysctl change is needed, and the desktop must never run with AppArmor off.

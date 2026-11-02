@@ -39,7 +39,7 @@ WORKDIR /opt/eclipse/desktop
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --omit=optional --ignore-scripts --no-audit --no-fund \
     && npm cache clean --force
-COPY check-tools.mjs smoke.mjs bootstrap.py agent-store.mjs agent-admin.mjs supervisor.mjs session-manager.mjs session-worker.mjs cookie-snapshot.mjs vnc-session.mjs rfb-bridge.mjs seccomp_profile.json controller-schema.mjs controller.mjs controller-channel.mjs file-server.mjs inbox-writer.mjs outbox-reader.mjs file-tools.mjs checkpoint-tools.mjs checkpoint-restore.mjs page-snapshot.mjs teach-capture.mjs teach-safety.mjs ./
+COPY check-tools.mjs smoke.mjs bootstrap.py agent-store.mjs agent-admin.mjs supervisor.mjs session-manager.mjs session-worker.mjs cookie-snapshot.mjs vnc-session.mjs rfb-bridge.mjs seccomp_profile.json controller-schema.mjs controller.mjs controller-channel.mjs file-server.mjs inbox-writer.mjs outbox-reader.mjs file-tools.mjs checkpoint-tools.mjs checkpoint-restore.mjs page-snapshot.mjs teach-capture.mjs teach-safety.mjs netns-enter.py egress-relay.mjs shell-runner.mjs ./
 COPY mock-vendor ./mock-vendor
 RUN cp /etc/passwd /opt/eclipse/desktop/base-passwd \
     && cp /etc/group /opt/eclipse/desktop/base-group \

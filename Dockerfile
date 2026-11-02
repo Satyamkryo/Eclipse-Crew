@@ -19,7 +19,7 @@ FROM node:24-alpine@sha256:8a32c8cf649a49915a66e81e7a609223c708d0adabf288ee3f407
 WORKDIR /app
 ENV NODE_ENV=production NEXT_TELEMETRY_DISABLED=1
 COPY --from=build --chown=node:node /app /app
-RUN mkdir -p /var/eclipse/artifacts && chown node:node /var/eclipse/artifacts
+RUN mkdir -p /var/eclipse/artifacts /var/eclipse/memory && chown node:node /var/eclipse/artifacts /var/eclipse/memory
 USER node
 EXPOSE 3000
 CMD ["node", "scripts/app-server.mjs", "--hostname", "0.0.0.0"]

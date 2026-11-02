@@ -11,7 +11,7 @@ const docker = (args, input) => spawnSync("docker", args, { input, encoding: "ut
 const dockerAvailable = docker(["version", "--format", "{{.Server.Version}}"]).status === 0;
 
 test("the known action list covers desktop and file actions and the stop text says where to change it", () => {
-  assert.deepEqual([...KNOWN_ACTIONS], ["click", "type", "key", "scroll", "wait", "read_document", "deliver_file"]);
+  assert.deepEqual([...KNOWN_ACTIONS], ["click", "type", "key", "scroll", "wait", "read_document", "deliver_file", "remember"]);
   const text = notAllowedText("read_document");
   assert.match(text, /"read_document" action/);
   assert.match(text, /Add "read_document" to this agent's Actions in its settings/);

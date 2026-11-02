@@ -133,8 +133,10 @@ test("TASK-045 desktop egress allowlist on a disposable stack", { timeout: 90000
     const cmd=(a)=>{const r=spawnSync('xdotool',a,{env,encoding:'utf8',timeout:2000});assert.equal(r.status,0);return r.stdout.trim();};`;
   const navigate = (display, url) => agent(A, sessionEnv(display) + `cmd(['key','--clearmodifiers','ctrl+l']);cmd(['type','--clearmodifiers','--delay','1','--',${JSON.stringify(url)}]);cmd(['key','Return']);`);
   const title = (display) => agent(A, sessionEnv(display) + "console.log(cmd(['getactivewindow','getwindowname']));");
-  const probe = (input) => JSON.parse(agentInput(A, probeCode, { agent: A, ...input }));
-  const probeAgent = (id, input) => JSON.parse(agentInput(A, probeCode, { agent: id, ...input }));
+  // TASK-071: agent processes are in a private network namespace. The proxy is probed from the container's root
+  // namespace with the same per-agent token; the browser reaches it through the session relay.
+  const probe = (input) => JSON.parse(checked(["exec", "-i", "--user", "0:0", container, "node", "--input-type=module", "-e", probeCode], { input: JSON.stringify({ agent: A, ...input }) }));
+  const probeAgent = (id, input) => JSON.parse(checked(["exec", "--user", "0:0", container, "node", "--input-type=module", "-e", probeCode], { input: JSON.stringify({ agent: id, ...input }) }));
   const eventsCode = `const r=await fetch('http://127.0.0.1:4320/v1/events?after=0',{headers:{Authorization:'Bearer '+process.env.EGRESS_PROXY_SECRET}});console.log(JSON.stringify(await r.json()));`;
   const events = () => JSON.parse(checked(["exec", proxyContainer, "node", "--input-type=module", "-e", eventsCode]));
   let fixture;

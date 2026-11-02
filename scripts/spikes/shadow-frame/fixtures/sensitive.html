@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sensitive fields</title>
+<script>window.__spikeClicks = []; window.__spikeClick = (name) => { window.__spikeClicks = [...(window.__spikeClicks || []), name]; };</script>
+<style>body { margin: 0; font: 14px sans-serif; } iframe { position: absolute; border: 0; } x-secret { display: block; position: absolute; left: 20px; top: 20px; }</style>
+</head>
+<body>
+<x-secret></x-secret>
+<iframe src="/_frame-otp.html" style="left:10px;top:120px;width:260px;height:130px"></iframe>
+<iframe src="http://localhost:8082/_frame-portal.html" style="left:290px;top:120px;width:260px;height:130px"></iframe>
+<script>
+customElements.define("x-secret", class extends HTMLElement {
+  connectedCallback() {
+    if (this.shadowRoot) return;
+    this.attachShadow({ mode: "open" }).innerHTML = `
+      <style>input { width: 180px; height: 26px; display: block; margin: 0 0 8px; } button { width: 180px; height: 30px; }</style>
+      <input type="password" aria-label="Account password">
+      <button onclick="__spikeClick('Shadow sign in')">Shadow sign in</button>`;
+  }
+});
+</script>
+</body>
+</html>

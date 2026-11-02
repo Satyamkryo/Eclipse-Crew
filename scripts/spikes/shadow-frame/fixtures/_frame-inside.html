@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Inside frame</title>
+<script>window.__spikeClicks = []; window.__spikeClick = (name) => { window.__spikeClicks = [...(window.__spikeClicks || []), name]; };</script>
+<style>body { margin: 8px; font: 14px sans-serif; } button { display: block; width: 200px; height: 36px; }</style>
+</head>
+<body>
+<p>Same-origin frame</p>
+<button onclick="__spikeClick('Inside frame')">Inside frame</button>
+</body>
+</html>

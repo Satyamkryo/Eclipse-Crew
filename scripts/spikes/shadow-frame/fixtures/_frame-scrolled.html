@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Scrolled frame</title>
+<script>window.__spikeClicks = []; window.__spikeClick = (name) => { window.__spikeClicks = [...(window.__spikeClicks || []), name]; };</script>
+<style>body { margin: 0; font: 14px sans-serif; } button { position: absolute; width: 200px; height: 36px; left: 20px; }</style>
+</head>
+<body>
+<button style="top:40px" onclick="__spikeClick('Scrolled out')">Scrolled out</button>
+<div style="height:340px"></div>
+<button style="top:350px" onclick="__spikeClick('Scrolled frame')">Scrolled frame</button>
+<div style="height:900px"></div>
+<script>addEventListener("load", () => scrollTo(0, 300));</script>
+</body>
+</html>

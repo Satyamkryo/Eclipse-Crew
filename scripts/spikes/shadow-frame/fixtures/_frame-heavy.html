@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Heavy frame</title>
+<script>window.__spikeClicks = []; window.__spikeClick = (name) => { window.__spikeClicks = [...(window.__spikeClicks || []), name]; };</script>
+<style>body { margin: 0; font: 8px sans-serif; display: flex; flex-wrap: wrap; width: 200px; } button { width: 48px; height: 8px; margin: 0; padding: 0; overflow: hidden; }</style>
+</head>
+<body>
+<script>
+// 50 controls per frame, x 5 frames = another 250 controls.
+document.body.innerHTML = Array.from({ length: 50 }, (_, index) =>
+  `<button onclick="__spikeClick('Frame load ${index}')">Load ${index}</button>`).join("");
+</script>
+</body>
+</html>

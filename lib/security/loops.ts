@@ -9,6 +9,7 @@ import { requireEgressProxySecret } from "../config/server";
 import { EGRESS_PROXY_URL } from "../providers/proxy-transport";
 import { syncAllAgents } from "../egress/sync";
 import { createTripwirePorts, triggerTripwire } from "./tripwire";
+import { recordAudit, type AuditExecutor } from "./audit";
 
 // TASK-045. The proxy's policy entries expire after 120 s, so the app refreshes them every minute.
 // TASK-047. The proxy's event ring is polled every 3 s; the proxy never calls the app.
@@ -30,6 +31,8 @@ const eventResponse = z.object({
     seq: z.number().int().positive(),
     agentId: z.string().uuid(),
     source: z.enum(["proxy_host", "proxy_request"]),
+    kind: z.enum(["tripwire", "egress_blocked"]).default("tripwire"),
+    host: z.string().max(253).optional(),
     at: z.string().max(64),
   }).strict()).max(200),
 }).strict();
@@ -70,9 +73,16 @@ export function ensureSecurityLoops(): void {
         const owner = await database.select({ ownerId: agents.ownerId }).from(agents)
           .where(eq(agents.id, event.agentId)).limit(1);
         if (owner[0]) {
-          await triggerTripwire(trips, {
-            ownerId: owner[0].ownerId, agentId: event.agentId, source: event.source, sourceRef: `${body.boot}:${event.seq}`,
-          });
+          if (event.kind === "egress_blocked") {
+            // TASK-052. A blocked outbound request is an audit row, deduped by the proxy's own cursor.
+            await database.transaction((transaction) => recordAudit(transaction as unknown as AuditExecutor, owner[0].ownerId, {
+              kind: "egress_blocked", agentId: event.agentId, host: event.host ?? null, sourceRef: `${body.boot}:${event.seq}`,
+            })).catch(() => undefined);
+          } else {
+            await triggerTripwire(trips, {
+              ownerId: owner[0].ownerId, agentId: event.agentId, source: event.source, sourceRef: `${body.boot}:${event.seq}`,
+            });
+          }
         }
         state.cursor.seq = event.seq;
       }
