@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, Download, GitBranch, RotateCcw, ShieldAlert, ShieldCheck, ShieldQuestion } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -25,11 +25,25 @@ function ChainBadge({ chain, running }: { chain: ChainState; running: boolean })
   );
 }
 
-export function RunTimeline({ runId, timeZone, csrfToken, onBack, backLabel = "All runs", onOpenRun }: {
+export function RunTimeline({ runId, timeZone, csrfToken, onBack, backLabel = "All runs", onOpenRun, autoContinue = false }: {
   runId: string; timeZone: string; csrfToken: string; onBack?: () => void; backLabel?: string; onOpenRun?: (runId: string) => void;
+  autoContinue?: boolean;
 }) {
   const { data, error, loading, reload } = useRemote<RunDetail>(`/api/runs/${runId}`, (value) => (value.run.label === "Running" ? 3000 : null));
   const [rewindStep, setRewindStep] = useState<number | null>(null);
+  const opensForContinue = useRef(false);
+
+  // TASK-085. The last checkpoint that was saved in full; Continue selects it in the existing rewind dialog.
+  const lastSaved = data
+    ? Math.max(-1, data.baselineCheckpoint === "saved" ? 0 : -1, ...data.steps.filter((step) => step.checkpoint === "saved").map((step) => step.idx))
+    : -1;
+  useEffect(() => {
+    if (!autoContinue || !data || opensForContinue.current) return;
+    opensForContinue.current = true;
+    // One-shot handoff from fetched data to the existing dialog; this is not a render-time derived value.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (data.chain.state === "verified" && data.run.label !== "Running" && lastSaved >= 0) setRewindStep(lastSaved);
+  }, [autoContinue, data, lastSaved]);
 
   const back = onBack ? (
     <button type="button" onClick={onBack} className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring">
@@ -70,12 +84,25 @@ export function RunTimeline({ runId, timeZone, csrfToken, onBack, backLabel = "A
               className="ml-1 underline underline-offset-4 hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring">Open original</button> : null}
           </p>
         ) : null}
+        {run.parent ? (
+          <p className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+            Helper of run <span className="font-mono">{run.parent.runId.slice(0, 8)}</span> from step {run.parent.step}
+            {onOpenRun ? <button type="button" onClick={() => onOpenRun(run.parent!.runId)}
+              className="ml-1 underline underline-offset-4 hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring">Open parent</button> : null}
+          </p>
+        ) : null}
         <div className="flex flex-wrap items-center justify-between gap-2">
           <ChainBadge chain={chain} running={running} />
           <div className="flex flex-wrap items-center gap-2">
             <a href={`/api/runs/${runId}/export`} download className={cn(buttonVariants({ variant: "secondary", size: "sm" }))}>
               <Download aria-hidden className="size-4" strokeWidth={1.5} />Export
             </a>
+            {run.status === "interrupted" && (
+              <Button type="button" variant="secondary" size="sm" disabled={!canRewind || lastSaved < 0} onClick={() => setRewindStep(lastSaved)}
+                title={!canRewind ? "Only a sealed, chain-verified run can be continued." : lastSaved < 0 ? "This run has no complete checkpoint to continue from." : undefined}>
+                <RotateCcw aria-hidden className="size-4" strokeWidth={1.5} />Continue from step {lastSaved < 0 ? "?" : lastSaved}
+              </Button>
+            )}
             <Button type="button" variant="secondary" size="sm" disabled={!canRewind} onClick={() => setRewindStep(0)}
               title={canRewind ? undefined : "Only a sealed, chain-verified run can be branched."}>
               <RotateCcw aria-hidden className="size-4" strokeWidth={1.5} />Rewind and branch
@@ -92,6 +119,23 @@ export function RunTimeline({ runId, timeZone, csrfToken, onBack, backLabel = "A
                   <button type="button" onClick={() => onOpenRun?.(branch.runId)}
                     className="rounded-md border border-border bg-surface px-2 py-1 text-xs transition-colors duration-150 hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-ring">
                     <span className="font-mono">{branch.runId.slice(0, 8)}</span> · {branch.label}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
+        {data.helpers.length ? (
+          <div className="flex flex-col gap-1">
+            <p className="text-xs font-medium">Helpers</p>
+            <ul className="flex flex-col gap-1 border-l border-border pl-6" aria-label="Background helpers">
+              {data.helpers.map((helper) => (
+                <li key={helper.runId}>
+                  <button type="button" onClick={() => onOpenRun?.(helper.runId)}
+                    className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left text-xs transition-colors duration-150 hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-ring">
+                    <span className="min-w-0 flex-1 truncate">{helper.task || "Helper"}</span>
+                    <span className="shrink-0 text-muted-foreground">{helper.label}</span>
+                    <span className="shrink-0 font-mono text-text-subtle">{helper.runId.slice(0, 8)}</span>
                   </button>
                 </li>
               ))}

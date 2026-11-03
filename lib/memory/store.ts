@@ -1,7 +1,7 @@
 import "server-only";
 
 import { randomUUID } from "node:crypto";
-import { and, arrayContains, desc, eq, inArray, or, sql } from "drizzle-orm";
+import { and, arrayContains, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 
 import type { getDatabase } from "../../db/client";
 import { agentPolicies, agents, memoryEntries, memoryVersions } from "../../db/schema";
@@ -25,6 +25,10 @@ export interface MemoryView {
   user: MemoryDocumentView;
   memory: MemoryDocumentView;
   private: MemoryDocumentView;
+  // TASK-086. auto: a change that quotes the owner's own words applies at once. ask: everything waits.
+  mode: "auto" | "ask";
+  // Agents the owner can share a private note with.
+  agents: { id: string; name: string }[];
 }
 
 export type MemoryChange =
@@ -48,6 +52,7 @@ function toEntry(row: typeof memoryEntries.$inferSelect): MemoryEntryView {
     visibleTo: row.visibleTo, title: row.title, body: row.body, pinned: row.pinned, trusted: row.trusted,
     status: row.status as MemoryEntryView["status"], author: row.author as MemoryEntryView["author"],
     sourceRunId: row.sourceRunId, sourceLabel: row.sourceLabel, version: row.version,
+    lastConfirmedAt: row.lastConfirmedAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(), updatedAt: row.updatedAt.toISOString(),
   };
 }
@@ -80,14 +85,19 @@ export async function listMemory(database: Database, ownerId: string, agentId: s
   const agentRows = await database.select({ soulMd: agents.soulMd, updatedAt: agents.updatedAt }).from(agents)
     .where(and(eq(agents.ownerId, ownerId), eq(agents.id, agentId))).limit(1);
   if (!agentRows[0]) throw new Error("agent_not_found");
-  const [user, memory, priv] = await Promise.all([
+  const [user, memory, priv, policy, agentList] = await Promise.all([
     documentEntries(database, ownerId, "user", null),
     documentEntries(database, ownerId, "memory", agentId),
     documentEntries(database, ownerId, "private", agentId),
+    database.select({ mode: agentPolicies.memoryMode }).from(agentPolicies)
+      .where(and(eq(agentPolicies.ownerId, ownerId), eq(agentPolicies.agentId, agentId))).limit(1),
+    database.select({ id: agents.id, name: agents.name }).from(agents).where(eq(agents.ownerId, ownerId)).orderBy(asc(agents.name)).limit(100),
   ]);
   return {
     soul: { text: agentRows[0].soulMd, updatedAt: agentRows[0].updatedAt.toISOString() },
     user: documentView(user, "user"), memory: documentView(memory, "memory"), private: documentView(priv, "private"),
+    mode: policy[0]?.mode === "auto" ? "auto" : "ask",
+    agents: agentList,
   };
 }
 
@@ -139,6 +149,10 @@ export async function applyMemoryChange(database: Database, ownerId: string, cha
   if (result.ok) {
     const agentId = result.entry.agentId;
     void scheduleMirror(database, ownerId, agentId).catch(() => undefined);
+    // TASK-086. A document at 85% of its cap is tidied now instead of at 03:00.
+    if (agentId) {
+      void import("./queue").then(({ enqueueTidyIfFull }) => enqueueTidyIfFull(database, ownerId, agentId, result.entry.doc)).catch(() => undefined);
+    }
   }
   return result;
 }
@@ -168,7 +182,7 @@ export async function applyMemoryChangeWithin(
         id, doc: change.doc, agentId: target.agentId, scope: scopeFor(change.doc), visibleTo,
         title: change.title, body: change.body, pinned: change.pinned ?? false, trusted: change.trusted ?? change.author === "owner",
         status: "active", author: change.author, sourceRunId: change.sourceRunId ?? null, sourceLabel: change.sourceLabel ?? null,
-        version: 1, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+        lastConfirmedAt: null, version: 1, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
       };
       const versionId = await appendVersion(transaction, ownerId, {
         docKey: target.docKey, entryId: id, agentId: target.agentId, op: "add", before: null, after: snapshotOf(entry),
@@ -231,6 +245,14 @@ export async function applyMemoryChangeWithin(
     });
     return { ok: true, entry: next, versionId };
   }
+}
+
+// TASK-086. A repeat of a known fact refreshes it without changing its text.
+export async function confirmEntry(database: Database, ownerId: string, entryId: string): Promise<boolean> {
+  const rows = await database.update(memoryEntries).set({ lastConfirmedAt: new Date(), updatedAt: new Date() })
+    .where(and(eq(memoryEntries.ownerId, ownerId), eq(memoryEntries.id, entryId), eq(memoryEntries.status, "active")))
+    .returning({ id: memoryEntries.id });
+  return rows.length > 0;
 }
 
 export async function updateSoul(

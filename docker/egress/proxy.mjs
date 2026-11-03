@@ -10,6 +10,7 @@ import { createEventLog } from "./events.mjs";
 import { isBlockedAddress } from "./addresses.mjs";
 import { canaryHash, findCanary } from "./canary.mjs";
 import { CredentialError, createCredentialStore } from "./credentials.mjs";
+import { DEVICE_HOST, MAX_DEVICE_BODY, parseDeviceRequest, sanitizeDeviceResponse } from "./github-device.mjs";
 
 export { isBlockedAddress };
 
@@ -52,6 +53,8 @@ export function secretMatches(provided, expected) {
 export const POLICY_DOMAIN = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 const AGENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const CANARY_HASH = /^[0-9a-f]{64}$/;
+const GIT_SITE = /^github\.com\/[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/;
+const ACTION_CLASS = new Set(["download", "send", "post", "delete", "purchase", "submit"]);
 const POLICY_KEYS = new Set(["agentId", "blocked", "canaryHashes", "clearTrip", "domains", "trip"]);
 
 export function validatePolicy(value) {
@@ -200,6 +203,93 @@ export function createProxy({ secret, registry, credentials = null, events = cre
           throw error;
         }
         return send(200, JSON.stringify({ ok: true, credentialsVersion: version }), { "Content-Type": "application/json", "X-Eclipse-Proxy": "ok" });
+      }
+      // TASK-073c. Authenticated app-only controls for blocked pushes. The browser never calls
+      // these routes; the app verifies ownership and supplies the agent id.
+      if (path === "/v1/pending") {
+        if (request.method !== "GET" || !registry) throw new ProxyError("not_found", 404);
+        const params = new URL(request.url ?? "/v1/pending", "http://proxy.local").searchParams;
+        if ([...params.keys()].length !== 1 || !params.has("agentId")) throw new ProxyError("invalid_agent", 400);
+        const agentId = String(params.get("agentId") ?? "").toLowerCase();
+        if (!AGENT_ID.test(agentId)) throw new ProxyError("invalid_agent", 400);
+        return send(200, JSON.stringify({ pending: registry.listPending(agentId) }), { "Content-Type": "application/json", "X-Eclipse-Proxy": "ok" });
+      }
+      if (path === "/v1/grants") {
+        if (!registry) throw new ProxyError("not_found", 404);
+        if (request.method === "POST") {
+          const raw = await readBody(request, 4096);
+          let body;
+          try { body = JSON.parse(raw.toString("utf8")); } catch { throw new ProxyError("invalid_grant", 400); }
+          if (!body || typeof body !== "object" || Array.isArray(body) ||
+              Object.keys(body).length !== 2 || typeof body.agentId !== "string" || typeof body.pendingId !== "string" ||
+              !AGENT_ID.test(body.agentId) || !AGENT_ID.test(body.pendingId)) {
+            throw new ProxyError("invalid_grant", 400);
+          }
+          const result = registry.grantPending(body.agentId.toLowerCase(), body.pendingId.toLowerCase());
+          if (!result.ok) {
+            const status = result.error === "not_found" ? 404 : 409;
+            throw new ProxyError(result.error, status);
+          }
+          return send(200, JSON.stringify({ grant: result.grant }), { "Content-Type": "application/json", "X-Eclipse-Proxy": "ok" });
+        }
+        if (request.method === "DELETE") {
+          const params = new URL(request.url ?? "/v1/grants", "http://proxy.local").searchParams;
+          const keys = [...params.keys()].sort();
+          if (keys.join(",") !== "actionClass,agentId,site") throw new ProxyError("invalid_revoke", 400);
+          const agentId = String(params.get("agentId") ?? "").toLowerCase();
+          const site = String(params.get("site") ?? "").toLowerCase();
+          const actionClass = String(params.get("actionClass") ?? "");
+          if (!AGENT_ID.test(agentId) || !GIT_SITE.test(site) || !ACTION_CLASS.has(actionClass)) throw new ProxyError("invalid_revoke", 400);
+          const revoked = registry.revokeGrants(agentId, site, actionClass);
+          return send(200, JSON.stringify({ ok: true, revoked }), { "Content-Type": "application/json", "X-Eclipse-Proxy": "ok" });
+        }
+        throw new ProxyError("not_found", 404);
+      }
+      if (path === "/v1/git-approvals") {
+        if (request.method !== "DELETE" || !registry) throw new ProxyError("not_found", 404);
+        const params = new URL(request.url ?? "/v1/git-approvals", "http://proxy.local").searchParams;
+        if ([...params.keys()].length !== 1 || !params.has("agentId")) throw new ProxyError("invalid_agent", 400);
+        const agentId = String(params.get("agentId") ?? "").toLowerCase();
+        if (!AGENT_ID.test(agentId)) throw new ProxyError("invalid_agent", 400);
+        registry.clearAgent(agentId);
+        return send(200, JSON.stringify({ ok: true }), { "Content-Type": "application/json", "X-Eclipse-Proxy": "ok" });
+      }
+      const pendingMatch = /^\/v1\/pending\/([0-9a-f-]{36})$/.exec(path);
+      if (pendingMatch) {
+        if (request.method !== "DELETE" || !registry) throw new ProxyError("not_found", 404);
+        const params = new URL(request.url ?? "/", "http://proxy.local").searchParams;
+        if ([...params.keys()].length !== 1 || !params.has("agentId")) throw new ProxyError("invalid_agent", 400);
+        const agentId = String(params.get("agentId") ?? "").toLowerCase();
+        const pendingId = pendingMatch[1].toLowerCase();
+        if (!AGENT_ID.test(agentId) || !AGENT_ID.test(pendingId)) throw new ProxyError("invalid_agent", 400);
+        if (!registry.denyPending(agentId, pendingId)) return send(404, JSON.stringify({ error: "not_found" }), { "Content-Type": "application/json", "X-Eclipse-Proxy": "error" });
+        return send(200, JSON.stringify({ ok: true }), { "Content-Type": "application/json", "X-Eclipse-Proxy": "ok" });
+      }
+      // TASK-088. A GitHub App device sign-in uses the only two fixed GitHub endpoints listed below. The host and
+      // paths cannot be changed by the caller, so this is not a general outbound path. Tokens are returned to the
+      // app (which encrypts them) and are never logged or written to the event log.
+      if (path === "/v1/github-device") {
+        if (request.method !== "POST") throw new ProxyError("not_found", 404);
+        const raw = await readBody(request, MAX_DEVICE_BODY);
+        let device;
+        try { device = parseDeviceRequest(JSON.parse(raw.toString("utf8"))); }
+        catch { throw new ProxyError("invalid_device_request", 400); }
+        const address = await resolvePublic(DEVICE_HOST, resolve);
+        const body = Buffer.from(device.form, "utf8");
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 15_000);
+        try {
+          const result = await forwardUpstream({
+            upstream, host: DEVICE_HOST, path: device.path, method: "POST",
+            headers: { "user-agent": "eclipse-crew-egress/1", accept: "application/json", "accept-encoding": "identity",
+              "content-type": "application/x-www-form-urlencoded", "content-length": String(body.length) },
+            body, address, signal: controller.signal, timeoutMs: 15_000,
+          });
+          let sanitized;
+          try { sanitized = sanitizeDeviceResponse(device.operation, JSON.parse(result.body.toString("utf8"))); }
+          catch { throw new ProxyError("device_unavailable", 502); }
+          return send(200, JSON.stringify(sanitized), { "Content-Type": "application/json", "X-Eclipse-Proxy": "ok" });
+        } finally { clearTimeout(timer); }
       }
       if (path === "/v1/tool-forward") {
         if (request.method !== "POST") throw new ProxyError("not_found", 404);

@@ -17,8 +17,9 @@ export async function GET(request: Request, { params }: { params: Promise<{ agen
     const agent = await requireOwnedAgent(session.ownerId, agentId.data);
     if (agent.status !== "active") throw new RequestError(409, "agent_paused");
     const status = await desktopSession(agentId.data, session.ownerId, "session.status");
-    if (status.state !== "running" || !status.generation) throw new RequestError(409, "session_not_running");
+    // The viewer streams the graphical desktop; a stopped browser alone does not stop the stream.
+    if (status.state !== "running" || status.graphics !== "running" || !status.generation) throw new RequestError(409, "session_not_running");
     return Response.json({ agentId: agentId.data, ownerId: session.ownerId, sessionRef: session.sessionRef,
-      generation: status.generation, state: status.state });
+      generation: status.generation, state: status.state, graphics: status.graphics, browser: status.browser });
   } catch (error) { return requestErrorResponse(error); }
 }

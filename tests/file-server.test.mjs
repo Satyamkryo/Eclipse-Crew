@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import http from "node:http";
 import { mkdtemp, mkdir, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -39,16 +40,25 @@ try {
 const params = JSON.parse(process.argv[2]);
 try { process.stdout.write(JSON.stringify(await writeInbox({ stream: process.stdin, inbox: process.env.INBOX, rawName: params.name, expected: params.expected, limit: params.limit, idleMs: 3000 })) + "\\n"); }
 catch (error) { process.stdout.write(JSON.stringify({ error: error.code ?? "upload_failed" }) + "\\n"); process.exitCode = 3; }`);
-  const launches = [];
+  const launches = []; const indexRuns = [];
   const server = createFileServer(SECRET, {
     resolveApp: async () => [{ address: "127.0.0.1", family: 4 }],
     inspect: async (ownerId, agentId) => { if (ownerId !== OWNER || !inboxes.has(agentId)) throw new Error("agent_unavailable"); return { agentId, ownerId, home: root }; },
-    launch: (record, argv, spawnOptions) => { launches.push(argv); return spawn(process.execPath, argv.slice(1), { ...spawnOptions, env: { ...process.env, INBOX: inboxes.get(record.agentId), OUTBOX: outboxes.get(record.agentId) } }); },
+    launch: (record, argv, spawnOptions) => {
+      if (argv.includes("index")) {
+        indexRuns.push([record.agentId, argv]);
+        const child = new EventEmitter(); child.kill = () => {};
+        setImmediate(() => child.emit("close", 0));
+        return child;
+      }
+      launches.push(argv);
+      return spawn(process.execPath, argv.slice(1), { ...spawnOptions, env: { ...process.env, INBOX: inboxes.get(record.agentId), OUTBOX: outboxes.get(record.agentId) } });
+    },
     writerArgs: ["unused", wrapper], readerArgs: ["unused", readerWrapper], idleMs: 2500, ...options,
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   t.after(async () => { server.closeAllConnections?.(); await new Promise((resolve) => server.close(resolve)); await rm(root, { recursive: true, force: true }); });
-  return { port: server.address().port, inboxes, outboxes, launches, root };
+  return { port: server.address().port, inboxes, outboxes, launches, indexRuns, root };
 }
 function post(port, { owner = OWNER, agent = AGENT, body, name = "photo.png", limit = 16 * 1024 * 1024, headers = {}, length, path: url } = {}) {
   return new Promise((resolve, reject) => {
@@ -98,6 +108,19 @@ test("a blocked type is answered after the whole body is read, and nothing is st
   assert.deepEqual(response.body, { outcome: "error", code: "type_blocked" }); assert.equal(response.status, 415);
   assert.equal((await post(port, { body: png(50), name: "run.exe" })).body.code, "type_blocked");
   assert.deepEqual(await readdir(inboxes.get(AGENT)), []);
+});
+
+test("a document upload starts one background index per agent, and an image or undeclared kind starts none", async (t) => {
+  const { port, indexRuns } = await start(t);
+  const notes = Buffer.from("hello world");
+  assert.equal((await post(port, { body: notes, name: "notes.txt", limit: 1024 })).status, 200);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(indexRuns.length, 1);
+  assert.equal(indexRuns[0][0], AGENT);
+  assert.deepEqual(JSON.parse(indexRuns[0][1].at(-1)), { name: "notes.txt" });
+  assert.equal((await post(port, { body: png(100), name: "photo.png" })).status, 200);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(indexRuns.length, 1, "an image needs no index");
 });
 
 test("a body shorter than declared is refused and leaves no file; the next upload works", async (t) => {

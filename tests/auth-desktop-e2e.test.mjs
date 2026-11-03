@@ -15,7 +15,7 @@ import { createHash } from 'node:crypto';
 import { chromium } from '/opt/eclipse/desktop/node_modules/playwright-core/index.mjs';
 const input=JSON.parse(fs.readFileSync(0,'utf8'));
 const base='http://127.0.0.1:8080';
-const browser=await chromium.launch({executablePath:'/opt/chromium/chrome-linux/chrome',headless:true,chromiumSandbox:true});
+const browser=await chromium.launch({executablePath:'/opt/chrome-for-testing/chrome-linux64/chrome',headless:true,chromiumSandbox:true});
 try {
   const context=await browser.newContext(input.phase==='setup'?{}:{storageState:'/tmp/owner-state.json'});
   await context.route('**/*',route=>new URL(route.request().url()).origin===base?route.continue():route.abort());

@@ -96,7 +96,8 @@ export function JobsTable({ jobs, selectedRunId, timeZone, onSelect }: {
                   <span className="shrink-0">· {triggerLabel(job.trigger)}</span>
                 </span>
                 <span className="mt-0.5 block text-xs text-text-subtle tabular-nums">
-                  {formatTime(job.startedAt, timeZone)} · {job.stepCount} {job.stepCount === 1 ? "step" : "steps"} · <Cost micro={job.costMicroUsd} />
+                  {formatTime(job.startedAt, timeZone)} · {job.stepCount} {job.stepCount === 1 ? "step" : "steps"}
+                  {job.helperCount > 0 ? ` · ${job.helperCount} ${job.helperCount === 1 ? "helper" : "helpers"}` : ""} · <Cost micro={job.costMicroUsd} />
                 </span>
               </span>
               <JobOutcomeBadge row={job} />

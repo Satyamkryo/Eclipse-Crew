@@ -1,6 +1,6 @@
 import "server-only";
 
-import { and, asc, desc, eq, gte, inArray, lt, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, lt, or, sql, type SQL } from "drizzle-orm";
 import { z } from "zod";
 
 import type { getDatabase } from "../../db/client";
@@ -28,14 +28,18 @@ const runColumns = {
   endedAt: runs.endedAt,
   status: runs.status,
   signature: runs.signature,
+  heartbeatAt: runs.heartbeatAt,
+  cancelRequestedAt: runs.cancelRequestedAt,
   trigger: runMeta.trigger,
   routineId: runMeta.routineId,
   label: runMeta.label,
+  parentRunId: runMeta.parentRunId,
   astraMode: agents.astraMode,
 };
 type RunJoinRow = {
   id: string; agentId: string; headerJson: string; startedAt: Date; endedAt: Date | null;
-  status: string; signature: string | null; trigger: string | null; routineId: string | null; label: string | null;
+  status: string; signature: string | null; heartbeatAt: Date | null; cancelRequestedAt: Date | null;
+  trigger: string | null; routineId: string | null; label: string | null; parentRunId: string | null;
   astraMode: boolean | null;
 };
 
@@ -61,12 +65,16 @@ async function buildRows(database: Database, ownerId: string, rows: RunJoinRow[]
   const waitingRows = await database.select({ runId: approvals.runId }).from(approvals)
     .where(and(eq(approvals.ownerId, ownerId), inArray(approvals.runId, ids), eq(approvals.state, "pending")));
   const waiting = new Set(waitingRows.map((row) => row.runId));
+  const helperRows = await database.select({ parentRunId: runMeta.parentRunId }).from(runMeta)
+    .where(and(eq(runMeta.ownerId, ownerId), inArray(runMeta.parentRunId, ids)));
+  const helperCounts = new Map<string, number>();
+  for (const row of helperRows) if (row.parentRunId) helperCounts.set(row.parentRunId, (helperCounts.get(row.parentRunId) ?? 0) + 1);
 
   return rows.map((row) => {
     const header = readRunHeader(row.headerJson);
     const results = byRun.get(row.id) ?? [];
     const outcome = outcomeOf({ status: row.status, sealed: row.signature !== null, startedAt: row.startedAt, endedAt: row.endedAt, stepResults: results, now,
-      waitingForApproval: waiting.has(row.id) });
+      waitingForApproval: waiting.has(row.id), heartbeatAt: row.heartbeatAt });
     const task = header.task || "Untitled task";
     return {
       runId: row.id,
@@ -81,6 +89,7 @@ async function buildRows(database: Database, ownerId: string, rows: RunJoinRow[]
       durationMs: row.endedAt ? Math.max(0, row.endedAt.getTime() - row.startedAt.getTime())
         : outcome.outcome === "running" ? Math.max(0, now.getTime() - row.startedAt.getTime()) : null,
       stepCount: results.length,
+      helperCount: helperCounts.get(row.id) ?? 0,
       costMicroUsd: costByRun.get(row.id) ?? 0,
       outcome: outcome.outcome,
       outcomeLabel: outcome.label,
@@ -96,7 +105,8 @@ function matchesOutcome(row: JobRow, filter: JobListQuery["outcome"]): boolean {
 export async function listJobs(
   database: Database, ownerId: string, query: JobListQuery, now = new Date(),
 ): Promise<{ jobs: JobRow[]; nextCursor: string | null }> {
-  const base: SQL[] = [eq(runs.ownerId, ownerId)];
+  // TASK-076. Helpers belong to their parent row, not the top-level list.
+  const base: SQL[] = [eq(runs.ownerId, ownerId), isNull(runMeta.parentRunId)];
   const start = rangeStart(query.range, now);
   if (start) base.push(gte(runs.startedAt, start));
   if (query.agent) base.push(eq(runs.agentId, query.agent));

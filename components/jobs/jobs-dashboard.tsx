@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { ListChecks, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/components/ui/page-header";
 import { RoutineRunNow } from "@/components/chat/routine-run-now";
 import { cn } from "@/lib/utils";
 import type { JobOutcomeFilter, JobRange, JobRow } from "@/lib/jobs/view";
@@ -124,23 +125,14 @@ export function JobsDashboard({ agents, csrfToken, timeZone }: {
   const runningCount = jobs.filter((job) => job.outcome === "running").length;
 
   return (
-    <div className="min-h-dvh bg-background text-foreground">
-      <header className="border-b border-border px-4 py-6 sm:px-6">
-        <div className="mx-auto flex w-full max-w-7xl flex-wrap items-start justify-between gap-4">
-          <div>
-            <Link href="/" className="text-sm text-muted-foreground underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-ring">Back to workspace</Link>
-            <h1 className="mt-2 flex items-center gap-2 text-2xl font-semibold tracking-tight">
-              <ListChecks aria-hidden className="size-5 text-muted-foreground" strokeWidth={1.5} />Jobs
-            </h1>
-            <p className="mt-1 max-w-[70ch] text-sm text-muted-foreground">Crew-wide run status, outcomes and cost receipts.</p>
-          </div>
-          <Button type="button" variant="secondary" size="sm" onClick={() => setTab("upcoming")}>
-            <ListChecks aria-hidden className="size-4" strokeWidth={1.5} />Upcoming runs
-          </Button>
-        </div>
-      </header>
-
-      <main className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6">
+    <div className="w-full bg-background text-foreground">
+      <div className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6">
+        <PageHeader icon={ListChecks} title="Jobs" subtitle="Crew-wide run status, outcomes and cost receipts."
+          action={(
+            <Button type="button" variant="secondary" size="sm" onClick={() => setTab("upcoming")}>
+              <ListChecks aria-hidden className="size-4" strokeWidth={1.5} />Upcoming runs
+            </Button>
+          )} />
         <div role="tablist" aria-label="Jobs views" className="flex gap-1 border-b border-border">
           {TABS.map((item) => (
             <button key={item.id} id={`jobs-tab-${item.id}`} type="button" role="tab" aria-selected={tab === item.id} aria-controls="jobs-panel"
@@ -260,7 +252,7 @@ export function JobsDashboard({ agents, csrfToken, timeZone }: {
             </div>
           )}
         </div>
-      </main>
+      </div>
     </div>
   );
 }

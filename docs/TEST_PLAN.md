@@ -23,6 +23,8 @@ Rules for AI agents:
 - [x] TASK-064: runtime credentials cannot create/alter/drop schema objects, create roles or escalate privileges; migrations use separate credentials; setup preserves existing database data.
 - [x] TASK-064: provisioning rejects unexpected roles, grants, default privileges and migration history; mismatched mounted credentials do not rotate existing passwords.
 - [x] Provisioning compares the complete ordered model-role constraint names and definitions; altered same-name role, shape and provider-FK constraints retaining former substrings are rejected.
+- [x] 0029 review fix: real PostgreSQL scoped model-role checks pass twice at 0005/0007, and message/model-role/policy checks at 0013/0028/0029/0030/0031; exact card types, background role/shape and search-index definitions are checked; same-name drift is denied; owner/history unchanged (`node --test --test-isolation=none tests/provision-0029.test.mjs`, 5/5 including full provisioning).
+- [x] Full current provisioning: fresh-through-0031 disposable database provisions twice with correct `agent_policies` column/type/default positions; owner/history unchanged and runtime DDL denied. Altered policy defaults/constraints fail before changing rows, history, ownership or grants. Live provisioning not rerun.
 - [x] TASK-064: isolated fresh and bootstrap-owned volumes retain owner rows and migration history across repeat provisioning and migration; Postgres has no published port.
 - [x] Foundation audit fixes: failed database initialization releases its cache; concurrent calls share attempts, recovery succeeds, and privileged roles remain denied.
 - [x] Foundation audit fixes: LF/CRLF migration histories provision repeatedly without rewriting hashes, rows or timestamps; other histories remain rejected.
@@ -32,6 +34,7 @@ Rules for AI agents:
 - [x] Foundation audit fixes: owner confirms View project status shows and hides correctly with mouse and keyboard, including a mobile-size viewport.
 - [ ] Foundation audit fixes: owner confirms no CSP errors in the browser console.
 - [ ] Foundation audit fixes: verify a live HTTPS deployment and trusted TLS forwarding.
+- [ ] TASK-081: judge instance on a separate VM. Owner-run checks: `curl -sI https://<domain>/login` (valid certificate, CSP nonce, nosniff, referrer, framing, HSTS), `curl -sI http://<domain>/` (redirect), external scan shows only 22/80/443, login and live desktop over HTTPS at 1440 and 375 px from a phone on mobile data, one chat run on the mock portal with an exported run verified offline, and Settings shows the agent budget and spend limit. Not run yet: owner has not deployed the VM.
 - [ ] With required configuration, `docker compose up -d` on a clean machine starts `app`, `postgres`, `desktop`, `egress-proxy` and `ingress`.
 - [ ] Clean machine to first agent replying in ≤ 15 minutes
 - [ ] All services come back after a host reboot (`restart: unless-stopped`)
@@ -65,6 +68,18 @@ Rules for AI agents:
 - [x] Password is stored as an argon2id hash; session cookie is HttpOnly and SameSite
 
 ## Workspace shell (TASK-018)
+
+### 2026-11-03 UI reference alignment follow-up (`prompts/2026-11-03-ui-reference-alignment.md`)
+
+These supersede older width-based/right-panel-tab expectations above while their historical evidence stays recorded.
+
+- [ ] Shared app shell: sidebar navigation (Agents, Crew, Jobs, Evidence, Models, MCP Servers, Settings), agent list, "Self-hosted · Secure workspace" footer, header search (Ctrl K) and owner chip render on `/`, `/jobs`, `/security`, `/crew` and every settings page at 1280/1440 px.
+- [ ] Workspace center: agent heading (avatar, name, role, status chip) with central Chat/Settings/Tools/Routines/History/Memory tabs; Tools/Routines show honest empty states linking to Connections/Jobs; right column shows the single live stream plus Current activity.
+- [ ] Chat renders ordinary messages as unboxed rows (avatar, name, time) and keeps action content carded; composer is the compact single-row input with paperclip and send icon.
+- [ ] `?panel=` deep links map onto the central tabs (history continue link opens the History tab with the rewind dialog).
+- [ ] Screenshots at 1440/1280/768/375 px compared against references 02, 05, 39, 40, 41, 43 for every mapped surface (docs/UI_REFERENCE_MAP.md); remaining per-surface differences recorded.
+- [ ] `npm run test:ui-reference` structural checks pass; login (24) and setup (21) match their reference composition.
+
 
 - [ ] Nov 3 UI follow-up: verify the desktop app header keeps Eclipse Crew, Security and Jobs clear of pane headings; pane headers align, the resize divider is 1 px with a 24 px pointer target, and all six panel tabs fit without scrollbars at 375/380 px. Check slim dark scrollbars on overflowing panels and keyboard resizing at 1280/1440 px.
 
@@ -111,22 +126,36 @@ Rules for AI agents:
 - [x] Files the agent writes to `outbox/` appear as file cards with Download and Open on the agent's desktop (browser run: one card per file with no duplicates over repeat polls; scripts, symlinks and unknown binaries are not carded; a real 12 MB browser download is byte-identical; attachment, sandbox and nosniff headers; Open shows the file in a new tab of the agent's own browser, confirmed in its tab list)
 - [x] Open in the agent's real Chromium (run `712cabe0-4208-4820-b608-e4ea905f469c`, screenshots `open-*.png`): PNG, WebM and PDF open as a tab with no stray download and display (PDF in the built-in viewer); an H.264 MP4 opened a blank player, so MP4, MOV and MKV are download-only by design (card shows Download and no Open; the desktop refuses a direct Open)
 - [x] Denied paths: anonymous 401, wrong CSRF 403, an inbox card, another agent's card or an unknown id 404, an archive or HTML cannot be opened (415), Open with a stopped desktop 409 `session_not_running`, a file changed after carding 409 `file_changed` with no bytes sent, a symlink swapped in for a carded file 404 (unit suites `test:outbox-reader`, `test:inbox-writer`, `test:files-route`)
+- [x] TASK-082 document search: a PDF page-2 term returns page 2 with a usable read offset; stop-word-only and absent terms return `no_match` and the run continues; xlsx sheet names/cells and pptx slide text are found with their sheet/slide numbers; windows are at most 20,000 characters; images return `unsupported_type` (`test:doc-search` 7, `test:agent-files` 12 + 1 skipped without unzip, `test:agent-step-loop` 70)
+- [x] TASK-082 proof and bounds: search results are `document`-tagged and only the newest two stay in request; receipts keep name, query length and hit count, never text; replay refuses `search_document`; checkpoints accept `hits`; the index cache is reused for an unchanged file, rebuilt after a change, capped at 20 files, and never listed or delivered (`test:receipts` 23, `test:replay` 35, `test:checkpoints` 9). Denied paths: a query over 200 characters or with control characters, an unknown field, a path in the name and `files/index` over HTTP are refused before any launch (`test:agent-files` route test; `test:inbox-writer`/`test:files-route` baseline)
+- [ ] TASK-082 live browser check: attach a 100+ page PDF, ask about a clause deep inside it, confirm the answer cites a page and History shows "Searched document"; attach `.xlsx` and `.pptx` and ask for a named sheet value and slide 3. Owner-run after a desktop image rebuild (not yet run)
+- [x] TASK-084 extract/value reuse: the value is saved only when the page shows the exact text, `{{name}}` types it, an unknown or branch-carried name is invalid, and a canary or out-of-task host in a value is refused before saving (`test:agent-step-loop` 82/82, `test:receipts` 24/24)
+- [x] TASK-084 navigate/select: navigate opens an allowed `http(s)` page and refuses another host (schema refuses `javascript:`, `file:`, `data:` and credentials); select grounds the dropdown and chooses the option; extract/navigate/select add no permission name and are default-deny through `click`/`type` (`test:agent-step-loop`, `test:desktop-controller` 15/15)
+- [x] TASK-084 proof and bounds: receipts keep `extract{name,chars}`, `navigate{host}`, `select{target,option_chars}` and `type.values` (names only), never the value, host path or option text; checkpoints keep value names only; replay refuses the three kinds; snapshot results carry `frame`, `shadow` and `paymentFrames` (`test:receipts`, `test:checkpoints` 10/10, `test:replay` 35/35, `test:page-snapshot` 3 + 1 skipped)
+- [x] TASK-084 real-browser fixture pass 2026-11-03: all 7 spike fixtures (open-shadow/frames/cross-site/sensitive/payment/obstruction/heavy) listed expected controls and omitted sensitive/covered ones with the production scanner inside the live desktop image (`ECLIPSE_PAGE_SNAPSHOT=1`, headed Chromium on an isolated :99 Xvfb, test run as `nobody`; `test:page-snapshot` 4/4). Fixtures staged under a disposable /tmp path and removed afterwards with the display; no agent screen, home or volume touched.
+- [ ] Live owner tasks: HN headline into a mock note; click a field inside an iframe form. Still needs a real owner session.
+
+- [x] TASK-083 conversation: the last 10 messages from 24 hours, each cut to 1,500 and 6,000 total, keep the newest; the current message is excluded; owner text is `user`, agent replies `agent`, other cards become one code line; a clarification and its answer reach the next run; routines get none and a branch uses messages before its source run (`test:conversation` 3, `test:chat-run` wiring).
+- [x] TASK-083 scope: a host or email in earlier owner text is in scope; one that appears only in an agent reply is still refused (`test:agent-scope` 9).
+- [x] TASK-083 limits: 60 steps, 30 minutes and 400,000 weighted tokens (uncached input + output + a tenth of cached); a 90 % cached 60-step run is not stopped early; shell agents keep 1.5M/60 min; heal's 8 is respected (`test:agent-step-loop` 97).
+- [x] TASK-083 live route/card: owner-scoped, no-store, null when idle, newest 20 compact steps and cost when running, another owner is 404; the card polls 2 s while active, shows elapsed time/cost, Cancel posts the existing cancel route, and the live card is never stored (`test:live-run` 2; route/UI wiring checked; browser pass pending).
+- [ ] TASK-083 live browser check at 1440/375: ask a page question, then a follow-up using "it"; watch the live card steps/cost, press Cancel, and confirm the reply card replaces it. Needs the owner model key.
 
 ## Desktop image foundation
 
 - [x] TASK-010 offline guards reject host mounts/ports, credentials, root/capability changes and mismatched image identities; dependency/sandbox constraints are checked.
-- [x] TASK-010: approved package lock verifies 388 archives / 232159408 bytes before offline installation; pinned Node/Chromium image builds and every required tool executes. Earlier snapshot outage remains historical.
+- [x] TASK-010: approved package lock verifies 445 archives / 250231110 bytes before offline installation; pinned Node/Chromium image builds and every required tool executes. Earlier snapshot outage remains historical. TASK-087 adds venv/pip, ripgrep, jq, patch, procps, zip and file to the same locked closure; `check-tools` runs each version.
 - [x] TASK-010: run 0d69e5bc-7966-4ef3-8e5f-40035b2e00e0 verifies non-root Xauthority/Openbox, accepted/rejected VNC authentication, noVNC WebSocket, 1024x768 PNG and three-frame video; cleanup complete.
 - [x] TASK-010: run c66f0dda-e890-428b-8f58-a1df20c978fa passes genuine Playwright and xdotool clicks in graphical Chromium; chrome://sandbox reports namespace/PID/network and Seccomp-BPF active. Parent has zero capabilities/no-new-privileges and ordinary chroot remains denied.
 - [x] TASK-010: desktop Compose health and runtime isolation settings pass; both five-service http-security tests pass after the package and ADR-025 sandbox revisions.
-- Known issue (2026-11-02): `npm run test:http-security`'s fresh-database stack returns 500 for the authenticated home page; the app role lacks `SELECT` on `teach_recordings` (`42501`) because role provisioning is stale (see `docs/MEMORY.md`). Independent of TASK-048; the app's cap-drop/no-new-privileges posture does not change the result.
+- Fixed 2026-11-03: `npm run test:http-security`'s fresh-database stack returned 500 for the authenticated home page; the app role lacked `SELECT` on `teach_recordings` (`42501`) because `scripts/db-migrate.mjs` never granted it (provision-only parity gap also covered `memory_review_state`). `db-migrate.mjs` now mirrors `db/provision.sql` for both tables; grant sets verified identical. Independent of TASK-048; the app's cap-drop/no-new-privileges posture does not change the result.
 
 ## Persistent agent identities (TASK-011)
 
 - [x] Run d778a3ca-9d63-4786-b1ae-5609581324f0: real distinct NSS identities, UID/GID 20000+, mode-700 home/inbox/outbox/work/profile/Downloads; idempotent owner-scoped creation and actual owner CLI inspection.
 - [x] Both agents have zero effective/permitted/inheritable/ambient/bounding capabilities, no supplementary groups, no-new-privileges and no sudo; attempts to set UID 0 or read/write peer files, registry and hidden backing storage fail.
 - [x] Downloads direct execution returns EACCES while an identical work executable succeeds; descendants cannot mount even inside a new user namespace. Changed Downloads aliases are rejected.
-- [x] Reduced PID 1 loses SYS_ADMIN including bounding; inherited filter is present. Reduced administrator mount and x32 syscall probes are denied. Read-only root, no host mounts, secrets or published desktop ports remain checked.
+- [x] Reduced PID 1 loses SYS_ADMIN including bounding; inherited filter is present. Reduced administrator mount and x32 syscall probes are denied on x86-64 (the aarch64 path uses its own mount number and has no x32 step; native run pending). Read-only root, no host mounts, secrets or published desktop ports remain checked.
 - [x] Concurrent duplicate creation returns one identity; malformed registry, owner mismatch, invalid paths and stale lock stop without overwriting data. Container recreation preserves UID/NSS mappings, private markers/profile fixtures and Downloads noexec; unrelated volume data survives. Disposable cleanup completes.
 - [x] TASK-011 regression: test:desktop-image passes all 6 tests, including graphical sandbox/input/VNC/capture (run 1723128b-490b-4826-ab2d-adb07a7c67af). Both five-service test:http-security checks pass. These are Docker Desktop Windows results; other hosts remain unverified. TASK-012 now verifies the per-agent screen/session layer.
 
@@ -138,9 +167,79 @@ Rules for AI agents:
 - [x] Graceful stop leaves no live agent processes, preserves its peer and reopens saved profile state. Xvfb crash and SIGKILL of the worker trigger session-only cleanup; fixed same-UID fallback removes verified descendants and private runtime files without CAP_KILL.
 - [x] Container recreation leaves sessions stopped until explicitly started; synthetic cookies/local storage and unrelated volume data survive. Test cleanup is complete. Real account login/credential handling and the app/controller/streaming/takeover are still separate checks.
 
-- [x] TASK-012 regressions: test:agent-users 4/4 (run 841b4734-699d-4aae-a883-d68e909fa09e), test:desktop-image 6/6 (run bfaa3174-68d6-4938-9816-08555b5fef24), five-service test:http-security 2/2 including production build; lint/typecheck/diff checks pass.
+- [x] TASK-012 regressions: test:agent-users 4/4 (run 841b4734-699d-4aae-a883-d68e909fa09e), test:desktop-image 6/6 (run bfaa3174-68d6-4938-9816-08555b5fef24), five-service test:http-security 2/2 including production build; lint/typecheck/diff checks pass. Re-verified 2026-11-03 2/2 after the fs.read workaround (direct pre-build + `--no-build`), the `teach_recordings`/`memory_review_state` migrate-grant fix, and the cap-drop-aware legacy fixture (unprivileged file plant + minimal-cap chown helper).
+
+## Independent desktop, browser and headless work (2026-11-03)
+
+- [x] `session-sandbox` starts the agent worker with no Xvfb, Chromium or VNC; `session-status` reports `sandbox=running, graphics=stopped, browser=stopped`. Real headless worker: `shell.run` returns its output, `capture.screenshot` and `file.open` return `visual_unavailable`, and no agent process is left after close (disposable Linux run).
+- [x] Closing the managed Chromium leaves `state=running`, `sandbox=running`, `graphics=running`, `browser=stopped`, and the VNC stream/peer stay up. `session-browser-start` restores `browser=running` with the same generation and profile; repeated close/start does not orphan processes (disposable Linux run).
+- [x] `session-desktop-stop` stops graphics and browser but keeps `sandbox=running`; the worker remains for shell/files and no Xvfb/Chromium is left. `session-desktop-start` restores graphics and browser. A peer session is unaffected throughout (disposable Linux run).
+- [x] `npm run test:agent-sessions` live 6/6 includes the browser-close/restart and graphics-crash regressions, profile/cookie persistence, peer isolation, no X11/CDP TCP listener and real sandbox checks.
+- [x] Offline no-screen: `test:agent-step-loop` 75/75 covers a shell run with no screenshot/after hash, a stopped-desktop click that acquires graphics and re-grounds, `start_desktop` success and denial, and graphics closing mid-run continuing headlessly.
+- [x] Lifecycle seam: `test:desktop-lifecycle` 6/6 and `test:desktop-controller` 14/14 cover browser-close independence, explicit browser restart, graphics stop, sandbox-only failure, strict lifecycle schema/result validation and authenticated controller dispatch.
+- [x] Route/security: the desktop lifecycle GET/POST require owner auth; POST requires exact Origin/CSRF and a bounded action body. Offline route tests cover unauthenticated denial and fixed error mapping (`agent_paused`, `crew_stopped`, `security_stopped`, `budget_exhausted` → 409; desktop/browser failures → 503).
+- [ ] Browser UI at 1440/375: separate Desktop/Browser labels, Start/Stop controls, browser-closed banner, desktop-stopped empty state, chat remains usable, and keyboard/mobile access (needs the owner login; pausing/resuming the agent remains a separate control).
+- [ ] Live denied paths for the owner routes: paused agent, security stop, stopped crew, exhausted budget, cross-owner and CSRF-invalid requests leave safety state unchanged (offline mapping covered; live exercise pending).
+
+## Desktop polish (TASK-077)
+
+- [x] Generated agent-local tint2 dock (Browser, Files, Terminal, clock) and pcmanfm desktop with Home, Trash, Downloads, outbox and work; File System/mounts hidden; automount/autorun off; fixed launchers and private session D-Bus.
+- [x] `npm run test:agent-sessions` live 6/6: two agents have independent dock/desktop/bus; Browser focus keeps one managed process and tabs; Files opens a window; xterm is the agent UID in `work` with zero capabilities and its private namespace; stop/crash leaves no orphans.
+- [x] `npm run test:desktop-polish` 4/4 covers generated config, path/uid denials, launcher identity checks and the image/lock pins.
+- [ ] Wallpaper: owner asset not supplied yet; verify the actual image on both sessions without covering the dock or icons. TASK-077 stays unticked until then.
+
+## Agent hearing (TASK-079)
+
+- [x] Disposable Linux run: one private PulseAudio null sink per agent; a 440/660 Hz marker reaches only its own monitor (agent RMS ~2.7k), a peer capture at the same time stays at the ~314 noise floor, and peer runtime/cookie reads return `EACCES`.
+- [x] Controller path: `audio.capture{seconds:3}` through the manager and app-network source returns HTTP 200 `audio/wav`, ~2.9 s and non-silent samples; the capture-specific channel timeout applies; `audio.capture` is refused without a browser.
+- [x] `npm run test:agent-audio` 5/5 covers the 1-30 s schema, canonical WAV/chunk/size checks, path/uid denials, opt-in action, replay refusal and wiring; `test:audio-transcribe` covers Meta-only pricing, budget, one pre-dispatch charge, silence and no-retry uncertainty.
+- [ ] Paid live check: transcribe one non-sensitive known spoken fixture through Voice Transcribe with the owner's Meta key; verify text, one audio charge and cleanup. TASK-079 stays unticked until then.
+
+## Crash-safe runs (TASK-085 core)
+
+- [x] Migration 0031 adds `runs.heartbeat_at`, `runs.cancel_requested_at`, `runs_heartbeat_idx`, `run_meta.handoff_of` and the expanded trigger/audit checks; applied to the live database after a backup. Migrations 0032 (crew reports/starter crew) and 0033 (`run_meta.parent_run_id`, `subagent` trigger) also applied live after a verified backup, followed by a full `db:provision` pass.
+- [x] `test:run-sweeper` 3/3: a heartbeat updates the row, stops on a missing (already sealed) row, reports a database cancel, ignores database errors, and `sealExisting` derives count/head/summed usage and signs once.
+- [x] `test:jobs` 16/16: heartbeat younger than 90 s is Running, an old heartbeat is Not sealed, rows without a heartbeat keep the 15-minute rule, and the Interrupted label maps correctly.
+- [ ] Live restart: start a long run, restart `app`, confirm the run shows Interrupted within four minutes, export verifies, and Continue works. Live app image rebuilt from the current tree and recreated 2026-11-03 (`main-app` `c5638cb…`, CSP nonce headers verified on `/login`). Still needs a saved Main model (no provider/key is configured; paid calls need explicit authorization).
+- [x] Handoff, @mentions and Continue are built (2026-11-03): the new permission is on for new agents and has one explicit bulk enable for existing ones; `handoff{agent,note}` copies the stored owner message, tags the note `agent`, enforces two hops/no-return/self/paused/busy, seals `handed_off`, writes `handoff_of` to the receiver header and audits both sides. A leading `@Name ` routes and unknown names send nothing; the interrupted card and History open the existing rewind dialog at the last complete checkpoint. `test:handoff` 4/4.
+- [ ] Live handoff and mention acceptance with two real agents (web search, then `@Scout check my calendar`) and cross-process Cancel ≤20 s remains owner/model-gated.
+
+## Screenless helpers (TASK-076)
+
+- [x] Migration 0033 adds `run_meta.parent_run_id` and the `subagent` trigger. `test:subagents` 6/6 covers the 20% step/time/token slices, `no_tools`/`tool_not_granted`/`duplicate_task`/`subagent_limit`/`nested_spawn` refusals, concurrent helpers, data-only results, cancel cascading to every helper, and finish waiting then stopping.
+- [x] Helpers never receive `ask_owner`, desktop, memory, handoff or nested spawn; risky calls use the parent identity with a `Helper N` card; each helper has its own signed run with `parent_run`/`parent_step`, heartbeat and checkpoint; Jobs counts helpers and History shows the tree.
+- [ ] Live behavior with a real model: "What's my latest email?" and "Download the invoice from the vendor portal" spawn no helper; the parallel form/lookup task spawns helpers. Needs a saved Main model and paid authorization.
+
+## Chrome for Testing (TASK-078)
+
+- [x] Spike run: the measured Chrome for Testing 156.0.8078.80 archive (201329937 bytes / SHA-256 b711c720…) launches under the production read-only root, zero capabilities, seccomp and `--network none`; namespace/PID/network and Seccomp-BPF are active; real H.264+AAC MP4 frames and audio decode; page-structure grounding finds Save; Playwright and xdotool clicks work; screenshot, multiple tabs, download, session-cookie restart and two isolated profiles pass.
+- [x] `npm run test:chrome-for-testing` 4/4 covers the per-CPU lock rows, exact byte/SHA validation, downloader rejection paths, image wiring and the no-publish check. `npm run spike:chrome-for-testing` writes the sanitized report under `test-results/chrome-for-testing/`.
+- [x] Production image builds with the pinned archive; `check-tools` reports `chromium 156.0.8078.80`; the existing desktop smoke and two-agent session suites pass (see the run logs).
+- [x] ARM64 row: `browser-build.lock.json.browsers.arm64` pins the same version, 200722708 bytes, SHA-256 1f496a826c9ba4d6a5f5bf2de686145fe718528c2cc3dbeb96b5893b89653724; the downloaded ELF is aarch64 and the archive root is normalized to `chrome-linux64`. This is artifact evidence, not a native run; `test:desktop-architectures` checks the target/pin/refusal paths.
+
+## Native ARM64 (TASK-066)
+
+- [x] Pinned inputs resolved to ARM: `ubuntu:24.04@sha256:fe81560…` → linux/arm64 `sha256:19cad596…`; `node:24-alpine@sha256:8a32c8c…` → linux/arm64 `sha256:e6439844…`. Artifacts measured locally (not a native run): Node v24.22.2 `linux-arm64` 30968168 bytes / `eb187837…` matches the signed `SHASUMS256.txt` (key fingerprint 5BE8A3F6C8A5C01D106C0AD820B1A390B168D356); CfT 156.0.8078.80 `linux-arm64` 200722708 bytes / `1f496a82…`, ELF aarch64.
+- [x] `npm run test:desktop-architectures` covers the 18 names/numbers on both ABIs against Linux v6.8 fixtures, foreign-ABI kill, x32-only-on-x86, per-CPU lock/host/ABI refusals, resolver parsing, browser target/normalization and preflight refusal. The resolver's amd64 pipeline produced 445 entries / 250231110 bytes with the same package names as the pinned lock.
+- [x] amd64 pins unchanged: manifest `6d0b4072…`, 445 / 250231110; Node/CFT amd64 hashes unchanged; `ubuntu-packages.arm64.lock.json` not yet generated (requires native ARM) so arm64 fetch fails closed.
+- [ ] Native Oracle (`node scripts/acceptance/arm64.mjs --preflight`): host/daemon arm64, then `resolve-package-lock.mjs --arch arm64`, review the lock, build/start/ps, `check-tools` shows arm64 and every tool version, only `127.0.0.1:3000` published.
+- [ ] Native filter/users/isolation/sessions: 18 safe-argument probes EPERM, `unshare --user --net` works, two-agent peer/loopback/audio/file denials, cookies across restart.
+- [ ] Native browser: `chrome://sandbox` namespace/PID/network/Seccomp-BPF, H.264/AAC fixture, structure-grounded clicks, no testing bar, smoke passes.
+- [ ] Native app/E2E: argon2 positive/negative in the ARM app image, fresh DB roles/migrations, auth, stream/takeover, signed export/offline verify, SSH tunnel `ssh -L 3000:127.0.0.1:3000` with no public Oracle port.
+- [ ] Apple Silicon through its own native ARM64 Linux VM: independent run, not inferred from Oracle.
+- [x] amd64 regression: lint/typecheck/build pass; `test:agent-users` 4/4, `test:desktop-image` 6/6 incl. Compose smoke, `test:agent-isolation` 1/1, `test:agent-sessions` 6/6; direct image build, tool inventory, seccomp probe and marker refusals pass. `test:db-roles` full run and `test:auth-desktop-e2e` in progress after the fs.read workaround (pre-build images directly with unique tags, `compose up --no-build`; engine policy unchanged, documented in `.github/README.md`).
 
 ## Live desktop and takeover
+
+### 2026-11-03 takeover input policy (supersedes width-based "view-only on phones"; older evidence stays recorded)
+
+- [ ] `npm run test:takeover-eligibility` 8/8: trusted mouse + trusted non-composing keyboard required; touch/pen, synthetic, IME-composing, modifier-only, and mouse-only/keyboard-only never eligible; reset clears.
+- [ ] Touch-only viewport (375 and 1280 px emulation): Take over shows "Connect a keyboard and mouse to take over"; remote input impossible; app navigation stays usable.
+- [ ] Mouse-only, then keyboard-only, interaction each leave the stream view-only.
+- [ ] Click Take over (mouse) then press Enter (keyboard) enables takeover at 1440, 1280 and 375 px; the two-step check forwards nothing to the desktop (no `/input` requests during the check).
+- [ ] After takeover: clicks, drag, wheel, right-click, typing and paste forward; touch/pen pointer events are ignored; a touch long-press context menu never reaches the desktop.
+- [ ] Loss paths: stream disconnect, page hide/resume and capability change reset evidence, block queued input and release the lease; a failed release keeps Hand back and the error visible.
+- [ ] Resizing the panel or window never revokes eligibility, never reconnects the stream, and an active takeover stays active.
 
 - [ ] Desktop view connects within 2 seconds (latency target requires measurement)
 - [x] Real authenticated noVNC canvases show two distinct 1024×768 agent desktops (disposable browser run 25ac0609-146f-4109-accd-2f52119ff311)
@@ -254,6 +353,21 @@ Rules for AI agents:
 - [x] TASK-042 Part B: a routine job exposes its `routineId`; a scheduled retry queues `run_now` with `retry_of` and the routine id; a scheduled run without a routine is refused (`test:jobs`)
 - [x] TASK-042 Part A (cannot): anonymous calls are 401; wrong Origin and CSRF are 403; bad ids, unknown query keys and an oversized body are 400/413; `run_meta` is insert-only for the app role (`test:jobs`)
 - [x] TASK-042 Part A live browser at 1440 and 375 px on a disposable Postgres and local production build: 8 seeded runs, list/detail with a chain-verified timeline, search `100%`, agent filter, Failed tab, Upcoming runs with schedule details, routine Pause/Resume, and the cancel confirmation plus its 409 message; no horizontal overflow at either width
+
+## Demo extras: starter crew, Mission Control and morning report (TASK-058)
+
+- [x] The six preview roles are the only source of policies and budgets; a same-named agent is never adopted, and a repeat or concurrent create never duplicates members (`test:starter-crew`: six preallocated UUIDs, one setup row, six agent/policy rows, same ids on retry).
+- [x] One failed desktop keeps the completed agents and the failed identity paused; Retry reuses the same UUID and completes the set (`test:starter-crew`).
+- [x] A crashed `creating` member is resumed only after its claim is stale (`test:starter-crew`).
+- [x] Mission Control returns only the owner's agents, a run only while its heartbeat is fresh, real step/cost totals, local-day spend and pending approvals; a desktop error becomes `unavailable`, and only `session.status` is called (`test:crew-status`).
+- [x] A Mission Control thumbnail revalidates the desktop stream state before opening its socket and shows the stopped placeholder on denial (`test:crew-routes`).
+- [x] The report window is exactly `[scheduledAt - 24h, scheduledAt)`, counts completed/running/interrupted/failed/needs-you separately, includes failed-call cost once, labels unsealed proof and links at most ten runs (`test:crew-report`).
+- [x] Empty work says no recorded work; a stored hostile task stays text and never becomes a URL or HTML (`test:crew-report`, `test:crew-routes`).
+- [x] Delivery and its card commit atomically; a repeat, disabled settings, a paused recipient and a queued retry never post a second card (`test:crew-report`, real Postgres and real pg-boss enqueue idempotency).
+- [x] The tick queues one latest due occurrence, does not backfill a later schedule edit, and Asia/Kolkata plus both America/New_York DST boundaries resolve in code (`test:crew-report`).
+- [x] Crew routes require the owner session, exact Origin and CSRF for mutations; bodies are strict and bounded; a report card rejects unknown fields (`test:crew-routes`).
+- [ ] Live browser at 1440 and 375 px: preview/edit/create the crew, a partial setup retry, two live frames plus a stopped placeholder, report save/send and one posted card.
+- [ ] Live core demo rechecked after the crew extras; five-take and four-Meta-model acceptance are recorded separately.
 
 ## Deterministic replay (TASK-041)
 
@@ -420,12 +534,17 @@ Rules for AI agents:
 - [x] Changes are mirrored to `./data/memory` as Markdown (`test:memory-store`: USER.md, SOUL.md, MEMORY.md and PRIVATE.md match the database)
 - [ ] Asked about a fact saved in an earlier session, the agent checks memory and answers with it instead of asking the owner again
 - [ ] "I'll remember that" is only said after a memory write request was made
+- [x] TASK-086 origin gate: a quote that is an exact owner message with 90% word coverage auto-saves/replaces/forgets; a missing quote, a low-coverage fact, a `document`-born fact, a pinned entry and `ask` mode all wait or refuse. Auto-save has a version, an audit event and Undo (`test:memory-gate` 5/5, real Postgres)
+- [x] TASK-086 caps and scopes: USER.md 1,500, MEMORY.md 3,000, private 2,200, snapshot 8,000; new agents get `global` + `agent`; the migration sets existing agents to `ask` (`test:memory-store` 6/6, `test:memory-changes` 6/6, `test:memory-gate`)
+- [x] TASK-086 chat search: full-text over the calling agent's own chat only, up to five 300-character snippets, owner-scoped, no vector database (`test:chat-search` 2/2)
+- [ ] TASK-086 background review and tidy: enqueue after chat, 120 s delay, per-agent cursor, at most 5 changes; nightly/85% tidy with 95% source coverage, batch Undo and a 6-hour floor. `test:memory-background` 5/5 offline plus one opt-in real pg-boss check (`ECLIPSE_MEMORY_QUEUE_E2E=1` inside the app container). Built; no live model run yet
+- [ ] TASK-086 browser check at 1440/375 px: tell an agent "I prefer replies in bullet points", see the auto-save card with Undo, the mode banner and the visible-to picker. Not run
 
 ## Budgets and cost
 
 - [x] Agent daily and monthly budgets warn at 80% and pause the agent at 100% (isolated Postgres run: exact 80% warning card and 100% pause; `npm run test:costs-store`)
 - [ ] Routine budgets warn at 80% and pause at 100% (routine runtime is TASK-038/039)
-- [x] Run guards stop runs at max steps, max tokens and the wall-clock limit (`test:agent-step-loop`, `test:providers`; non-cooperating provider is aborted)
+- [x] Run guards stop runs at max steps, max tokens and the wall-clock limit (`test:agent-step-loop`, `test:providers`; non-cooperating provider is aborted). TASK-087: a `shell` agent reaches 60 steps / 1,500,000 weighted tokens / 60 minutes, TASK-083's base is 60 / 400,000 weighted / 30 minutes, a caller can request less (heal's 8), and the stop card names the actual limit (`test:agent-step-loop` 97/97)
 - [x] The same action repeated 3 times stops the run (`test:agent-step-loop`)
 - [x] Each run has a cost receipt: tokens in/out/cached, model per step and call, cost in USD micros (`test:costs-store`, real run cost route)
 - [x] Editing the price table changes later cost receipts, never old rows (`test:costs-store`: Wonder $4/1M falls to $2/1M while the first row stays $4)
@@ -458,18 +577,22 @@ Rules for AI agents:
 ## Connections, MCP, Composio, templates, shell and namespaces (TASK-070–075)
 
 - [x] `npm run test:connections`: owner scoping, 8-per-agent cap, label uniqueness, cascade, audit kinds, token never returned.
+- [x] TASK-088: `tests/github-device.test.mjs` (6/6) runs a real disposable Postgres with migration 0030 and a mocked proxy: the device code is encrypted and never returned; owner scoping; a second Connect replaces the pending flow; `authorization_pending` and `slow_down` reschedule; `access_denied`, `expired_token` and unknown errors stop once; success stores encrypted access/refresh tokens, a `ghu_…last4` hint, and the scheduler tick queues exactly one refresh for a token within 30 minutes of expiry; a repeat poll is a no-op; refresh rotates both tokens; `bad_refresh_token` marks the row `expired`, deletes the refresh token and pushes an empty credential list; a transport failure retries without losing the token. `test:egress-proxy` (14/14) proves the fixed host/paths, no caller target, no token in logs.
+- [x] TASK-087 live desktop check: the rebuilt image runs as uid 20000 under `ulimit -u 512 -f 1048576 -v 4194304 -c 0`; `rg` 14.1.0, `jq` 1.7, `ps` (procps-ng 4.0.4), `zip` 3.0, `file` 5.45, `patch` 2.7.6, `python3 -m venv` + `pip` 24.0 inside the venv, Node/WebAssembly and npm 11.19.1 all pass. The running desktop image was rebuilt and is healthy. A public clone without a GitHub connection is covered by `test:git-gateway`; the live owner clone remains part of the git acceptance.
+- [ ] TASK-088 live owner sign-in: register the GitHub App (device flow, token expiry, Contents/Pull requests read-write, Metadata read), set `GITHUB_APP_CLIENT_ID` and `GITHUB_APP_SLUG`, then Connect GitHub at 1440/375 px, Test passes, push to an installed repo, a repo without the app fails with the needs-you message, Disconnect removes it. Not run (needs the owner's App). Live route probe passed: proxy 400 `invalid_device_request`, app route 401 unauthenticated
 - [x] `npm run test:egress-credentials`: bearer/basic/header injection, peer isolation, block/trip/expiry wipe, redaction, canary, header allowlist.
 - [x] `npm run test:mcp`: JSON and SSE replies, session id, pin hash stability, risk table, discovery → pin, changed tools block.
 - [x] `npm run test:composio`: encrypted key, session body (`instant:false`, no sandbox), link mapping, pin, blocked results, per-agent accounts.
 - [x] `npm run test:agent-templates`: templates parse, personas ≤ 2000, no browser actions, fixture is red.
-- [x] `npm run test:agent-step-loop`: `tool_call` allowlist/scope/canary/approval/receipt and `shell` allowlist/canary/exit/timeout/receipt.
+- [x] `npm run test:agent-step-loop`: `tool_call` allowlist/scope/canary/approval/receipt; `shell` allowlist/canary/exit/timeout/receipt; blocked-push approval (one card per pending id, receipt-before-grant, fresh-step retry hint, no whole-command rerun), deny/timeout cleanup, Astra authorization, receipt/grant/cleanup/poll failures, duplicate polls and multi-ref grants.
 - [x] `npm run test:egress-relay` (Linux): client Proxy-Authorization replaced, token never echoed, malformed head closed, two identities kept.
 - [x] `npm run test:netns` (Linux): helper rejects malformed args; a non-root process either isolates or returns a fixed code.
 - [x] `npm run test:shell`: fixed shell environment with no secret, proxy and git-gateway rewrite, credential helper disabled, bounded result schema/formatting, `exit_code`/`stdout_contains` expectations, invalid input refused before spawn.
-- [x] `npm run test:git-gateway`: pkt-line create/update/delete/multiple/capabilities/truncation/`push-cert`/over-64 KiB; classification for default, non-default, new, delete, tag and lookup failure; forged preface; client `Authorization` stripped and Basic injected; blocked push 403 without contacting GitHub; gzip 415; missing credential 403; token absent from logs and responses.
+- [x] `npm run test:git-gateway`: pkt-line create/update/delete/multiple/capabilities/truncation/`push-cert`/duplicate refs/over-64 KiB; classification for default, non-default, new, delete, tag and lookup failure; forged preface; client `Authorization` stripped and Basic injected; blocked push 403 without contacting GitHub; gzip 415; missing credential 403; token absent from logs and responses.
+- [x] `npm run test:git-approvals`: pending/grant lifecycle (dedupe, TTLs, caps, exact agent/owner/repo/requestHash/ref/kind/old/new binding, atomic all-or-none consumption, concurrent retry winner); deny/revoke/clear/trip/policy-expiry invalidation; gateway queues one pending per protected ref and forwards only after every exact grant; a changed object id or unprotected ref needs fresh approval; Bearer-only proxy controls with bounded validation and cross-agent refusal; app helpers and shell port fail closed. 13/13.
 - [x] `npm run test:egress-relay` (Linux): the gateway relay writes its own `ECLIPSE-AGENT` preface before any client bytes.
-- [x] `git --version` executes in the rebuilt pinned image (`2.43.0`); the lock is 388 archives / 232159408 bytes.
-- [ ] Live git: clone and push a branch from an agent namespace; push to `main` is refused; `env` shows no token. Not run: needs an owner GitHub token and a live egress-proxy rebuild; offline coverage passes.
+- [x] `git --version` executes in the rebuilt pinned image (`2.43.0`); the lock is 445 archives / 250231110 bytes.
+- [ ] Live git: clone and push a branch from an agent namespace with no card; a default-branch push shows one card per protected ref; Allow once lets a fresh push succeed; Deny stops `needs_owner`; Always allow/revoke and Astra behave as above; a multi-ref push needs every ref; `env` and `git config -l` show no token. Not run: needs an owner GitHub token and a live egress-proxy rebuild; offline coverage passes.
 - [ ] Live owner checks: GitHub Test with a real token; GitHub MCP discovery/pin and a read + comment; Composio link/pin/read/write; shell + git.
 - [ ] Linux host + AppArmor run of the isolation suite.
 - [x] Live `npm run test:agent-sessions` passes (6/6): the cookie fixture now starts inside each session namespace through `session-fixture-cookie`, so Chromium reaches only its own loopback; the container's own loopback has no listener. Fixes the `ECLIPSE_FIXTURES` flag that `bootstrap.py` previously dropped before the supervisor and the worker. Loopback is now an explicit proxy bypass, and the test's capability check accepts the namespaced session worker alongside Chromium.

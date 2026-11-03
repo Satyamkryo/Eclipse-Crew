@@ -45,6 +45,11 @@ test.before(async () => {
     GRANT SELECT ON agent_policies TO app_role;
     GRANT SELECT, INSERT ON messages TO app_role;
     GRANT SELECT, INSERT ON chat_sessions TO app_role;`);
+  await adminPool.query(`ALTER TABLE "memory_changes" ADD COLUMN "op" text DEFAULT 'add' NOT NULL;
+ALTER TABLE "memory_changes" ADD COLUMN "quote" text;
+ALTER TABLE "agent_policies" ADD COLUMN "memory_mode" text DEFAULT 'auto' NOT NULL;
+ALTER TABLE "memory_entries" ADD COLUMN "last_confirmed_at" timestamp with time zone;
+ALTER TABLE "memory_versions" ADD COLUMN "batch_id" uuid;`);
   await adminPool.query("INSERT INTO owner(id,owner_id,login,password_hash,timezone) VALUES ($1,$1,'owner','hash','UTC')", [OWNER]);
   await adminPool.query("INSERT INTO agents(id,owner_id,name,role,soul_md,status,daily_budget_cents,monthly_budget_cents) VALUES ($1,$2,'Ada','Researcher','Be careful.','active',100,1000)", [AGENT, OWNER]);
   await adminPool.query("INSERT INTO agent_policies(agent_id,owner_id,tools,domains,actions,memory_scopes) VALUES ($1,$2,'{}','{}','{}','{global,agent,private}')", [AGENT, OWNER]);

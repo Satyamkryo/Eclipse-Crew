@@ -34,7 +34,7 @@ test.before(async () => {
     try { await candidate.query("select 1"); adminPool = candidate; } catch { await candidate.end().catch(() => {}); await new Promise((resolve) => setTimeout(resolve, 500)); }
   }
   assert.ok(adminPool, "database became reachable");
-  for (const file of ["0000_solid_risque.sql", "0003_kind_jocasta.sql", "0023_audit_log.sql", "0026_tool_connections.sql"]) {
+  for (const file of ["0000_solid_risque.sql", "0003_kind_jocasta.sql", "0023_audit_log.sql", "0026_tool_connections.sql", "0030_youthful_talisman.sql"]) {
     const migration = readFileSync(new URL(`../drizzle/${file}`, import.meta.url), "utf8")
       .split("\n").filter((line) => !line.startsWith("--")).join("\n").replaceAll("--> statement-breakpoint", "");
     await adminPool.query(migration);

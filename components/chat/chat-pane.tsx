@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { FileText, LoaderCircle, MessageSquare, Paperclip, RefreshCw, X } from "lucide-react";
+import { FileText, LoaderCircle, MessageSquare, Paperclip, RefreshCw, SendHorizontal, X } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { ChatCard } from "@/components/chat/chat-card";
+import { LiveRunCard } from "@/components/chat/live-run-card";
 import { AstraBadge } from "@/components/ui/astra-badge";
 import {
   chatHistoryResponseSchema,
@@ -255,7 +256,8 @@ export function ChatPane({ agent, csrfToken, maxUploadBytes }: { agent?: ChatAge
       if (!parsed.success) throw new Error("Chat returned an invalid response.");
       setMessages((current) => mergeMessages(current, [parsed.data.message]));
       setText("");
-      setNotice("Message saved. No agent runtime is connected yet.");
+      setNotice(parsed.data.message.sourceTag === "system" && parsed.data.message.card.type === "message"
+        ? parsed.data.message.card.text : "Message saved.");
     } catch (error) {
       setSendError(error instanceof Error && error.message.length < 160
         ? error.message : "Couldn't save your message. Try again.");
@@ -276,8 +278,7 @@ export function ChatPane({ agent, csrfToken, maxUploadBytes }: { agent?: ChatAge
           {active ? `Drop files to attach to ${agent.name}` : "Resume this agent to attach files"}
         </div>
       )}
-      <div className="flex h-12 shrink-0 items-center gap-3 border-b border-border px-6">
-        <h2 className="text-lg font-semibold tracking-tight">Chat</h2>
+      <div className="flex h-12 shrink-0 items-center gap-3 border-b border-border px-6 md:hidden">
         {agent && (
           <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
             <span className="min-w-0 truncate">{agent.name}</span>
@@ -315,15 +316,11 @@ export function ChatPane({ agent, csrfToken, maxUploadBytes }: { agent?: ChatAge
                 ? "No conversation yet. Send a message to this agent."
                 : "No conversation yet."} inset />
             ) : messages.map((message) => (
-              <div key={message.id} className="motion-safe:animate-in motion-safe:fade-in motion-safe:duration-200">
-                {message.runId && (
-                  <p className="mb-1 text-xs text-muted-foreground">
-                    Background result · <time dateTime={message.createdAt}>{formatTime(message.createdAt)}</time>
-                  </p>
-                )}
+              <MessageRow key={message.id} message={message} agentName={agent.name}>
                 <ChatCard message={message} agentId={agent?.id} csrfToken={csrfToken} />
-              </div>
+              </MessageRow>
             ))}
+            {agent ? <LiveRunCard agentId={agent.id} csrfToken={csrfToken} active={active} /> : null}
             <div aria-hidden="true" />
           </div>
         </div>
@@ -334,7 +331,6 @@ export function ChatPane({ agent, csrfToken, maxUploadBytes }: { agent?: ChatAge
       {agent && (
         <form onSubmit={send} className="shrink-0 border-t border-border p-4">
           <div className="mx-auto flex max-w-[720px] flex-col gap-2">
-            <label htmlFor="chat-message" className="text-sm font-medium">Message</label>
             {uploads.length > 0 && (
               <ul aria-label="Attachments" className="flex flex-col gap-2">
                 {uploads.map((upload) => <UploadRow key={upload.key} upload={upload} onCancel={() => cancelUpload(upload.key)} />)}
@@ -342,13 +338,14 @@ export function ChatPane({ agent, csrfToken, maxUploadBytes }: { agent?: ChatAge
             )}
             <input ref={fileInput} id="chat-attachments" type="file" multiple hidden aria-label="Attach files"
               onChange={(event) => { addFiles(event.target.files); event.target.value = ""; }} />
-            <div className="flex items-end gap-2">
-              <Button type="button" variant="secondary" aria-label="Attach files" title="Attach files" disabled={!active}
+            <div className="flex items-end gap-1 rounded-xl border border-border bg-surface px-1.5 py-1.5">
+              <Button type="button" variant="ghost" aria-label="Attach files" title="Attach files" disabled={!active}
                 className="shrink-0" onClick={() => fileInput.current?.click()}>
                 <Paperclip aria-hidden="true" className="size-4" />
               </Button>
-              <textarea id="chat-message" value={text} disabled={!active || sending} rows={2}
-                maxLength={20_000} placeholder={active ? `Message ${agent.name}` : undefined}
+              <label htmlFor="chat-message" className="sr-only">Message</label>
+              <textarea id="chat-message" value={text} disabled={!active || sending} rows={1}
+                maxLength={20_000} placeholder={active ? `Message ${agent.name}…` : undefined}
                 aria-describedby="chat-message-hint"
                 onChange={(event) => { setText(event.target.value); if (sendError) setSendError(null); }}
                 onPaste={(event) => {
@@ -360,10 +357,10 @@ export function ChatPane({ agent, csrfToken, maxUploadBytes }: { agent?: ChatAge
                     event.currentTarget.form?.requestSubmit();
                   }
                 }}
-                className="min-h-20 min-w-0 flex-1 rounded-md border border-input bg-surface px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50" />
-              <Button type="submit" disabled={!active || sending || text.trim().length === 0} className="shrink-0">
-                {sending && <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" />}
-                Send message
+                className="max-h-40 min-h-8 min-w-0 flex-1 resize-none self-center bg-transparent px-1 py-1.5 text-sm outline-none placeholder:text-text-subtle disabled:opacity-50" />
+              <Button type="submit" variant="ghost" size="sm" aria-label="Send message" title="Send message"
+                disabled={!active || sending || text.trim().length === 0} className="shrink-0">
+                {sending ? <LoaderCircle aria-hidden="true" className="size-4 animate-spin" /> : <SendHorizontal aria-hidden="true" className="size-4" />}
               </Button>
             </div>
             {!active && <p id="chat-message-hint" className="text-xs text-muted-foreground">Resume this agent to send a message.</p>}
@@ -375,6 +372,36 @@ export function ChatPane({ agent, csrfToken, maxUploadBytes }: { agent?: ChatAge
       )}
     </div>
   );
+}
+
+// Reference sheet 36 "Chat message": ordinary messages are unboxed rows — avatar, name and
+// time on one line, then the content. Action content (file, routine, approval, …) stays a card.
+function MessageRow({ message, agentName, children }: { message: ChatMessage; agentName: string; children: React.ReactNode }) {
+  const isOwner = message.sourceTag === "user";
+  const forwarded = message.card.type === "message" && message.card.fromAgent ? message.card.fromAgent : null;
+  const name = isOwner ? "You" : forwarded ? `${forwarded} (agent)` : agentName;
+  const initial = isOwner ? "Y" : initials(agentName);
+  return (
+    <div className="motion-safe:animate-in motion-safe:fade-in motion-safe:duration-200">
+      <div className="flex gap-3">
+        <span aria-hidden="true" className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full border border-border bg-surface text-xs font-semibold">
+          {initial}
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="flex flex-wrap items-baseline gap-2">
+            <span className="text-sm font-semibold">{name}</span>
+            <time dateTime={message.createdAt} className="text-xs text-text-subtle">{formatTime(message.createdAt)}</time>
+            {message.runId && <span className="text-xs text-muted-foreground">Background result</span>}
+          </p>
+          <div className="mt-1">{children}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function initials(name: string) {
+  return name.trim().split(/\s+/).slice(0, 2).map((part) => part[0]?.toUpperCase() ?? "").join("") || "A";
 }
 
 function UploadRow({ upload, onCancel }: { upload: Upload; onCancel: () => void }) {
@@ -420,6 +447,8 @@ function sendErrorMessage(body: unknown) {
   const code = typeof body === "object" && body !== null && "error" in body ? String(body.error) : "";
   if (code === "agent_paused") return "This agent is paused. Resume it from Settings, then try again.";
   if (code === "agent_not_found") return "This agent is unavailable or does not belong to your account.";
+  if (code === "mention_not_found") return "No agent has that name. Check the spelling and try again.";
+  if (code === "teammate_unavailable") return "That teammate is paused or busy, so nothing was sent.";
   if (code === "invalid_input") return "Enter a message and try again.";
   return "Couldn't save your message. Try again.";
 }

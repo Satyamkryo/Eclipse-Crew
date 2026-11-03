@@ -184,17 +184,28 @@ export async function createGrant(
   return created?.id ?? id;
 }
 
-export async function revokeGrant(database: Database, ownerId: string, permissionId: string): Promise<boolean> {
+export interface RevokedGrant {
+  id: string;
+  agentId: string;
+  site: string;
+  actionClass: string;
+}
+
+export async function revokeGrantRecord(database: Database, ownerId: string, permissionId: string): Promise<RevokedGrant | null> {
   return database.transaction(async (transaction) => {
     const updated = await transaction.update(permissions).set({ revokedAt: new Date() })
       .where(and(eq(permissions.ownerId, ownerId), eq(permissions.id, permissionId), isNull(permissions.revokedAt)))
-      .returning({ id: permissions.id, agentId: permissions.agentId });
-    if (!updated[0]) return false;
+      .returning({ id: permissions.id, agentId: permissions.agentId, site: permissions.site, actionClass: permissions.actionClass });
+    if (!updated[0]) return null;
     await recordAudit(transaction as unknown as AuditExecutor, ownerId, {
       kind: "permission_revoked", agentId: updated[0].agentId, ref: updated[0].id,
     });
-    return true;
+    return updated[0];
   });
+}
+
+export async function revokeGrant(database: Database, ownerId: string, permissionId: string): Promise<boolean> {
+  return Boolean(await revokeGrantRecord(database, ownerId, permissionId));
 }
 
 export async function listGrants(database: Database, ownerId: string, agentId: string): Promise<GrantRow[]> {

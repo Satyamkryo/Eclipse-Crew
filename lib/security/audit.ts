@@ -18,9 +18,11 @@ export const SECURITY_AUDIT_KINDS = [
 export const ADMIN_AUDIT_KINDS = [
   "login", "password_changed", "email_changed", "sessions_revoked", "agent_created", "agent_updated",
   "agent_paused", "agent_resumed", "agent_deleted", "astra_enabled", "astra_disabled", "approval_allowed",
-  "permission_revoked", "memory_approved", "memory_rejected", "memory_undone",
+  "permission_revoked", "memory_approved", "memory_rejected", "memory_undone", "memory_auto_saved", "memory_tidied", "memory_upgrade_applied",
   "connection_added", "connection_replaced", "connection_removed",
+  "connection_device_started", "connection_device_connected", "connection_device_expired",
   "composio_key_saved", "composio_key_removed", "composio_account_connected", "composio_account_revoked",
+  "run_interrupted", "run_handed_off", "message_mentioned",
 ] as const;
 export type AuditKind = (typeof SECURITY_AUDIT_KINDS)[number] | (typeof ADMIN_AUDIT_KINDS)[number];
 

@@ -12,14 +12,14 @@ import { cn } from "@/lib/utils";
 export type AgentAttention = "budget_warning" | "budget_paused" | "teach_paused" | "security_stop" | "approval_pending";
 export type AgentSummary = { id: string; name: string; role: string; status: "active" | "paused"; astraMode: boolean; attention?: AgentAttention | null };
 
-type Props = { agents: AgentSummary[]; selectedAgentId?: string; error?: string; csrfToken: string };
+type Props = { agents: AgentSummary[]; selectedAgentId?: string; error?: string; csrfToken: string; variant?: "pane" | "sidebar" };
 type Toast = { agentId: string; title: string; text: string; persistent: boolean; security?: boolean; approval?: boolean };
 
 function initials(name: string) {
   return name.trim().split(/\s+/).slice(0, 2).map((part) => part[0]?.toUpperCase() ?? "").join("") || "A";
 }
 
-export function AgentPane({ agents, selectedAgentId, error, csrfToken }: Props) {
+export function AgentPane({ agents, selectedAgentId, error, csrfToken, variant = "pane" }: Props) {
   const router = useRouter();
   const [creating, setCreating] = useState(false);
   const [attention, setAttention] = useState<Record<string, AgentAttention>>(() => Object.fromEntries(
@@ -80,12 +80,20 @@ export function AgentPane({ agents, selectedAgentId, error, csrfToken }: Props) 
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-border px-4">
-        <h2 className="text-lg font-semibold tracking-tight">Agents</h2>
-        <Button type="button" size="sm" onClick={() => setCreating(true)}>
-          <Plus aria-hidden="true" className="size-4" />Create agent
-        </Button>
-      </div>
+      {variant === "sidebar" ? (
+        <div className="flex h-9 shrink-0 items-center justify-end px-1">
+          <Button type="button" variant="ghost" size="sm" aria-label="Create agent" title="Create agent" onClick={() => setCreating(true)}>
+            <Plus aria-hidden="true" className="size-4" />
+          </Button>
+        </div>
+      ) : (
+        <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-border px-4">
+          <h2 className="text-lg font-semibold tracking-tight">Agents</h2>
+          <Button type="button" size="sm" onClick={() => setCreating(true)}>
+            <Plus aria-hidden="true" className="size-4" />Create agent
+          </Button>
+        </div>
+      )}
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         {error && <p role="alert" className="mb-3 rounded-md border border-danger px-3 py-2 text-sm text-danger">{error}</p>}
         {agents.length === 0 ? (

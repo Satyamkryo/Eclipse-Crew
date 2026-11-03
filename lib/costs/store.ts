@@ -9,7 +9,7 @@ import {
   budgetPeriods, calculateCostMicroUsd, evaluateBudget, isLocalBaseUrl, resolveModelPrice,
   type BudgetPeriod, type ModelPriceRates, type PriceProviderKind,
 } from "./pricing";
-import { CostStopError, type BudgetCard, type RunCostSink } from "./types";
+import { CostStopError, type AudioCallContext, type AudioReservation, type BudgetCard, type RunCostSink } from "./types";
 
 type Database = Awaited<ReturnType<typeof getDatabase>>;
 type ReadStore = Pick<Database, "select">;
@@ -148,6 +148,7 @@ export function createRunCostSink(options: {
   const { database, ownerId, agentId, runId } = options;
   const now = options.now ?? (() => new Date());
   const prices = new Map<string, ModelPriceRates>();
+  const audioKeys = new Map<string, { costMicroUsd: number; callIndex: number }>();
   let callIndex = 0;
   let total = 0;
   let warned = false;
@@ -183,7 +184,7 @@ export function createRunCostSink(options: {
       const index = ++callIndex;
       let cost: number;
       try {
-        cost = calculateCostMicroUsd(price, call.usage, { images: call.images });
+        cost = calculateCostMicroUsd(price, call.usage, { images: call.images, audioDurationMs: call.audioDurationMs ?? 0 });
       } catch {
         throw new CostStopError("cost_error");
       }
@@ -200,6 +201,7 @@ export function createRunCostSink(options: {
           tokensIn: call.usage.inputTokens,
           tokensOut: call.usage.outputTokens,
           tokensCached: call.usage.cachedInputTokens,
+          audioDurationMs: call.audioDurationMs ?? 0,
           costMicroUsd: cost,
           outcome,
           idempotencyKey: `cost:${runId}:${index}`,
@@ -209,6 +211,33 @@ export function createRunCostSink(options: {
         throw new CostStopError("cost_error");
       }
       if (total > Number.MAX_SAFE_INTEGER) throw new CostStopError("cost_error");
+    },
+
+    async reserveAudio(call: AudioCallContext): Promise<AudioReservation> {
+      if (!Number.isSafeInteger(call.durationMs) || call.durationMs < 1 || call.durationMs > 120000) throw new CostStopError("cost_error");
+      const key = call.key ?? `${call.providerId}\0${call.model}\0${call.durationMs}\0${randomUUID()}`;
+      const prior = audioKeys.get(key); if (prior) return { duplicate: true, ...prior };
+      const priceKey = `${call.providerId}\0${call.model}`;
+      await this.beforeCall({ providerId: call.providerId, kind: call.kind, baseUrl: call.baseUrl, model: call.model });
+      const price = prices.get(priceKey); prices.delete(priceKey);
+      if (!price || price.audioMicroUsdPerHour === undefined) throw new CostStopError("price_required");
+      let cost: number;
+      try { cost = calculateCostMicroUsd(price, { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 }, { audioDurationMs: call.durationMs }); }
+      catch { throw new CostStopError("cost_error"); }
+      const index = ++callIndex;
+      try {
+        const inserted = await database.insert(costEntries).values({
+          id: randomUUID(), ownerId, runId, agentId, providerId: call.providerId, callIndex: index, model: call.model,
+          tokensIn: 0, tokensOut: 0, tokensCached: 0, audioDurationMs: call.durationMs, costMicroUsd: cost,
+          outcome: "asr_attempted", idempotencyKey: `cost:${runId}:${index}`,
+        }).onConflictDoNothing({ target: costEntries.idempotencyKey }).returning({ id: costEntries.id });
+        if (!inserted[0]) { const reservation = { duplicate: true, costMicroUsd: cost, callIndex: index }; audioKeys.set(key, reservation); return reservation; }
+        total += cost;
+      } catch { throw new CostStopError("cost_error"); }
+      if (total > Number.MAX_SAFE_INTEGER) throw new CostStopError("cost_error");
+      const reservation = { duplicate: false, costMicroUsd: cost, callIndex: index };
+      audioKeys.set(key, { costMicroUsd: cost, callIndex: index });
+      return reservation;
     },
 
     totalMicroUsd() { return total; },

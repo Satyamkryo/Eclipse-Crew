@@ -13,7 +13,8 @@ export interface MemorySnapshot {
   entries: MemoryEntryView[];
 }
 
-const MAX_SNAPSHOT_CHARS = 6_000;
+// TASK-086. About 2,000 tokens; it stays in the cached prefix.
+const MAX_SNAPSHOT_CHARS = 8_000;
 const DOC_LABEL = { user: "USER.md", memory: "MEMORY.md", private: "Private notes" } as const;
 
 // TASK-053. Memory is owner-approved background, never a new task and never a permission. The header repeats that to

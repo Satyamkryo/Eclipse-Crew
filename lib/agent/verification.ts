@@ -69,6 +69,11 @@ export async function verifyStep(input: {
   }
   checkCancelled(signal);
   const after = await desktop.screenshot();
+  // The browser can close between the action and this check. No picture means no independent verification.
+  if (!after) {
+    evidence.push({ method: "model", status: "unknown", code: "visual_unavailable" });
+    return finish("unknown");
+  }
   input.onAfter?.(after);
   if (parsed?.kind === "object_visible" && services.samState === "on" && services.sam) {
     try {

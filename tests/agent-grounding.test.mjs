@@ -94,8 +94,8 @@ test("the grounder returns the control centre inside the screen and null without
 
 test("the snapshot result schema rejects oversize, off-screen and control-character data", () => {
   const uuid = "33333333-3333-4333-8333-333333333333";
-  const good = { pageId: uuid, href: "https://a.example/", title: "T", frames: 0, source_tag: "tool", untrusted: true,
-    elements: [{ ref: 1, role: "button", name: "OK", tag: "button", x: 10, y: 10, width: 50, height: 20 }] };
+  const good = { pageId: uuid, href: "https://a.example/", title: "T", frames: 0, paymentFrames: 0, source_tag: "tool", untrusted: true,
+    elements: [{ ref: 1, role: "button", name: "OK", tag: "button", frame: "top", shadow: false, x: 10, y: 10, width: 50, height: 20 }] };
   assert.equal(pageSnapshotResult.safeParse(good).success, true);
   const bad = (patch) => pageSnapshotResult.safeParse({ ...good, elements: [{ ...good.elements[0], ...patch }] }).success;
   assert.equal(bad({ name: "x".repeat(81) }), false);

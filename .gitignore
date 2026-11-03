@@ -13,6 +13,8 @@
 /data/
 /backups/
 /test-results/
+/.tmp/
+/.tmp-*.log
 
 # Installed dependencies
 node_modules/

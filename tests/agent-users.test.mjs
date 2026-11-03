@@ -102,7 +102,8 @@ test("real identities, capability drop, private files, noexec, concurrent provis
     const roles = JSON.parse(fixture("import fs from 'node:fs'; const fields=Object.fromEntries(fs.readFileSync('/proc/1/status','utf8').split(String.fromCharCode(10)).filter(l=>l.includes(':')).map(l=>[l.slice(0,l.indexOf(':')),l.slice(l.indexOf(':')+1).trim()])); console.log(JSON.stringify(fields));"));
     for (const name of ["CapEff", "CapPrm", "CapBnd"]) assert.equal(roles[name], "00000000000001c3");
     assert.equal(roles.NoNewPrivs, "1"); assert.ok(+roles.Seccomp_filters >= 2); summary.checks.push("supervisor_sys_admin_dropped_and_filter_inherited");
-    checked(["exec", "--user", "0:0", container, "python3", "-c", "import sys,ctypes,errno;sys.path.insert(0,'/opt/eclipse/desktop');import bootstrap;bootstrap.reduce_privileges();libc=ctypes.CDLL(None,use_errno=True);assert libc.syscall(165,None,None,None,0,None)==-1 and ctypes.get_errno()==errno.EPERM;assert libc.syscall(0x40000027)==-1 and ctypes.get_errno()==errno.ENOSYS"]);
+    // The deny numbers are per CPU; x32 is refused only on x86-64.
+    checked(["exec", "--user", "0:0", container, "python3", "-c", "import platform,sys,ctypes,errno;sys.path.insert(0,'/opt/eclipse/desktop');import bootstrap;bootstrap.reduce_privileges();libc=ctypes.CDLL(None,use_errno=True);machine=platform.machine();number=40 if machine=='aarch64' else 165;assert libc.syscall(number,None,None,None,0,None)==-1 and ctypes.get_errno()==errno.EPERM;assert machine!='x86_64' or (libc.syscall(0x40000027)==-1 and ctypes.get_errno()==errno.ENOSYS)"]);
     summary.checks.push("reduced_admin_mount_and_x32_syscalls_denied");
     fixture("import fs from 'node:fs'; fs.writeFileSync('/workspace/unrelated-control','preserve');");
     summary.phase = "provision";
@@ -115,19 +116,19 @@ test("real identities, capability drop, private files, noexec, concurrent provis
     assert.equal(ownerCli.status, 0, ownerCli.stderr); assert.equal(JSON.parse(ownerCli.stdout).uid, a.uid);
     summary.checks.push("stable_owner_scoped_identities", "verified_owner_cli");
     summary.phase = "isolation";
-    for (const record of [a, b]) agentRun(record.agentId, "import fs from 'node:fs';fs.writeFileSync(process.env.HOME+'/work/marker','private-'+process.getuid());fs.writeFileSync(process.env.HOME+'/.config/chromium/profile.fixture','profile-'+process.getuid());");
+    for (const record of [a, b]) agentRun(record.agentId, "import fs from 'node:fs';fs.writeFileSync(process.env.HOME+'/work/marker','private-'+process.getuid());fs.writeFileSync(process.env.HOME+'/.config/chrome-for-testing/profile.fixture','profile-'+process.getuid());");
     for (const [self, peer] of [[a, b], [b, a]]) {
       const result = JSON.parse(agentRun(self.agentId, `import assert from 'node:assert/strict';import fs from 'node:fs';import{spawnSync}from'node:child_process';
         const home=${JSON.stringify(self.home)},other=${JSON.stringify(peer.home)},uid=${self.uid};
         assert.equal(process.getuid(),uid); assert.equal(process.getgid(),uid); assert.equal(process.cwd(),home);
         assert.equal(spawnSync('id',['-un'],{encoding:'utf8'}).stdout.trim(),${JSON.stringify(self.name)});
         const fields=Object.fromEntries(fs.readFileSync('/proc/self/status','utf8').split(String.fromCharCode(10)).filter(l=>l.includes(':')).map(l=>[l.slice(0,l.indexOf(':')),l.slice(l.indexOf(':')+1).trim()]));for(const field of ['CapEff','CapPrm','CapBnd','CapInh','CapAmb'])assert.equal(BigInt('0x'+fields[field]),0n);assert.equal(fields.NoNewPrivs,'1');assert.equal(spawnSync('id',['-G'],{encoding:'utf8'}).stdout.trim(),String(uid));
-        for(const suffix of ['', '/inbox','/outbox','/work','/.config/chromium','/Downloads']){const st=fs.statSync(home+suffix);assert.equal(st.uid,uid);assert.equal(st.mode&0o777,0o700);}
-        fs.writeFileSync(home+'/work/marker','private-'+uid);fs.writeFileSync(home+'/.config/chromium/profile.fixture','profile-'+uid);
+        for(const suffix of ['', '/inbox','/outbox','/work','/.config/chrome-for-testing','/Downloads']){const st=fs.statSync(home+suffix);assert.equal(st.uid,uid);assert.equal(st.mode&0o777,0o700);}
+        fs.writeFileSync(home+'/work/marker','private-'+uid);fs.writeFileSync(home+'/.config/chrome-for-testing/profile.fixture','profile-'+uid);
         for(const target of [other,other+'/work/marker','/workspace/.system/agents.json','/workspace/.system/downloads'])assert.throws(()=>fs.readdirSync(target),e=>e.code==='EACCES');
         assert.throws(()=>fs.writeFileSync(other+'/work/intruder','bad'),e=>e.code==='EACCES');
         fs.symlinkSync(other,home+'/work/peer-link');assert.throws(()=>fs.readFileSync(home+'/work/peer-link/work/marker'),e=>e.code==='EACCES');fs.unlinkSync(home+'/work/peer-link');
-        assert.throws(()=>process.setuid(0),e=>e.code==='EPERM');assert.equal(spawnSync('sudo',['-n','true']).error.code,'ENOENT');
+        assert.throws(()=>process.setuid(0),e=>e.code==='EPERM'||e.code==='EINVAL');assert.equal(spawnSync('sudo',['-n','true']).error.code,'ENOENT');
         const script=['#!/bin/sh','exit 0',''].join(String.fromCharCode(10));fs.writeFileSync(home+'/work/control',script,{mode:0o700});assert.equal(spawnSync(home+'/work/control').status,0);
         fs.writeFileSync(home+'/Downloads/control',script,{mode:0o700});assert.equal(spawnSync(home+'/Downloads/control').error.code,'EACCES');
         const unshare=spawnSync('unshare',['--user','--map-root-user','--mount','/bin/mount','-t','tmpfs','tmpfs','/tmp'],{encoding:'utf8'});assert.notEqual(unshare.status,0);assert.match(unshare.stderr,/Operation not permitted|permission denied/i);
@@ -156,7 +157,7 @@ test("real identities, capability drop, private files, noexec, concurrent provis
     compose(["up", "-d", "--no-build", "--force-recreate", "desktop"]); container = compose(["ps", "-q", "desktop"]); assert.notEqual(container, original); await ready();
     for (const record of [a, b]) {
       assert.equal(JSON.parse(admin("inspect", record.agentId)).uid, record.uid);
-      agentRun(record.agentId, `import assert from 'node:assert/strict';import fs from 'node:fs';import{spawnSync}from'node:child_process';assert.equal(fs.readFileSync(process.env.HOME+'/work/marker','utf8'),'private-'+process.getuid());assert.equal(fs.readFileSync(process.env.HOME+'/.config/chromium/profile.fixture','utf8'),'profile-'+process.getuid());assert.equal(spawnSync(process.env.HOME+'/Downloads/control').error.code,'EACCES');`);
+      agentRun(record.agentId, `import assert from 'node:assert/strict';import fs from 'node:fs';import{spawnSync}from'node:child_process';assert.equal(fs.readFileSync(process.env.HOME+'/work/marker','utf8'),'private-'+process.getuid());assert.equal(fs.readFileSync(process.env.HOME+'/.config/chrome-for-testing/profile.fixture','utf8'),'profile-'+process.getuid());assert.equal(spawnSync(process.env.HOME+'/Downloads/control').error.code,'EACCES');`);
     }
     assert.equal(fixture("import fs from 'node:fs';console.log(fs.readFileSync('/workspace/unrelated-control','utf8'));"), "preserve");
     summary.checks.push("recreated_nss_uid_files_profiles_and_noexec_persist", "unrelated_volume_data_preserved");

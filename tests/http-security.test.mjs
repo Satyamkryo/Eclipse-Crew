@@ -71,8 +71,18 @@ test("isolated stack enforces CSP, persists writable artifacts, and safely repai
   const nodeScript = (script) => spawnSync(process.execPath, [script], { env, encoding: "utf8", timeout: 120000 });
   let image;
   let unrelatedVolume;
+  const builtTags = [];
   try {
-    check(compose("up", "-d", "--build", "--wait", "--wait-timeout", "180"), "start five-service fixture");
+    // Environment workaround (Docker policy unchanged): this Docker Desktop refuses compose-managed
+    // builds that request the fs.read entitlement, so each image is built directly from its explicit
+    // context/Dockerfile first under this run's unique project tag; compose then starts with --no-build.
+    // A fresh tag per run means no unverified old image is ever reused.
+    for (const [service, context, dockerfile] of [["app", ".", "./Dockerfile"], ["desktop", "./docker/desktop", "./docker/desktop/Dockerfile"], ["egress-proxy", "./docker/egress", "./docker/egress/Dockerfile"]]) {
+      const tag = `${project}-${service}:latest`;
+      check(docker("build", "--file", dockerfile, "--tag", tag, context), `direct ${service} image build`);
+      builtTags.push(tag);
+    }
+    check(compose("up", "-d", "--no-build", "--wait", "--wait-timeout", "180"), "start five-service fixture");
     const services = check(compose("ps", "--format", "json"), "service health").split(/\r?\n/).map((line) => JSON.parse(line));
     assert.equal(services.length, 5);
     assert.ok(services.every((service) => service.State === "running"));
@@ -155,7 +165,12 @@ test("isolated stack enforces CSP, persists writable artifacts, and safely repai
     await ready();
     check(node('const fs=require("node:fs"); if(fs.readFileSync("/var/eclipse/artifacts/persist.txt","utf8")!=="preserved")process.exit(1);'), "artifact persistence");
     assert.notEqual(repair().status, 0, "repair must refuse a running app");
-    check(node('const fs=require("node:fs"); fs.mkdirSync("/var/eclipse/artifacts/legacy",{mode:0o700}); fs.writeFileSync("/var/eclipse/artifacts/legacy/data.txt","legacy",{mode:0o600}); fs.symlinkSync("/app/package.json","/var/eclipse/artifacts/legacy/outside"); fs.chownSync("/var/eclipse/artifacts",0,0);', "0:0"), "legacy permissions fixture");
+    // The hardened app container drops ALL capabilities, so even uid 0 inside it cannot chown. Files are
+    // planted as the app user; only the root-ownership simulation uses a throwaway helper with the same
+    // minimal caps the repair script itself uses (CHOWN, DAC_OVERRIDE). Product policy is unchanged.
+    check(node('const fs=require("node:fs"); if(process.getuid()!==1000)process.exit(1); fs.mkdirSync("/var/eclipse/artifacts/legacy",{mode:0o700}); fs.writeFileSync("/var/eclipse/artifacts/legacy/data.txt","legacy",{mode:0o600}); fs.symlinkSync("/app/package.json","/var/eclipse/artifacts/legacy/outside");'), "legacy files as app user");
+    check(docker("run", "--rm", "--network", "none", "--user", "0:0", "--cap-add", "CHOWN", "--cap-add", "DAC_OVERRIDE",
+      "--mount", `type=volume,src=${project}_artifacts,dst=/var/eclipse/artifacts`, image, "chown", "0:0", "/var/eclipse/artifacts"), "legacy root-owned fixture");
     check(compose("stop", "app"), "stop app for repair");
     check(repair(), "repair exact artifacts volume");
     check(compose("start", "app"), "start repaired app");
@@ -185,6 +200,12 @@ test("isolated stack enforces CSP, persists writable artifacts, and safely repai
       const tags = JSON.parse(check(docker("image", "inspect", "--format", "{{json .RepoTags}}", image), "verify image tag"));
       assert.ok(tags.includes(tag));
       check(docker("image", "rm", tag), "remove disposable image tag");
+    }
+    for (const tag of builtTags) {
+      const inspected = docker("image", "inspect", "--format", "{{json .RepoTags}}", tag);
+      if (inspected.status !== 0) continue;
+      assert.ok(JSON.parse(inspected.stdout).includes(tag), `verify disposable image tag ${tag}`);
+      check(docker("image", "rm", tag), `remove disposable image tag ${tag}`);
     }
     const resolved = realpathSync(temp);
     assert.equal(path.dirname(resolved), tempRoot);

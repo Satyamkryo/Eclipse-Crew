@@ -28,6 +28,8 @@ export async function loadAgentCredentials(
   const rows = await listConnections(database, ownerId, agentId);
   const entries: CredentialEntry[] = [];
   for (const row of rows) {
+    // TASK-088. An expired GitHub App sign-in is never injected again; the owner sees "Reconnect GitHub".
+    if (row.status !== "active") continue;
     let token: string;
     try { token = decryptSecret(row.encryptedToken); } catch { continue; }
     for (const binding of row.bindings) {

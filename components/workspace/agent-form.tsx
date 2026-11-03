@@ -1,5 +1,5 @@
 "use client";
-import { KNOWN_ACTIONS } from "@/lib/agents/actions";
+import { KNOWN_ACTIONS, SUBAGENT_HINT } from "@/lib/agents/actions";
 import { AGENT_TEMPLATES, type AgentTemplateId } from "@/lib/agents/templates";
 import { useEffect, useRef, useState } from "react";
 import { LoaderCircle } from "lucide-react";
@@ -97,7 +97,7 @@ export function AgentForm({ mode, agentId, csrfToken, initial, onSaved, onCancel
   const [errors, setErrors] = useState<FieldErrors>({});
   const [status, setStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [memoryScopes, setMemoryScopes] = useState<string[]>(initial?.memoryScopes ?? []);
+  const [memoryScopes, setMemoryScopes] = useState<string[]>(initial?.memoryScopes ?? (mode === "create" ? ["global", "agent"] : []));
   const [template, setTemplate] = useState<AgentTemplateId | "blank">("blank");
   const [templateMessage, setTemplateMessage] = useState<string | null>(null);
   const formRef = useRef<HTMLFormElement>(null);
@@ -134,7 +134,7 @@ export function AgentForm({ mode, agentId, csrfToken, initial, onSaved, onCancel
       set("domains", (selected?.domains ?? []).join(", "));
       set("actions", (selected?.actions ?? KNOWN_ACTIONS).join(", "));
     }
-    setMemoryScopes(selected?.memoryScopes ?? []);
+    setMemoryScopes(selected?.memoryScopes ?? ["global", "agent"]);
     setTemplateMessage(selected ? `Template applied: ${selected.label}. Review the fields before saving.` : "Blank agent. Review the fields before saving.");
     requestAnimationFrame(() => statusRef.current?.focus());
   }
@@ -287,7 +287,7 @@ export function AgentForm({ mode, agentId, csrfToken, initial, onSaved, onCancel
             aria-describedby={`${prefix}-domains-hint${errors.domains ? ` ${prefix}-domains-error` : ""}`} className={textareaClass} />
         </Field>
       </div>
-      <Field id={`${prefix}-actions`} label="Actions" error={errors.actions} hint={`Comma-separated. Available: ${KNOWN_ACTIONS.join(", ")}. MCP tools are opt-in: add tool_call yourself, then add the server key under Tools. Empty denies every action.`}>
+      <Field id={`${prefix}-actions`} label="Actions" error={errors.actions} hint={`Comma-separated. Available: ${KNOWN_ACTIONS.join(", ")}. Opt-in: add tool_call, shell or hear_audio yourself; tool_call also needs a server key under Tools. shell runs commands as this agent in its own sandbox, so add the domains it needs. ${SUBAGENT_HINT} Empty denies every action.`}>
         <textarea id={`${prefix}-actions`} name="actions" rows={2} defaultValue={initial ? listText(initial.actions) : KNOWN_ACTIONS.join(", ")}
           onBlur={(event) => validateOnBlur(event, "actions")}
           aria-invalid={errors.actions ? true : undefined}

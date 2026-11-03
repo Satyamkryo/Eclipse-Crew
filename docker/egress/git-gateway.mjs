@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import dns from "node:dns/promises";
 import https from "node:https";
 import net from "node:net";
@@ -23,12 +24,13 @@ const PREFACE_LIMIT = 256;
 const PREFACE_TIMEOUT_MS = 2_000;
 const AGENT = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const REPO_PART = /^(?!\.{1,2}$)[A-Za-z0-9._-]{1,100}$/;
-const GATEWAY_PATH = /^\/git\/github\.com\/([^/]+)\/([^/]+)\.git\/(info\/refs|git-upload-pack|git-receive-pack)$/;
+// TASK-087. The repository path may be pasted from the browser address bar, with or without `.git`.
+const GATEWAY_PATH = /^\/git\/github\.com\/([^/]+)\/([^/]+?)(?:\.git)?\/(info\/refs|git-upload-pack|git-receive-pack)$/;
 const GIT_SERVICE = /^git-(upload|receive)-pack$/;
 const HASH = /^([0-9a-f]{40}|[0-9a-f]{64})$/;
 const REF = /^refs\/(heads|tags)\/[^\s\0]{1,255}$/;
 const RESPONSE_HEADERS = { "content-type": "Content-Type", "content-length": "Content-Length", "cache-control": "Cache-Control",
-  etag: "ETag", vary: "Vary", "www-authenticate": "WWW-Authenticate", "retry-after": "Retry-After" };
+  etag: "ETag", vary: "Vary", "retry-after": "Retry-After" };
 
 export function validatePreface(line, desktopSecret) {
   if (typeof desktopSecret !== "string" || !/^[0-9a-f]{64}$/.test(desktopSecret)) return null;
@@ -58,7 +60,7 @@ export function parseGatewayPath(value) {
 
 // pkt-line: four hex digits including the length; 0000 is the command-list flush.
 export function parsePktLines(buffer) {
-  const commands = []; let offset = 0; let capabilities = ""; let first = true;
+  const commands = []; const seen = new Set(); let offset = 0; let capabilities = ""; let first = true;
   while (true) {
     if (offset + 4 > buffer.length) return { complete: false, commands, capabilities, offset };
     const text = buffer.toString("ascii", offset, offset + 4);
@@ -76,10 +78,14 @@ export function parsePktLines(buffer) {
       const command = nul < 0 ? payload : payload.slice(0, nul);
       const parsed = parseCommand(command);
       if (parsed.error) return { ...parsed, commands, capabilities, offset };
+      if (seen.has(parsed.command.ref)) return { error: "duplicate_ref", commands, capabilities, offset };
+      seen.add(parsed.command.ref);
       commands.push(parsed.command);
     } else {
       const parsed = parseCommand(payload);
       if (parsed.error) return { ...parsed, commands, capabilities, offset };
+      if (seen.has(parsed.command.ref)) return { error: "duplicate_ref", commands, capabilities, offset };
+      seen.add(parsed.command.ref);
       commands.push(parsed.command);
     }
     offset += length;
@@ -96,18 +102,26 @@ export function classifyPush(commands, defaultBranch) {
   const blocked = [];
   for (const command of commands) {
     const deleted = zero(command.new);
+    const identity = { old: command.old, new: command.new };
     if (command.ref.startsWith("refs/tags/")) {
-      if (deleted) blocked.push({ kind: "delete", class: "delete", ref: command.ref, name: command.ref.slice(10) });
-      else if (!zero(command.old)) blocked.push({ kind: "tag_update", class: "delete", ref: command.ref, name: command.ref.slice(10) });
+      if (deleted) blocked.push({ kind: "delete", class: "delete", ref: command.ref, name: command.ref.slice(10), ...identity });
+      else if (!zero(command.old)) blocked.push({ kind: "tag_update", class: "delete", ref: command.ref, name: command.ref.slice(10), ...identity });
       continue;
     }
     const branch = command.ref.slice(11);
-    if (deleted) { blocked.push({ kind: "delete", class: "delete", ref: command.ref, name: branch }); continue; }
+    if (deleted) { blocked.push({ kind: "delete", class: "delete", ref: command.ref, name: branch, ...identity }); continue; }
     if (defaultBranch ? branch === defaultBranch : !zero(command.old)) {
-      blocked.push({ kind: "default_branch", class: "post", ref: command.ref, name: branch });
+      blocked.push({ kind: "default_branch", class: "post", ref: command.ref, name: branch, ...identity });
     }
   }
   return { allowed: blocked.length === 0, blocked };
+}
+
+// TASK-073c. The full command list, sorted by ref, so the same receive-pack request always maps
+// to the same authorization group. Unprotected refs are included: changing any ref needs consent.
+export function requestHashFor(commands) {
+  const text = [...commands].sort((a, b) => a.ref.localeCompare(b.ref)).map((command) => `${command.old} ${command.new} ${command.ref}`).join("\n");
+  return createHash("sha256").update(text).digest("hex");
 }
 
 function reasonText(decision) {
@@ -189,13 +203,19 @@ export function createGitGateway({
     }
     const policy = registry?.get(agentId);
     if (!policy || policy.blocked || policy.tripped || !registry.allows(agentId, HOST)) return respondJson(socket, 403, "agent_unavailable");
+    // TASK-087. Clone and fetch of a public repo work without a GitHub connection. Pushes, and the push
+    // discovery request, still need one; GitHub itself requires a login for them.
+    const publicRead = route.service === "git-upload-pack" || route.action === "git-upload-pack";
     const credential = credentials?.lookup(agentId, HOST);
-    if (!credential || credential.scheme !== "basic" || !credential.username) return respondJson(socket, 403, "credential_required");
+    if (!publicRead && (!credential || credential.scheme !== "basic" || !credential.username)) return respondJson(socket, 403, "credential_required");
     if (total >= MAX_TOTAL || (active.get(agentId) ?? 0) >= MAX_PER_AGENT) return respondJson(socket, 503, "busy");
     if (headers["content-encoding"] && headers["content-encoding"] !== "identity") return respondJson(socket, 415, "encoding_refused");
 
-    const authorization = `Basic ${Buffer.from(`${credential.username}:${credential.token}`, "utf8").toString("base64")}`;
-    const outgoing = { host: HOST, "user-agent": "eclipse-crew-egress/1", accept: "*/*", "accept-encoding": "identity", authorization };
+    let authorization = credential?.scheme === "basic" && credential.username
+      ? `Basic ${Buffer.from(`${credential.username}:${credential.token ?? ""}`, "utf8").toString("base64")}`
+      : null;
+    const outgoing = { host: HOST, "user-agent": "eclipse-crew-egress/1", accept: "*/*", "accept-encoding": "identity",
+      ...(authorization ? { authorization } : {}) };
     for (const name of ["content-type", "git-protocol"]) {
       const value = headers[name]; if (value !== undefined) { if (!sanitize(value)) return respondJson(socket, 400, "invalid_request"); outgoing[name] = value; }
     }
@@ -221,6 +241,13 @@ export function createGitGateway({
         autoSelectFamily: false, timeout: REQUEST_TIMEOUT_MS,
         lookup: (_name, options, callback) => options?.all ? callback(null, [address]) : callback(null, address.address, address.family) },
       (response) => {
+        // TASK-087. A private repo without a connection, or a rejected token, must not send a password
+        // challenge to git. GitHub's 401 becomes our fixed 403, with no WWW-Authenticate header.
+        if (response.statusCode === 401) {
+          response.resume?.();
+          respondJson(socket, 403, "credential_required");
+          return;
+        }
         const responseHeaders = { "Cache-Control": "no-store" };
         for (const [name, header] of Object.entries(RESPONSE_HEADERS)) {
           const value = response.headers[name];
@@ -283,13 +310,42 @@ export function createGitGateway({
       return { pending: (async () => {
         const defaultBranch = await defaultBranchFor(agentId, route.owner, route.repo);
         const decision = classifyPush(parsed.commands, defaultBranch);
-        if (!decision.allowed) {
-          log({ event: "git_push_blocked", agent: agentId, host: HOST, decision: decision.blocked[0].kind });
-          return { blocked: reasonText(decision) };
+        if (decision.allowed) {
+          start(outgoing); writeUpstream(prefix);
+          if (received === length) upstreamRequest.end();
+          return null;
         }
-        start(outgoing); writeUpstream(prefix);
-        if (received === length) upstreamRequest.end();
-        return null;
+        // TASK-073c. Re-check the live policy and credential after the metadata lookup: a pause,
+        // trip or rotated credential during that wait must not ride an old authorization.
+        const livePolicy = registry?.get(agentId);
+        const liveCredential = credentials?.lookup(agentId, HOST);
+        if (!livePolicy || livePolicy.blocked || livePolicy.tripped || !registry.allows(agentId, HOST)) {
+          return { error: [403, "agent_unavailable"] };
+        }
+        if (!liveCredential || liveCredential.scheme !== "basic" || !liveCredential.username) {
+          return { error: [403, "credential_required"] };
+        }
+        authorization = `Basic ${Buffer.from(`${liveCredential.username}:${liveCredential.token}`, "utf8").toString("base64")}`;
+        outgoing.authorization = authorization;
+        const requestHash = requestHashFor(parsed.commands);
+        const required = decision.blocked.map(({ ref, kind, old, new: next }) => ({ ref, kind, old, new: next }));
+        const grants = registry?.consumeGrants?.({ agentId, owner: route.owner, repo: route.repo, requestHash, required });
+        if (grants?.ok) {
+          log({ event: "git_push_allowed", agent: agentId, host: HOST, decision: decision.blocked[0].kind });
+          start(outgoing); writeUpstream(prefix);
+          if (received === length) upstreamRequest.end();
+          return null;
+        }
+        const queued = registry?.createPending?.({
+          agentId, owner: route.owner, repo: route.repo, requestHash, commands: parsed.commands, blocked: decision.blocked,
+        });
+        log({ event: "git_push_blocked", agent: agentId, host: HOST, decision: decision.blocked[0].kind });
+        if (!queued?.ok) {
+          return { blocked: queued?.error === "pending_limit"
+            ? "push needs the owner, and too many approvals are already waiting"
+            : reasonText(decision) };
+        }
+        return { blocked: reasonText(decision) };
       })() };
     } };
   }

@@ -253,3 +253,56 @@ test("dedicated ASR builds fixed multipart and forbids target overrides", async 
     const denied=await fetch(`${base}/v1/teach-asr`,{method:"POST",headers:{...headers,"X-Eclipse-Target":"https://example.com"},body:wav});assert.equal(denied.status,400);assert.equal(upstream.seen.length,1);
   });
 });
+
+test("device sign-in calls only the fixed GitHub endpoints and refuses any other target", async () => {
+  const deviceReply = JSON.stringify({ device_code: "device-code-0123456789", user_code: "ABCD-1234", verification_uri: "https://github.com/login/device", expires_in: 900, interval: 5 });
+  const tokenReply = JSON.stringify({ access_token: "ghu_ACCESS_0123456789", token_type: "bearer", scope: "", refresh_token: "ghr_REFRESH_0123456789", expires_in: 28800, refresh_token_expires_in: 15552000 });
+  const upstream = fakeUpstream((record, response) => {
+    const body = /client_id=([^&]+)/.exec(record.body().toString())?.[1] ?? "";
+    const payload = record.options.path === "/login/device/code" ? deviceReply : tokenReply;
+    response.statusCode = 200; response.headers = { "content-type": "application/json" };
+    setImmediate(() => response.end(payload));
+    assert.equal(body, "Iv1.test");
+  });
+  await withProxy({ upstream }, async ({ base, logs }) => {
+    const post = (body) => fetch(`${base}/v1/github-device`, {
+      method: "POST", headers: { Authorization: `Bearer ${SECRET}`, "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    const started = await post({ operation: "code", clientId: "Iv1.test" });
+    assert.equal(started.status, 200);
+    assert.deepEqual(await started.json(), JSON.parse(deviceReply));
+    const first = upstream.seen[0];
+    assert.equal(first.options.host, "github.com"); assert.equal(first.options.path, "/login/device/code");
+    assert.equal(first.options.method, "POST");
+    assert.equal(first.options.headers["content-type"], "application/x-www-form-urlencoded");
+    assert.equal(first.options.headers["content-length"], String(first.body().length));
+
+    const token = await post({ operation: "token", clientId: "Iv1.test", deviceCode: "device-code-0123456789" });
+    assert.equal(token.status, 200);
+    assert.equal((await token.json()).access_token, "ghu_ACCESS_0123456789");
+    const second = upstream.seen[1];
+    assert.equal(second.options.path, "/login/oauth/access_token");
+    assert.match(second.body().toString(), /grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code/);
+    assert.equal(JSON.stringify(logs).includes("ghu_ACCESS"), false);
+    assert.equal(JSON.stringify(logs).includes("ghr_REFRESH"), false);
+
+    const refresh = await post({ operation: "token", clientId: "Iv1.test", refreshToken: "ghr_REFRESH_0123456789" });
+    assert.equal(refresh.status, 200);
+    assert.match(upstream.seen[2].body().toString(), /grant_type=refresh_token/);
+
+    for (const bad of [
+      { operation: "code", clientId: "Iv1.test", target: "https://example.com" },
+      { operation: "token", clientId: "Iv1.test" },
+      { operation: "token", clientId: "Iv1.test", deviceCode: "a", refreshToken: "b" },
+      { operation: "other", clientId: "Iv1.test" },
+      { operation: "code", clientId: "bad id" },
+      { operation: "code" },
+    ]) {
+      const response = await post(bad);
+      assert.equal(response.status, 400, JSON.stringify(bad));
+    }
+    const wrongMethod = await fetch(`${base}/v1/github-device`, { headers: { Authorization: `Bearer ${SECRET}` } });
+    assert.equal(wrongMethod.status, 404);
+    assert.equal(upstream.seen.length, 3);
+  });
+});

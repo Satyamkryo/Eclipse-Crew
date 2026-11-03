@@ -18,9 +18,10 @@ export async function confidenceGate(input: {
   const evidence: Evidence[] = [];
   const deny = (code: string): GateResult => ({ allowed: false, evidence: [...evidence, { method: "page_structure", status: "unknown", code }] });
   checkCancelled(signal);
-  if (!["click", "type", "key"].includes(intent.action)) return { allowed: true, evidence };
+  if (!["click", "select", "type", "key"].includes(intent.action)) return { allowed: true, evidence };
   if (!snapshot) return deny("unreadable_page");
-  const targets = snapshot.controls.filter((item) => intent.action === "click" ? point && contains(item, point) && item.name === point.name && item.role === point.role : item.focused === true);
+  const targeted = intent.action === "click" || intent.action === "select";
+  const targets = snapshot.controls.filter((item) => targeted ? point && contains(item, point) && item.name === point.name && item.role === point.role : item.focused === true);
   if (targets.length !== 1 || !targets[0].name || snapshot.controls.filter((item) => item.name === targets[0].name && item.role === targets[0].role).length !== 1) return deny("ambiguous_target");
   const target = targets[0];
   // A control focused in a background tab does not prove the X keyboard is addressed to the page.
@@ -45,6 +46,7 @@ export async function confidenceGate(input: {
   if (!independent) {
     // No DOM answer hints: the observer must identify the target from the screenshot and original intent.
     const description = JSON.stringify(intent.action === "click" ? { action: "click", target: intent.target }
+      : intent.action === "select" ? { action: "select", target: intent.target }
       : intent.action === "key" ? { action: "key", keys: intent.keys } : { action: "type", chars: intent.action === "type" ? intent.text.length : 0 });
     const observed = await services.visual.observe(before, description);
     independent = observed.status === "pass" && normalize(observed.name) === normalize(target.name) && normalize(observed.role) === normalize(target.role);
@@ -53,7 +55,8 @@ export async function confidenceGate(input: {
   if (!independent) return { allowed: false, evidence };
   checkCancelled(signal);
   const fresh = await desktop.snapshot();
-  const matches = fresh.controls.filter((item) => same(target, item) && (intent.action === "click" || item.focused === true));
+  if (!fresh) return deny("unreadable_page");
+  const matches = fresh.controls.filter((item) => same(target, item) && (targeted || item.focused === true));
   if (fresh.href !== snapshot.href || matches.length !== 1 || fresh.controls.filter((item) => item.name === target.name && item.role === target.role).length !== 1) return deny("target_changed");
   checkCancelled(signal);
   return { allowed: true, evidence };

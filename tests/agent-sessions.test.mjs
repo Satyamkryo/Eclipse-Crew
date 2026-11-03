@@ -81,9 +81,9 @@ test("two real graphical agent sessions isolate displays/profiles and survive li
   const ready = () => wait(() => checked(["inspect", "--format", "{{.State.Health.Status}}", container]) === "healthy");
   const sessionEnv = (id, display) => `import fs from 'node:fs';import assert from 'node:assert/strict';import{spawnSync}from'node:child_process';
     const runtime=fs.readdirSync('/tmp').filter(n=>n.startsWith('ec-${display + 19900}-')).map(n=>'/tmp/'+n).find(n=>{try{return fs.lstatSync(n).uid===process.getuid()&&spawnSync('xdpyinfo',[],{env:{PATH:process.env.PATH,DISPLAY:':${display}',XAUTHORITY:n+'/Xauthority'},stdio:'ignore',timeout:1000}).status===0;}catch{return false;}});assert.ok(runtime);
-    const env={PATH:process.env.PATH,HOME:process.env.HOME,DISPLAY:':${display}',XAUTHORITY:runtime+'/Xauthority'};
+    const env={PATH:process.env.PATH,HOME:process.env.HOME,DISPLAY:':${display}',XAUTHORITY:runtime+'/Xauthority',XDG_RUNTIME_DIR:runtime,XDG_CONFIG_HOME:process.env.HOME+'/.config',XDG_DATA_HOME:process.env.HOME+'/.local/share',XDG_CACHE_HOME:process.env.HOME+'/.cache',DBUS_SESSION_BUS_ADDRESS:'unix:path='+runtime+'/bus',DBUS_SYSTEM_BUS_ADDRESS:'disabled:',TERM:'xterm-256color'};
     const cmd=(a)=>{const r=spawnSync('xdotool',a,{env,encoding:'utf8',timeout:2000});assert.equal(r.status,0);return r.stdout.trim();};`;
-  const navigate = (id, display, url) => agent(id, sessionEnv(id, display) + `cmd(['key','--clearmodifiers','ctrl+l']);cmd(['type','--clearmodifiers','--delay','1','--',${JSON.stringify(url)}]);cmd(['key','Return']);`);
+  const navigate = (id, display, url) => agent(id, sessionEnv(id, display) + `const focused=spawnSync('/opt/eclipse/desktop/desktop-config/browser-focus.sh',[],{env,encoding:'utf8',timeout:3000});assert.equal(focused.status,0,'browser focus before navigation '+focused.stderr);cmd(['key','--clearmodifiers','ctrl+l']);cmd(['type','--clearmodifiers','--delay','1','--',${JSON.stringify(url)}]);cmd(['key','Return']);`);
   const title = (id, display) => agent(id, sessionEnv(id, display) + "console.log(cmd(['getactivewindow','getwindowname']));");
   // The cookie fixture runs inside each agent's network namespace, on that agent's own loopback.
   const startFixture = (id) => admin("session-fixture-cookie", id);
@@ -97,9 +97,9 @@ test("two real graphical agent sessions isolate displays/profiles and survive li
     summary.phase = "conflicts";
     agent(A, "import fs from 'node:fs';fs.writeFileSync('/tmp/.X100-lock','1',{flag:'wx',mode:0o600});");
     assert.notEqual(raw(args("session-start", A)).status, 0);
-    agent(A, "import fs from 'node:fs';import assert from 'node:assert/strict';assert.equal(fs.readFileSync('/tmp/.X100-lock','utf8'),'1');fs.unlinkSync('/tmp/.X100-lock');fs.symlinkSync((await import('node:os')).hostname()+'-1',process.env.HOME+'/.config/chromium/SingletonLock');");
+    agent(A, "import fs from 'node:fs';import assert from 'node:assert/strict';assert.equal(fs.readFileSync('/tmp/.X100-lock','utf8'),'1');fs.unlinkSync('/tmp/.X100-lock');fs.symlinkSync((await import('node:os')).hostname()+'-1',process.env.HOME+'/.config/chrome-for-testing/SingletonLock');");
     assert.notEqual(raw(args("session-start", A)).status, 0);
-    agent(A, "import fs from 'node:fs';import assert from 'node:assert/strict';const p=process.env.HOME+'/.config/chromium/SingletonLock';assert.ok(fs.lstatSync(p).isSymbolicLink());fs.unlinkSync(p);");
+    agent(A, "import fs from 'node:fs';import assert from 'node:assert/strict';const p=process.env.HOME+'/.config/chrome-for-testing/SingletonLock';assert.ok(fs.lstatSync(p).isSymbolicLink());fs.unlinkSync(p);");
     summary.checks.push("conflicting_display_and_busy_profile_refused_without_removal");
     summary.phase = "start";
     const started = await Promise.all([A, B].map((id) => runProcess(dockerPath, args("session-start", id), { env, timeout: 45000 })));
@@ -131,21 +131,49 @@ test("two real graphical agent sessions isolate displays/profiles and survive li
     assert.ok(seeded.A.includes("sess=A") && !seeded.A.includes("=B"), `agent A cookies: ${seeded.A}`);
     assert.ok(seeded.B.includes("sess=B") && !seeded.B.includes("=A"), `agent B cookies: ${seeded.B}`);
     summary.checks.push("agent_windows_show_only_own_persistent_and_session_cookies");
+    summary.phase = "desktop_polish";
+    const polish = JSON.parse(agent(A, sessionEnv(A, sa.display) + `
+      import {spawn} from 'node:child_process';
+      const find=(program)=>{const base=program.split('/').pop();for(const p of fs.readdirSync('/proc').filter(n=>/^[0-9]+$/.test(n))){try{if(fs.statSync('/proc/'+p).uid!==process.getuid())continue;const c=fs.readFileSync('/proc/'+p+'/cmdline','utf8').split(String.fromCharCode(0)).filter(Boolean);if(c[0]===program||c[0]===base)return {pid:Number(p),argv:c};}catch{}}return null;};
+      // Chromium re-execs with the whole command line packed into argv[0]; renderer/zygote children carry --type=.
+      const chrome=()=>{let n=0;for(const p of fs.readdirSync('/proc').filter(n=>/^[0-9]+$/.test(n))){try{if(fs.statSync('/proc/'+p).uid!==process.getuid())continue;const c=fs.readFileSync('/proc/'+p+'/cmdline','utf8').split(String.fromCharCode(0)).filter(Boolean);const command=c.join(' ');if((c[0]==='/opt/chrome-for-testing/chrome-linux64/chrome'||c[0].startsWith('/opt/chrome-for-testing/chrome-linux64/chrome '))&&!command.includes('--type='))n++;}catch{}}return n;};
+      const pid=Number(fs.readFileSync(runtime+'/browser.pid','utf8'));const st=fs.statSync(runtime+'/browser.pid');assert.equal(st.mode&0o777,0o600);assert.equal(st.uid,process.getuid());
+      const win=(pattern)=>{const r=spawnSync('xdotool',['search','--classname',pattern],{env,encoding:'utf8',timeout:2000});return r.status===0&&r.stdout.trim().length>0;};
+      assert.ok(win('[Tt]int2'),'dock');assert.ok(win('[Pp]cmanfm'),'desktop');
+      const before=chrome();assert.equal(before,1);
+      for(let i=0;i<3;i++){const r=spawnSync('/opt/eclipse/desktop/desktop-config/browser-focus.sh',[],{env,encoding:'utf8',timeout:3000});assert.equal(r.status,0,'browser focus '+r.stderr);}
+      assert.equal(chrome(),before,'focus does not launch a browser');
+      const windows=(pattern)=>spawnSync('xdotool',['search','--classname',pattern],{env,encoding:'utf8'}).stdout.trim().split(String.fromCharCode(10)).filter(Boolean).length;
+      const filesBefore=windows('[Pp]cmanfm');
+      const files=spawn('/opt/eclipse/desktop/desktop-config/open-files.sh',[],{env,detached:true,stdio:'ignore'});files.unref();
+      await new Promise(r=>setTimeout(r,800));
+      assert.ok(windows('[Pp]cmanfm')>=filesBefore,'files window');
+      const term=spawn('/opt/eclipse/desktop/desktop-config/open-terminal.sh',[],{env,detached:true,stdio:'ignore'});term.unref();
+      let xterm=null;for(let i=0;i<30&&!xterm;i++){xterm=find('/usr/bin/xterm');if(!xterm)await new Promise(r=>setTimeout(r,100));}
+      assert.ok(xterm,'xterm');assert.equal(fs.readlinkSync('/proc/'+xterm.pid+'/cwd'),process.env.HOME+'/work');
+      const status=fs.readFileSync('/proc/'+xterm.pid+'/status','utf8');assert.match(status,/^Uid:\\s+${a.uid}/m);assert.match(status,/^CapEff:\\s+0+$/m);assert.match(status,/^NoNewPrivs:\\s+1$/m);
+      const map=fs.readFileSync('/proc/'+xterm.pid+'/uid_map','utf8').match(/[0-9]+/g).map(Number);assert.deepEqual(map,[${a.uid},${a.uid},1]);
+      let xtermWindow=false;for(let i=0;i<30&&!xtermWindow;i++){xtermWindow=win('[Xx][Tt]erm');if(!xtermWindow)await new Promise(r=>setTimeout(r,100));}
+      assert.ok(xtermWindow,'terminal window');process.kill(xterm.pid,'SIGTERM');
+      console.log(JSON.stringify({dock:true,desktop:true,focusStable:true,files:true,terminal:true,browserPid:pid}));
+    `));
+    assert.equal(polish.dock && polish.desktop && polish.focusStable && polish.files && polish.terminal, true);
+    summary.checks.push("dock_desktop_folders_browser_focus_files_and_terminal_uid_namespace_caps");
     summary.phase = "denials";
     for (const [self, peer, display, peerDisplay] of [[a, b, sa.display, sb.display], [b, a, sb.display, sa.display]]) {
       agent(self.agentId, sessionEnv(self.agentId, display) + `
         assert.equal(fs.statSync(env.XAUTHORITY).mode&0o777,0o600);assert.equal(fs.statSync(runtime).mode&0o777,0o700);
-        assert.throws(()=>fs.readdirSync(${JSON.stringify(peer.home + "/.config/chromium")}),e=>e.code==='EACCES');
+        assert.throws(()=>fs.readdirSync(${JSON.stringify(peer.home + "/.config/chrome-for-testing")}),e=>e.code==='EACCES');
         const denied=spawnSync('xdpyinfo',[],{env:{...env,DISPLAY:':${peerDisplay}'},stdio:'ignore',timeout:1000});assert.notEqual(denied.status,0);
         assert.notEqual(spawnSync('xdpyinfo',[],{env:{...env,XAUTHORITY:runtime+'/absent'},stdio:'ignore',timeout:1000}).status,0);
         const net=await import('node:net');await assert.rejects(new Promise((resolve,reject)=>{const s=net.connect('/run/eclipse/sessions.sock');s.setTimeout(1000,()=>{s.destroy();reject(Error('timeout'));});s.once('connect',()=>{s.destroy();resolve();});s.once('error',reject);}),e=>e.code==='EACCES');`);
     }
     // The peer's real cookie database cannot be read or opened by the other agent's Linux user.
     for (const [self, peer] of [[a, b], [b, a]]) {
-      agent(self.agentId, `import fs from 'node:fs';import assert from 'node:assert/strict';for(const file of ['Default/Cookies','Default/Network/Cookies','Default/Login Data'])assert.throws(()=>fs.readFileSync(${JSON.stringify(peer.home + "/.config/chromium/")}+file),e=>e.code==='EACCES');`);
+      agent(self.agentId, `import fs from 'node:fs';import assert from 'node:assert/strict';for(const file of ['Default/Cookies','Default/Network/Cookies','Default/Login Data'])assert.throws(()=>fs.readFileSync(${JSON.stringify(peer.home + "/.config/chrome-for-testing/")}+file),e=>e.code==='EACCES');`);
     }
     summary.checks.push("peer_cookie_and_login_database_paths_denied_to_other_agent_user");
-    root(`import fs from 'node:fs';import assert from 'node:assert/strict';let workers=0,browsers=0;const outer=fs.readFileSync('/proc/1/uid_map','utf8').match(/[0-9]+/g).map(Number);for(const pid of fs.readdirSync('/proc').filter(n=>/^[0-9]+$/.test(n))){let s,c;try{s=fs.readFileSync('/proc/'+pid+'/status','utf8');c=fs.readFileSync('/proc/'+pid+'/cmdline','utf8').split(String.fromCharCode(0));}catch{continue;}const fields=Object.fromEntries(s.split(String.fromCharCode(10)).filter(l=>l.includes(':')).map(l=>[l.slice(0,l.indexOf(':')),l.slice(l.indexOf(':')+1).trim()]));const uid=Number(fields.Uid.split(String.fromCharCode(9))[0]);if(![${a.uid},${b.uid}].includes(uid))continue;if(c.some(x=>x.endsWith('/session-worker.mjs')))workers++;if(c.includes('--remote-debugging-pipe'))browsers++;assert.ok(!c.join(' ').includes('--remote-debugging-port'));const map=fs.readFileSync('/proc/'+pid+'/uid_map','utf8').match(/[0-9]+/g).map(Number);const cap=f=>BigInt('0x'+fields[f]);if(JSON.stringify(map)===JSON.stringify(outer)){for(const f of ['CapEff','CapPrm','CapInh','CapBnd','CapAmb'])assert.equal(cap(f),0n);}else{assert.deepEqual(map,[uid,uid,1]);assert.equal(cap('CapInh'),0n);assert.equal(cap('CapAmb'),0n);if(c[0]==='/opt/chromium/chrome-linux/chrome'||c[0].startsWith('/opt/chromium/chrome-linux/chrome --type=')){assert.equal(cap('CapEff')&~0x200000n,0n);assert.equal(cap('CapPrm')&~0x200000n,0n);}else{for(const f of ['CapEff','CapPrm','CapBnd'])assert.equal(cap(f),0n);}}assert.equal(fields.NoNewPrivs,'1');}assert.equal(workers,2);assert.equal(browsers,2);`);
+    root(`import fs from 'node:fs';import assert from 'node:assert/strict';let workers=0,browsers=0;const outer=fs.readFileSync('/proc/1/uid_map','utf8').match(/[0-9]+/g).map(Number);for(const pid of fs.readdirSync('/proc').filter(n=>/^[0-9]+$/.test(n))){let s,c;try{s=fs.readFileSync('/proc/'+pid+'/status','utf8');c=fs.readFileSync('/proc/'+pid+'/cmdline','utf8').split(String.fromCharCode(0));}catch{continue;}const fields=Object.fromEntries(s.split(String.fromCharCode(10)).filter(l=>l.includes(':')).map(l=>[l.slice(0,l.indexOf(':')),l.slice(l.indexOf(':')+1).trim()]));const uid=Number(fields.Uid.split(String.fromCharCode(9))[0]);if(![${a.uid},${b.uid}].includes(uid))continue;const command=c.join(' ');if(c.some(x=>x.endsWith('/session-worker.mjs')))workers++;const mainBrowser=c[0]==='/opt/chrome-for-testing/chrome-linux64/chrome'||c[0].startsWith('/opt/chrome-for-testing/chrome-linux64/chrome ');if(mainBrowser&&!command.includes('--type=')&&command.includes('--remote-debugging-pipe'))browsers++;assert.ok(!c.join(' ').includes('--remote-debugging-port'));const map=fs.readFileSync('/proc/'+pid+'/uid_map','utf8').match(/[0-9]+/g).map(Number);const cap=f=>BigInt('0x'+fields[f]);if(JSON.stringify(map)===JSON.stringify(outer)){for(const f of ['CapEff','CapPrm','CapInh','CapBnd','CapAmb'])assert.equal(cap(f),0n);}else{assert.deepEqual(map,[uid,uid,1]);assert.equal(cap('CapInh'),0n);assert.equal(cap('CapAmb'),0n);if(c[0]==='/opt/chrome-for-testing/chrome-linux64/chrome'||c[0].startsWith('/opt/chrome-for-testing/chrome-linux64/chrome ')){assert.equal(cap('CapEff')&~0x200000n,0n);assert.equal(cap('CapPrm')&~0x200000n,0n);}else{for(const f of ['CapEff','CapPrm','CapBnd'])assert.equal(cap(f),0n);}}assert.equal(fields.NoNewPrivs,'1');}assert.equal(workers,2);assert.equal(browsers,2);`);
     summary.checks.push("peer_and_missing_xauthority_rejected_profiles_control_private_zero_capabilities_pipe_cdp");
     const workers = JSON.parse(root(`import fs from 'node:fs';const out=[];for(const p of fs.readdirSync('/proc').filter(n=>/^[0-9]+$/.test(n))){try{const c=fs.readFileSync('/proc/'+p+'/cmdline','utf8').split(String.fromCharCode(0));if(c[1]==='/opt/eclipse/desktop/session-worker.mjs')out.push({pid:Number(p),uid:fs.statSync('/proc/'+p).uid});}catch{}}console.log(JSON.stringify(out));`));
     for (const [self, peer] of [[a, b], [b, a]]) {
@@ -177,7 +205,7 @@ test("two real graphical agent sessions isolate displays/profiles and survive li
     }
     summary.checks.push("desktop_has_only_own_volume_no_env_file_and_agent_users_have_no_sudo_secrets_database_or_internet");
     summary.phase = "session_cookies";
-    const profileDirectory = `${a.home}/.config/chromium`;
+    const profileDirectory = `${a.home}/.config/chrome-for-testing`;
     const snapshot = `${profileDirectory}/eclipse-session-cookies.json`;
     navigate(A, sa.display, "http://127.0.0.1:18765/late?value=A"); await wait(() => title(A, sa.display).includes("late=A"));
     navigate(A, sa.display, "http://127.0.0.1:18765/drop"); await wait(() => !title(A, sa.display).includes("gone="));
@@ -214,7 +242,10 @@ test("two real graphical agent sessions isolate displays/profiles and survive li
     summary.checks.push("corrupt_oversized_symlinked_and_loose_mode_snapshots_ignored_without_blocking_start");
     summary.phase = "component_crash";
     agent(A, "import fs from 'node:fs';for(const p of fs.readdirSync('/proc').filter(n=>/^[0-9]+$/.test(n))){try{if(fs.readFileSync('/proc/'+p+'/comm','utf8').trim()==='Xvfb'&&fs.statSync('/proc/'+p).uid===process.getuid())process.kill(Number(p),'SIGKILL');}catch{}}");
-    await wait(() => JSON.parse(admin("session-status", A)).state === "failed"); admin("session-stop", A); assert.equal(noAgentProcesses(a.uid), "0");
+    // A lost display is a graphics failure, not a dead agent: the sandbox stays usable and Pause/Stop still cleans it.
+    await wait(() => JSON.parse(admin("session-status", A)).graphics === "failed");
+    assert.equal(JSON.parse(admin("session-status", A)).state, "running");
+    admin("session-stop", A); assert.equal(noAgentProcesses(a.uid), "0");
     assert.equal(JSON.parse(admin("session-status", B)).state, "running");
     const snapshotState = () => agent(A, `import fs from 'node:fs';try{const b=JSON.parse(fs.readFileSync(${JSON.stringify(snapshot)},'utf8'));console.log('snapshot:'+b.cookies.map(c=>c.name).join('+')+' mode:'+(fs.statSync(${JSON.stringify(snapshot)}).mode&0o777).toString(8));}catch(e){console.log('snapshot:'+e.code)}`).trim();
     const beforeRestart = snapshotState(); admin("session-start", A); startFixture(A);
@@ -222,6 +253,20 @@ test("two real graphical agent sessions isolate displays/profiles and survive li
     const afterDisplayCrash = title(A, sa.display);
     assert.ok(afterDisplayCrash.includes("sess=A"), `a crashed display must not erase the saved session cookies (${beforeRestart}; after restart ${snapshotState()}): ${afterDisplayCrash}`);
     summary.checks.push("component_failure_cleanup_and_independent_peer_lifecycle");
+    summary.phase = "browser_close";
+    const browserPid = () => agent(A, `import fs from 'node:fs';const d=fs.readdirSync('/tmp').filter(n=>n.startsWith('ec-'+process.getuid()+'-')).map(n=>'/tmp/'+n).find(n=>{try{return fs.existsSync(n+'/browser.pid')}catch{return false}});console.log(d?fs.readFileSync(d+'/browser.pid','utf8').trim():'');`).trim();
+    const pid = browserPid(); assert.match(pid, /^\d+$/, "the session exposes its verified browser pid");
+    agent(A, `import fs from 'node:fs';process.kill(${pid}, 'SIGTERM');`);
+    await wait(() => JSON.parse(admin("session-status", A)).browser === "stopped");
+    const afterClose = JSON.parse(admin("session-status", A));
+    assert.equal(afterClose.state, "running", "closing the browser leaves the sandbox running");
+    assert.equal(afterClose.graphics, "running", "closing the browser leaves the graphical desktop running");
+    assert.equal(JSON.parse(admin("session-status", B)).state, "running", "a browser close never touches the peer");
+    const restartedBrowser = JSON.parse(admin("session-browser-start", A));
+    assert.equal(restartedBrowser.browser, "running");
+    startFixture(A); navigate(A, sa.display, "http://127.0.0.1:18765/check"); await wait(() => title(A, sa.display).includes("Fixture A Cookie fixture=A"));
+    assert.ok(title(A, sa.display).includes("sess=A"), "a browser-only restart preserves the profile and cookies");
+    summary.checks.push("browser_close_leaves_graphics_running_and_browser_restart_preserves_profile");
     summary.phase = "worker_crash";
     // A new cookie must reach disk through the 30 s periodic save alone, because the worker is then killed with no chance to close.
     navigate(A, sa.display, "http://127.0.0.1:18765/crash?value=A"); await wait(() => title(A, sa.display).includes("crashc=A"));
@@ -277,13 +322,14 @@ test("two real graphical agent sessions isolate displays/profiles and survive li
         const clickNamed=async(r,name,expected)=>{const e=r.elements.find((x)=>x.name===name);assert.ok(e,'listed: '+name);await page.evaluate(()=>{document.title='none';});
           await dispatchOperation(s,'input.click',{button:'left',x:e.x+Math.floor(e.width/2),y:e.y+Math.floor(e.height/2)});await pause(250);assert.equal(await page.title(),expected,'click on '+name);return e;};
         const first=await read();
-        assert.deepEqual(names(first).sort(),['Email address','Forgot password?','Save','Save draft']);
+        assert.deepEqual(names(first).sort(),['Email address','Forgot password?','Inner','Save','Save draft']);
         assert.equal(first.frames,1);assert.ok(first.elements.every((e,i)=>e.ref===i+1));
         assert.ok(!JSON.stringify(first).includes('private@example.com'),'no field value in the snapshot');
         const verify=async(kind,value)=>dispatchOperation(s,'page.verify',{predicate:{kind,value}}).catch(e=>{throw Error('verify_'+kind+'_'+value+'_'+e.code);});
         assert.equal((await verify('control_present','Save')).status,'pass');
         assert.equal((await verify('control_present','Missing')).status,'fail');
-        for(const name of ['Covered','Far below','Account password','Sign in code','Inner']) assert.equal((await verify('control_present',name)).status,'fail',name+' excluded');
+        for(const name of ['Covered','Far below','Account password','Sign in code']) assert.equal((await verify('control_present',name)).status,'fail',name+' excluded');
+        assert.equal((await verify('control_present','Inner')).status,'pass','a child-frame control is listed with frame=child');
         assert.equal((await verify('control_absent','Missing')).status,'pass');
         await page.locator('input[aria-label="Email address"]').focus();
         const focused=await read();assert.equal(focused.elements.find(e=>e.name==='Email address').focused,true);
@@ -308,7 +354,7 @@ test("two real graphical agent sessions isolate displays/profiles and survive li
         const capped=await read();assert.ok(capped.elements.length<=150);
         console.log(JSON.stringify({listed:names(first).length,origin,movedOrigin:{x:save2.x-100,y:save2.y-100},capped:capped.elements.length}));
       }finally{await s.close();}`));
-    assert.ok(snapshotCheck.listed === 4 && snapshotCheck.capped <= 150, JSON.stringify(snapshotCheck)); summary.checks.push("page_snapshot_lists_only_visible_unobstructed_non_secret_controls_and_clicks_land_at_any_window_position_and_scroll_with_closed_postconditions_and_focus");
+    assert.ok(snapshotCheck.listed === 5 && snapshotCheck.capped <= 150, JSON.stringify(snapshotCheck)); summary.checks.push("page_snapshot_lists_only_visible_unobstructed_non_secret_controls_and_clicks_land_at_any_window_position_and_scroll_with_closed_postconditions_and_focus");
     summary.outcome = "passed"; summary.phase = "complete";
   } catch (error) { summary.reason = `failed_${summary.phase}`; throw error; }
   finally {

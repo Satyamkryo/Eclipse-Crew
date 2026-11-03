@@ -6,6 +6,7 @@ import { LoaderCircle } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { BackgroundModelCard, type BackgroundSettings } from "./background-model";
 
 type MainSettings = {
   configured: boolean;
@@ -27,7 +28,7 @@ type SamSettings = {
   canUseMainKey: boolean;
 };
 
-type Settings = { main: MainSettings; sam: SamSettings };
+type Settings = { main: MainSettings; sam: SamSettings; background: BackgroundSettings };
 type TestResult = { models: Array<{ id: string; contextTokens: number | null }>; latencyMs: number };
 type Card = "main" | "sam";
 
@@ -393,6 +394,8 @@ export function ModelSettings({ initial, csrfToken }: { initial: Settings; csrfT
           </div>
         )}
       </section>
+
+      <BackgroundModelCard initial={settings.background} csrfToken={csrfToken} />
     </div>
   );
 }

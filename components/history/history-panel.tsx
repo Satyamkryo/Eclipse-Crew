@@ -6,10 +6,13 @@ import { RunList } from "./run-list";
 import { RunTimeline } from "./run-timeline";
 
 // The History tab: this agent's saved replays and runs, and one run's step timeline. Rewind comes with TASK-043.
-export function HistoryPanel({ agentId, agentName, astraMode, timeZone, csrfToken }: {
+export function HistoryPanel({ agentId, agentName, astraMode, timeZone, csrfToken, initialRunId, initialContinue }: {
   agentId?: string; agentName?: string; astraMode?: boolean; timeZone: string; csrfToken: string;
+  initialRunId?: string; initialContinue?: boolean;
 }) {
-  const [openRun, setOpenRun] = useState<{ agentId: string; runId: string } | null>(null);
+  const [openRun, setOpenRun] = useState<{ agentId: string; runId: string } | null>(
+    initialRunId && agentId ? { agentId, runId: initialRunId } : null,
+  );
   if (!agentId) {
     return (
       <div className="flex h-full min-h-48 flex-col items-center justify-center gap-1 px-6 py-12 text-center">
@@ -24,6 +27,7 @@ export function HistoryPanel({ agentId, agentName, astraMode, timeZone, csrfToke
       <>
         <HistoryAgentHeader agentName={agentName} astraMode={astraMode} />
         <RunTimeline runId={openRun.runId} timeZone={timeZone} csrfToken={csrfToken} onBack={() => setOpenRun(null)}
+          autoContinue={initialContinue && openRun.runId === initialRunId}
           onOpenRun={(runId) => setOpenRun({ agentId, runId })} />
       </>
     );

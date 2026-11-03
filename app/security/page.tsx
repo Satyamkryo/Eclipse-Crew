@@ -1,12 +1,9 @@
-import Link from "next/link";
 import { redirect } from "next/navigation";
-import { eq } from "drizzle-orm";
 
 import { getDatabase } from "@/db/client";
-import { owner } from "@/db/schema";
-import { listAgentRecords } from "@/lib/agents/data";
 import { validateSession } from "@/lib/auth/session";
-import { resolveTimezone } from "@/lib/time/clock";
+import { loadShellContext } from "@/lib/shell/context";
+import { AppShell } from "@/components/workspace/app-shell";
 import { SecurityCenter } from "@/components/security/security-center";
 
 export const dynamic = "force-dynamic";
@@ -14,31 +11,26 @@ export const dynamic = "force-dynamic";
 export default async function SecurityPage() {
   const session = await validateSession();
   if (!session) redirect("/login");
-  let data: { agents: { id: string; name: string }[]; timeZone: string } | null = null;
+  let context: Awaited<ReturnType<typeof loadShellContext>> | null = null;
+  let timeZone: string;
+  let agents: { id: string; name: string }[] = [];
   try {
     const database = await getDatabase();
-    const rows = await database.select({ timezone: owner.timezone }).from(owner).where(eq(owner.id, session.ownerId)).limit(1);
-    const timeZone = resolveTimezone(rows[0]?.timezone) ?? "UTC";
-    const agents = (await listAgentRecords(database, session.ownerId)).map((agent) => ({ id: agent.id, name: agent.name }));
-    data = { agents, timeZone };
-  } catch { data = null; }
-  if (!data) {
+    context = await loadShellContext(database, session.ownerId);
+    timeZone = context.ownerTimeZone;
+    agents = context.agents.map((agent) => ({ id: agent.id, name: agent.name }));
+  } catch {
     return (
-      <main className="mx-auto flex min-h-screen w-full max-w-3xl flex-col gap-4 px-4 py-10 sm:px-6">
-        <Link href="/" className="text-sm underline underline-offset-4">Back to workspace</Link>
-        <h1 className="text-2xl font-semibold tracking-tight">Security Center</h1>
-        <p role="alert" className="text-sm text-danger">
-          The Security Center is temporarily unavailable. <Link href="/security" className="underline underline-offset-4">Try again</Link>.
-        </p>
-      </main>
+      <AppShell owner={null} agents={[]} pageTitle="Security Center">
+        <div className="p-6">
+          <p role="alert" className="text-sm text-danger">The Security Center is temporarily unavailable. Try again from the navigation.</p>
+        </div>
+      </AppShell>
     );
   }
   return (
-    <main className="min-h-dvh bg-background text-foreground">
-      <div className="border-b border-border px-4 py-3 sm:px-6">
-        <Link href="/" className="text-sm underline underline-offset-4">Back to workspace</Link>
-      </div>
-      <SecurityCenter agents={data.agents} csrfToken={session.csrfToken} timeZone={data.timeZone} />
-    </main>
+    <AppShell owner={{ email: context.ownerEmail, timezone: context.ownerTimeZone }} agents={context.agents} csrfToken={session.csrfToken} pageTitle="Security Center">
+      <SecurityCenter agents={agents} csrfToken={session.csrfToken} timeZone={timeZone} />
+    </AppShell>
   );
 }

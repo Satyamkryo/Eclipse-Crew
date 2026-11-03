@@ -1,20 +1,22 @@
 import "server-only";
-import type { ProviderConnector, ProviderUsage } from "../providers/types";
+import type { ProviderConnector, ProviderContent, ProviderUsage } from "../providers/types";
 import { getTime } from "../time/clock";
-import { buildRequest, summarizeIntent, timeSummary, type AgentPersona, type AgentSkill, type ReadDocument, type StepSummary, type ToolResultContext, MAX_DOCUMENT_WINDOWS } from "./context";
+import { buildRequest, summarizeIntent, timeSummary, type AgentPersona, type AgentSkill, type DocumentSearch, type HistorySearch, type ReadDocument, type StepSummary, type ToolResultContext, MAX_DOCUMENT_WINDOWS, MAX_SEARCHES } from "./context";
 import type { DeliveredFile, DesktopPort, ListedFile, PageSnapshot, Screenshot } from "./desktop-port";
 import { executeIntent, validPoint, type Grounder } from "./executor";
 import { createPageGrounder, suggestNames } from "./grounding";
 import { notAllowedText } from "../agents/actions";
 import { containsCanary } from "../security/canary";
-import { DESKTOP_ACTIONS, FILE_ACTIONS, parseNextStep, type Intent } from "./intent";
+import { DESKTOP_ACTIONS, FILE_ACTIONS, parseNextStep, resolvePlaceholders, type Intent } from "./intent";
 import { labelFor, pickRoute, type RouteKind } from "./routing";
 import { checkTyped, deriveScope, hostFromUrl, type ScopeRule } from "./scope";
 import { classifyAction, type ActionClass, type RiskClass } from "./risk";
 import type { ApprovalGate } from "../approvals/types";
 import { classifyToolCall } from "../tools/risk";
 import { splitToolReference, type ToolPort } from "../tools/port";
-import { checkShellExpect, formatShellResult, type ShellPort } from "./shell-port";
+import { checkShellExpect, formatShellResult, type PushPending, type ShellPort } from "./shell-port";
+import type { AudioPort } from "./audio-port";
+import { subagentLimits } from "./subagents";
 
 import { confidenceGate } from "./confidence-gate";
 import { createVisualVerifier } from "./visual-verifier";
@@ -40,10 +42,21 @@ function argumentText(value: unknown): string {
   return parts.join("\n").slice(0, 12_000);
 }
 
-export const MAX_STEPS = 20;
+// TASK-087. A dev-agent fix needs more turns than a browser task: clone, install, test, edit, retest, commit, push.
+// Only agents whose Actions include `shell` get the larger ceiling; every other agent keeps the base limits.
+// TASK-083. Base limits are 60 steps, a 30-minute wall clock and 400,000 weighted tokens for every agent.
+export const MAX_STEPS = 60;
 export const MAX_REPEATS = 3;
-export const MAX_TOKENS = 200_000;
-export const MAX_WALL_CLOCK_MS = 15 * 60_000;
+export const MAX_TOKENS = 400_000;
+export const MAX_WALL_CLOCK_MS = 30 * 60_000;
+export const SHELL_MAX_STEPS = 60;
+export const SHELL_MAX_TOKENS = 1_500_000;
+export const SHELL_MAX_WALL_CLOCK_MS = 60 * 60_000;
+// Cached input costs a tenth of fresh input, so a long cached run is not stopped early.
+export function weightedTokens(usage: Pick<ProviderUsage, "inputTokens" | "outputTokens" | "cachedInputTokens">): number {
+  const cached = Math.max(0, usage.cachedInputTokens);
+  return Math.max(0, usage.inputTokens - cached) + usage.outputTokens + Math.ceil(cached / 10);
+}
 const MAX_INVALID_IN_A_ROW = 2;
 // A click whose target is not found gets one more turn with the visible names; the next miss hands off.
 const MAX_MISSES_IN_A_ROW = 2;
@@ -51,7 +64,8 @@ const MAX_MISSES_IN_A_ROW = 2;
 export type RunOutcome =
   | "finished" | "asked_owner" | "needs_owner" | "paused_by_owner" | "invalid_output"
   | "step_limit" | "token_limit" | "time_limit" | "repeat_limit" | "budget_paused" | "price_required" | "cost_error"
-  | "provider_error" | "desktop_error" | "aborted" | "busy" | "receipt_error" | "security_stop" | "scope_blocked";
+  | "provider_error" | "desktop_error" | "aborted" | "busy" | "receipt_error" | "security_stop" | "scope_blocked"
+  | "handed_off";
 
 export type RunCard =
   | { type: "message"; text: string }
@@ -64,6 +78,8 @@ export interface RunResume {
   history: readonly StepSummary[];
   documents: readonly { name: string; offset: number }[];
   delivered: readonly string[];
+  // TASK-084. A branch keeps value names only, never values; the agent extracts again when it needs one.
+  valueNames?: readonly string[];
   turn: number;
 }
 
@@ -72,8 +88,10 @@ export type SecurityStopResult = "posted" | "duplicate" | "failed";
 
 // TASK-054. The agent may only ask; the owner decision writes memory later.
 export interface MemoryPort {
-  propose(input: { scope: "global" | "agent" | "private"; title: string; text: string; reason: string }):
-    Promise<{ ok: true; changeId: string; flags: string[] } | { ok: false; code: string; codes?: string[] }>;
+  propose(input: {
+    scope: "global" | "agent" | "private"; title: string; text: string; reason: string;
+    op?: "add" | "replace" | "forget"; quote?: string | null;
+  }): Promise<{ ok: true; changeId: string; flags: string[]; applied?: boolean; versionId?: string } | { ok: false; code: string; codes?: string[] }>;
 }
 
 export interface RunDeps {
@@ -106,12 +124,38 @@ export interface RunDeps {
   approvals?: ApprovalGate;
   // TASK-051. Astra Mode skips only the approval prompt; scope, allowlists, budgets, tripwire and receipts still apply.
   astra?: boolean;
-  // TASK-054. Add-only memory requests; absent means the remember action is refused.
+  // TASK-054 / TASK-086. Memory requests; absent means remember is refused.
   memory?: MemoryPort;
+  // TASK-086. Search the agent's own chat history. Absent means search_history is refused.
+  history?: { search(query: string): Promise<readonly { date: string; snippet: string }[]> };
   // TASK-072. Pinned remote tool calls; absent means tool_call is refused.
   tools?: ToolPort;
   // TASK-073. Shell commands inside the agent namespace; absent means shell is refused.
   shell?: ShellPort;
+  // TASK-079. Bounded hearing through the agent's private speaker; absent means hear_audio is refused.
+  audio?: AudioPort;
+  // TASK-083. Earlier conversation parts and the owner texts they contain (scope only, never the current task).
+  conversation?: ProviderContent[];
+  scopeTexts?: readonly string[];
+  // TASK-085. Handoff execution and the receiver's note; teammates are offered only with the permission.
+  handoff?: (input: { agent: string; note: string }) => Promise<{ ok: true; receiverName: string } | { ok: false; code: string }>;
+  handoffNote?: { sender: string; text: string };
+  teammates?: { name: string; role: string; status: "active" | "paused"; tools: readonly string[] }[];
+  sourceMessageId?: string;
+  // TASK-076. A helper run posts no card of its own; its final card is returned to the parent as data.
+  silent?: boolean;
+  // TASK-076. Only these actions are offered and allowed (a helper's subset). Absent for a normal run.
+  offeredActions?: readonly string[];
+  // TASK-076. The parent's screenless tool subset, enforced again on every call by the tool port.
+  allowedTools?: readonly string[];
+  // TASK-076. The screenless tools this run may grant to a helper (empty means spawn is not offered).
+  helperTools?: readonly string[];
+  // TASK-076. The helper's card label for risky approvals ("Helper 2").
+  helperLabel?: string;
+  // TASK-076. The owner's original task for scope checks; a helper task never widens the scope.
+  scopeTask?: string;
+  // TASK-076. The manager that runs this run's helpers; absent means spawn_subagent is refused.
+  subagents?: import("./subagents").SubagentManager;
   onScopeBlocked?: (rule: ScopeRule, runId?: string) => void | Promise<void>;
   // Called once when a run stops for security. "posted" or "duplicate" means the tripwire owns the one card;
   // "failed" (or no hook) leaves the loop to post its fixed fallback card.
@@ -156,6 +200,10 @@ export interface RunResult {
   steps: RunStep[];
   usage: ProviderUsage;
   cardPosted: boolean;
+  // TASK-076. The model's own answer, when it finished; a helper returns this to its parent.
+  summary?: string;
+  // The card this run would have posted. A silent run never posts it.
+  finalCard?: RunCard | null;
 }
 
 // One run per agent at a time (ARCHITECTURE 6.2); different agents run in parallel. Kept on globalThis because chat runs and
@@ -181,11 +229,37 @@ const claimsMemorySave = (summary: string) => /\bi(?:'ll| will) remember\b|\bi(?
 const defaultSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 const errorCode = (error: unknown) => (error as { code?: unknown } | null)?.code;
 
-const FIXED_TEXT: Record<Exclude<RunOutcome, "finished" | "asked_owner" | "busy">, string> = {
+// Fixed owner-facing text for desktop lifecycle refusals; no raw exception detail reaches the chat.
+const LIFECYCLE_FAILURE_TEXT: Record<string, string> = {
+  agent_paused: "This agent is paused. Resume the agent before asking me to use the desktop.",
+  security_stopped: "This agent is stopped for security review. Resolve it in the Security Center before starting the desktop.",
+  budget_exhausted: "This agent is at its budget limit, so I cannot start the desktop.",
+  crew_stopped: "The crew is stopped. Resume the crew in the Security Center before starting the desktop.",
+  sandbox_start_failed: "The agent's sandbox could not be started. Check the desktop service and try again.",
+  profile_busy_or_unsafe: "The browser profile is still in use, so I did not force it. Close the other browser window and ask me again.",
+  display_conflict: "Another display is already using this agent's screen, so I did not remove it.",
+  browser_start_failed: "The browser could not be started. Close any other window using its profile and ask me again.",
+};
+const lifecycleFailure = (code: string) =>
+  LIFECYCLE_FAILURE_TEXT[code] ?? "The desktop could not be started. Check the desktop service and try again.";
+const HEARING_FAILURE_TEXT: Record<string, string> = {
+  audio_provider_unavailable: "I cannot hear because no Meta transcription provider and key are configured.",
+  price_required: "I cannot hear because the transcription price is not configured.",
+  cost_unavailable: "I cannot hear because this run cannot record its cost.",
+  budget_paused: "I cannot hear because this agent's budget is paused.",
+  audio_already_attempted: "I already reserved a charge for this listening step, so I did not send the audio again.",
+  audio_uncertain: "The transcription was uncertain, so I stopped without retrying the paid request.",
+  audio_unavailable: "This agent's speaker or browser is not available.",
+  audio_capture_failed: "I could not capture audio from this agent's speaker.",
+  capture_cancelled: "Listening was cancelled, so I stopped.",
+};
+const hearingFailure = (code: string) => HEARING_FAILURE_TEXT[code] ?? "I could not hear the page, so I stopped.";
+
+const FIXED_TEXT: Record<Exclude<RunOutcome, "finished" | "asked_owner" | "busy" | "handed_off">, string> = {
   needs_owner: "I stopped and need you to take this step.",
   paused_by_owner: "I stopped because you took over the desktop.",
   invalid_output: "I stopped because the model did not return a usable step twice in a row.",
-  step_limit: `I stopped after ${MAX_STEPS} steps without finishing.`,
+  step_limit: "I stopped because this run reached its step limit.",
   token_limit: "I stopped because this run reached its token limit.",
   time_limit: "I stopped because this run reached its time limit.",
   repeat_limit: `I stopped because I repeated the same step ${MAX_REPEATS} times.`,
@@ -199,6 +273,15 @@ const FIXED_TEXT: Record<Exclude<RunOutcome, "finished" | "asked_owner" | "busy"
   security_stop: "I stopped because a security check found this agent's canary secret in data it was about to send. The desktop was stopped and the agent is paused. Review what happened, then resume the agent when you are ready.",
   scope_blocked: "I stopped because a step tried to type an address or email that is outside the task you gave me. I did not type it. Name the site or address in a new message if you want me to use it.",
 };
+const HANDOFF_FAILURE_TEXT: Record<string, string> = {
+  teammate_unavailable: "That teammate is not available right now.",
+  handoff_to_self: "I cannot hand a request to myself.",
+  handoff_cycle: "That request already went to this teammate, so I did not send it again.",
+  handoff_limit: "This request already passed through two agents, so I did not hand it on again.",
+  no_owner_message: "I can only hand off a request you sent in chat, so I did not send this one.",
+  invalid_note: "The handoff note was not valid, so I did not send it.",
+  start_failed: "The handoff could not be started, so I did not send it.",
+};
 
 export async function runTask(deps: RunDeps): Promise<RunResult> {
   const usage: ProviderUsage = { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0, reasoningTokens: 0 };
@@ -209,9 +292,13 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
   const now = deps.now ?? (() => new Date());
   const sleep = deps.sleep ?? defaultSleep;
   const grounder = deps.grounder ?? createPageGrounder();
-  const limit = Math.min(deps.maxSteps ?? MAX_STEPS, MAX_STEPS);
-  const tokenLimit = deps.maxTokens ?? MAX_TOKENS;
-  const wallClockLimit = deps.maxWallClockMs ?? MAX_WALL_CLOCK_MS;
+  const shellAgent = deps.agent.actions.some((action) => action.toLowerCase() === "shell");
+  const stepCeiling = shellAgent ? SHELL_MAX_STEPS : MAX_STEPS;
+  const tokenCeiling = shellAgent ? SHELL_MAX_TOKENS : MAX_TOKENS;
+  const wallClockCeiling = shellAgent ? SHELL_MAX_WALL_CLOCK_MS : MAX_WALL_CLOCK_MS;
+  const limit = Math.min(deps.maxSteps ?? stepCeiling, stepCeiling);
+  const tokenLimit = Math.min(deps.maxTokens ?? tokenCeiling, tokenCeiling);
+  const wallClockLimit = Math.min(deps.maxWallClockMs ?? wallClockCeiling, wallClockCeiling);
   let deadlineAt = now().getTime() + wallClockLimit;
   const runController = new AbortController();
   let deadlineExpired = false;
@@ -230,8 +317,11 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
   const pauseDeadline = () => { if (deadline) clearTimeout(deadline); deadline = undefined; };
   const resumeDeadline = (waitedMs: number) => { deadlineAt += Math.max(0, waitedMs); armDeadline(); };
   const onOwnerAbort = () => runController.abort(deps.signal?.reason === "security" ? "security" : "owner");
-  if (deps.signal?.aborted) onOwnerAbort();
-  else deps.signal?.addEventListener("abort", onOwnerAbort, { once: true });
+  // TASK-076. A cancelled parent takes its helpers with it, in process and through their own signals.
+  const cancelHelpers = () => deps.subagents?.cancelAll();
+  const onDependencyAbort = () => { onOwnerAbort(); cancelHelpers(); };
+  if (deps.signal?.aborted) { onOwnerAbort(); cancelHelpers(); }
+  else deps.signal?.addEventListener("abort", onDependencyAbort, { once: true });
   const runSignal = runController.signal;
   const limitError = (code: "aborted" | "time_limit" | "security") => Object.assign(new Error(code), { code });
   const deadlineReached = () => deadlineExpired || now().getTime() >= deadlineAt;
@@ -276,6 +366,7 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
   const documentRefs: { name: string; offset: number }[] = deps.resume ? [...deps.resume.documents] : [];
   let outcome: RunOutcome = "step_limit";
   let card: RunCard | null = null;
+  let summary: string | undefined;
   let invalid = 0;
   let repeats = 0;
   let misses = 0;
@@ -284,11 +375,23 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
   let hardDisabled = false;
   let hardTurns = 0;
   let memoryQueued = 0;
+  let memorySaved = 0;
   const documents: ReadDocument[] = [];
+  // TASK-082. Only the newest searches stay in context; passage text never enters receipts, checkpoints or logs.
+  const searches: DocumentSearch[] = [];
+  // TASK-086. The newest chat-history searches stay in context, each with at most five snippets.
+  const historySearches: HistorySearch[] = [];
+  // TASK-084. Extracted values live in this run's memory only. A resumed branch starts with names and no values.
+  const values = new Map<string, string | null>((deps.resume?.valueNames ?? []).map((name) => [name, null]));
+  let typeValueNames: string[] = [];
   const delivered: string[] = deps.resume ? [...deps.resume.delivered] : [];
   // TASK-072. Tool results are loop-local and only the newest three are sent to the model.
   const toolResults: ToolResultContext[] = [];
   let toolRefusals = 0;
+  // TASK-073c. One card per pending push in this run, and one cleanup of earlier records before
+  // the first shell action. The per-agent run lock makes that cleanup exclusive.
+  const handledPushes = new Set<string>();
+  let pushApprovalsCleared = false;
   const fileActionsOn = FILE_ACTIONS.some((action) => allowed.has(action)) && typeof deps.desktop.listFiles === "function";
   const stop = (next: RunOutcome, text?: RunCard) => { outcome = next; card = text ?? null; };
 
@@ -309,11 +412,21 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
   const emit = async (intent: Intent, info: ModelInfo, d: {
     result: ReceiptResult; executed: boolean; code?: string | null; target?: { role: string; name: string } | null;
     groundingMethod?: string | null; gate?: Evidence[]; verification?: Verification; before?: Screenshot | null; after?: Screenshot | null;
-    exit?: number | null; timeout?: boolean;
+    exit?: number | null; timeout?: boolean; hits?: number | null; lifecycle?: { graphics: string; browser: string };
+    audio?: { seconds: number; chars: number; durationMs: number; sha256: string; bytes: number; model: string };
   }): Promise<boolean> => {
     if (!receipts) return true;
     const action = actionFor(intent);
     if (action?.kind === "shell") { action.exit = d.exit ?? null; action.timeout = d.timeout === true; }
+    if (action?.kind === "search_document" || action?.kind === "search_history") action.hits = d.hits ?? 0;
+    if (action?.kind === "hear_audio" && d.audio) {
+      action.seconds = d.audio.seconds; action.chars = d.audio.chars; action.duration_ms = d.audio.durationMs;
+      action.audio_sha256 = d.audio.sha256; action.audio_bytes = d.audio.bytes; action.transcribe_model = d.audio.model;
+    }
+    if (action?.kind === "type") action.values = [...typeValueNames];
+    if (action?.kind === "start_desktop" || action?.kind === "start_browser") {
+      action.graphics = d.lifecycle?.graphics ?? "failed"; action.browser = d.lifecycle?.browser ?? "failed";
+    }
     if (!action) return true;
     const methods = methodsFor(d.gate, d.verification);
     const spent = usageNow();
@@ -350,6 +463,7 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
     }
     await deps.checkpoints.capture(idx, { task: deps.task, turn: currentTurn, receiptIdx: idx, history: [...summaries],
       documents: documentRefs.map(({ name, offset }) => ({ name, window: { kind: "text", offset } })), delivered: [...delivered],
+      valueNames: [...values.keys()],
       counters: { invalid, repeats, misses, hardTurns, hardDisabled }, previous, usage: usageNow() }).catch(() => undefined);
   };
 
@@ -379,22 +493,33 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
       currentTurn = baseTurn + turn + 1;
       if (stopIfStopped()) break;
       if (turn >= limit) { stop("step_limit", { type: "message", text: `I stopped after ${limit} steps without finishing.` }); break; }
-      if (usage.inputTokens + usage.outputTokens >= tokenLimit) { stop("token_limit"); break; }
+      if (weightedTokens(usage) >= tokenLimit) { stop("token_limit"); break; }
 
-      let shot: Screenshot;
-      try { shot = await withinDeadline(deps.desktop.screenshot()); }
-      catch (error) {
-        if (stopIfStopped()) break;
-        stop(errorCode(error) === "takeover_active" ? "paused_by_owner" : "desktop_error");
-        break;
+      // A stopped graphical desktop is not an error: the turn continues on tools, shell, files and text.
+      let visual = true;
+      if (deps.desktop.available) {
+        try { visual = await withinDeadline(deps.desktop.available()); }
+        catch { if (stopIfStopped()) break; visual = false; }
+      }
+      let shot: Screenshot | null = null;
+      if (visual) {
+        try { shot = await withinDeadline(deps.desktop.screenshot()); }
+        catch (error) {
+          if (stopIfStopped()) break;
+          if (errorCode(error) === "takeover_active") { stop("paused_by_owner"); break; }
+          // The graphics or browser closed mid-run. Continue without a screen; a later screen action reacquires it.
+          visual = false;
+        }
       }
 
       // One page read per turn, after the screenshot. A failed read only means no control list this turn.
       let snapshot: PageSnapshot | null = null;
-      try { snapshot = await withinDeadline(deps.desktop.snapshot()); }
-      catch (error) {
-        if (stopIfStopped()) break;
-        if (errorCode(error) === "takeover_active") { stop("paused_by_owner"); break; }
+      if (shot) {
+        try { snapshot = await withinDeadline(deps.desktop.snapshot()); }
+        catch (error) {
+          if (stopIfStopped()) break;
+          if (errorCode(error) === "takeover_active") { stop("paused_by_owner"); break; }
+        }
       }
 
       // The first readable page is the run's start page and is part of the task scope (a mock vendor on loopback works
@@ -412,9 +537,20 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
       });
       const ask = (model: string) => deps.provider.generate({
         ...buildRequest({
-          model, persona: deps.agent, task: deps.task, history, files, documents: documents.slice(-MAX_DOCUMENT_WINDOWS),
+          model, persona: deps.agent, task: deps.task, conversation: deps.conversation, history, files, documents: documents.slice(-MAX_DOCUMENT_WINDOWS),
+          searches: searches.slice(-MAX_SEARCHES),
+          historySearches: historySearches.slice(-2),
+          savedValues: [...values].map(([name, value]) => ({ name, value })),
           toolResults: toolResults.slice(-3),
-          skills: deps.skills, screenshotBase64: shot.base64, snapshot, missedNames, untrustedContext: deps.untrustedContext,
+          skills: deps.skills, screenshotBase64: shot?.base64, snapshot, missedNames, untrustedContext: deps.untrustedContext,
+          ...(deps.handoffNote ? { handoffNote: deps.handoffNote } : {}), ...(deps.teammates ? { teammates: deps.teammates } : {}),
+          ...(deps.offeredActions ? { offeredActions: deps.offeredActions } : {}),
+          offerHandoff: Boolean(deps.handoff && allowed.has("handoff")),
+          offerSpawn: Boolean(deps.subagents && deps.helperTools?.length && allowed.has("spawn_subagent")),
+          ...(deps.subagents ? {
+            helperStatus: deps.subagents.status(),
+            helperResults: deps.subagents.results().slice(-5),
+          } : {}),
           now: now(), timezone: deps.timezone,
         }),
         signal: runSignal,
@@ -437,7 +573,7 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
       usage.cachedInputTokens += result.usage.cachedInputTokens;
       usage.reasoningTokens += result.usage.reasoningTokens;
       if (stopIfStopped()) break;
-      if (usage.inputTokens + usage.outputTokens >= tokenLimit) { stop("token_limit"); break; }
+      if (weightedTokens(usage) >= tokenLimit) { stop("token_limit"); break; }
 
       const parsed = result.status === "completed" ? parseNextStep(result.outputs) : { ok: false as const };
       if (!parsed.ok) {
@@ -446,7 +582,21 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
         continue;
       }
       invalid = 0;
-      const intent = parsed.intent;
+      let intent = parsed.intent;
+      typeValueNames = [];
+
+      // TASK-084. Fill {{name}} from this run's saved values before the canary, scope and typing checks. A missing
+      // name (or a value name carried by a branch without its value) makes the step invalid and it is never executed.
+      if (intent.action === "type" && intent.text.includes("{{")) {
+        const resolved = resolvePlaceholders(intent.text, values);
+        if (!resolved.ok || resolved.text.length > 2000) {
+          history.push({ step: currentTurn, action: "type", result: "invalid_output" });
+          if (++invalid >= MAX_INVALID_IN_A_ROW) { stop("invalid_output"); break; }
+          continue;
+        }
+        typeValueNames = resolved.used;
+        intent = { ...intent, text: resolved.text };
+      }
 
       // TASK-047. The model is the only component that can send text out. Check before policy or any desktop call;
       // the receipt keeps no text for a `type`, and the sanitized intent keeps the canary out of steps and checkpoints.
@@ -464,16 +614,81 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
 
       if (intent.action === "finish") {
         // A final summary is still a model claim; only individual postconditions have evidence.
+        summary = intent.summary;
         const sent = delivered.length ? `\n\nFiles sent to you: ${delivered.join(", ")}` : "";
         const memoryNote = memoryQueued > 0
           ? `\n\nWaiting for your approval: ${memoryQueued} memory request${memoryQueued === 1 ? "" : "s"}.`
-          : claimsMemorySave(intent.summary) ? "\n\nNo memory request was made in this run, so nothing was saved." : "";
-        stop("finished", { type: "message", text: `${intent.summary}${sent}${memoryNote}\n\n${steps.some((step) => step.verified) ? `${steps.filter((step) => step.verified).length} desktop step postcondition(s) passed verification. This summary is the agent's own report; external side effects are not independently proven.` : "This is the agent's own report. Nothing was verified automatically."}` });
+          : memorySaved === 0 && claimsMemorySave(intent.summary) ? "\n\nNo memory request was made in this run, so nothing was saved." : "";
+        // TASK-076. Finish waits up to 60 s for helpers, then cancels them and lists each one's outcome honestly.
+        let helperNote = "";
+        if (deps.subagents && deps.subagents.count() > 0) {
+          await deps.subagents.waitForIdle(60_000);
+          deps.subagents.cancelAll();
+          const lines = deps.subagents.status().map((helper) =>
+            `${helper.label}: ${helper.state === "running" ? "stopped (no result before finish)" : helper.state}`);
+          if (lines.length) helperNote = `\n\nHelpers:\n${lines.join("\n")}`;
+        }
+        stop("finished", { type: "message", text: `${intent.summary}${sent}${memoryNote}${helperNote}\n\n${steps.some((step) => step.verified) ? `${steps.filter((step) => step.verified).length} desktop step postcondition(s) passed verification. This summary is the agent's own report; external side effects are not independently proven.` : "This is the agent's own report. Nothing was verified automatically."}` });
         break;
       }
       if (intent.action === "ask_owner") {
         stop("asked_owner", { type: "clarification", question: intent.question, missingParameters: ["answer"] });
         break;
+      }
+
+      // TASK-085. Hand the owner's request to one teammate. The receiver's task is the stored owner message;
+      // a refusal is reported to the model and this run keeps going, so it can do the work itself.
+      if (intent.action === "handoff") {
+        if (!allowed.has("handoff") || !deps.handoff) {
+          stop("needs_owner", { type: "message", text: notAllowedText("handoff") });
+          break;
+        }
+        let result;
+        try { result = await withinDeadline(deps.handoff({ agent: intent.agent, note: intent.note })); }
+        catch {
+          if (stopIfStopped()) break;
+          history.push(summarizeIntent(currentTurn, intent, "failed", "handoff_failed"));
+          if (!(await emit(intent, modelInfo, { result: "failed", executed: false, code: "handoff_failed" }))) { stop("receipt_error"); break; }
+          continue;
+        }
+        if (!result.ok) {
+          const code = /^[a-z_]{1,64}$/.test(result.code) ? result.code : "handoff_failed";
+          // The fixed note tells the model what to do next without exposing another agent's internals.
+          history.push({ ...summarizeIntent(currentTurn, intent, "failed", code), expect: HANDOFF_FAILURE_TEXT[code] });
+          if (!(await emit(intent, modelInfo, { result: "blocked", executed: false, code }))) { stop("receipt_error"); break; }
+          continue;
+        }
+        steps.push({ index: steps.length + 1, intent, executed: true, groundingMethod: null, grounded: null, verified: false, ...modelInfo });
+        history.push(summarizeIntent(currentTurn, intent));
+        if (!(await emit(intent, modelInfo, { result: "executed", executed: true }))) { stop("receipt_error"); break; }
+        stop("handed_off", { type: "message", text: `Handed this to ${result.receiverName}.` });
+        break;
+      }
+
+      // TASK-076. Start one screenless helper. Refusals are fixed codes in history; a helper may never spawn another.
+      if (intent.action === "spawn_subagent") {
+        const nested = deps.offeredActions !== undefined && !deps.offeredActions.includes("spawn_subagent");
+        if (nested || !allowed.has("spawn_subagent") || !deps.subagents) {
+          const code = nested ? "nested_spawn" : "not_allowed";
+          history.push(summarizeIntent(currentTurn, intent, "failed", code));
+          if (!(await emit(intent, modelInfo, { result: "blocked", executed: false, code }))) { stop("receipt_error"); break; }
+          continue;
+        }
+        const limits = subagentLimits({ maxSteps: limit, maxTokens: tokenLimit, maxWallClockMs: wallClockLimit });
+        const spawned = deps.subagents.spawn({
+          task: intent.task, tools: intent.tools, parentStep: currentTurn, limits,
+          parentTools: deps.helperTools ?? [], allowSpawn: true,
+        });
+        if (!spawned.ok) {
+          const code = spawned.code;
+          history.push({ ...summarizeIntent(currentTurn, intent, "failed", code), expect: code });
+          if (!(await emit(intent, modelInfo, { result: "blocked", executed: false, code }))) { stop("receipt_error"); break; }
+          continue;
+        }
+        steps.push({ index: steps.length + 1, intent, executed: true, groundingMethod: null, grounded: null, verified: false, ...modelInfo });
+        history.push({ ...summarizeIntent(currentTurn, intent), helper: spawned.label });
+        if (!(await emit(intent, modelInfo, { result: "executed", executed: true }))) { stop("receipt_error"); break; }
+        continue;
       }
 
       repeats = previous && sameIntent(previous, intent) ? repeats + 1 : 1;
@@ -487,19 +702,62 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
         continue;
       }
 
-      // File actions: default-deny by name like every other action. They never touch the screen, so a failure is
-      // reported to the model with the desktop's fixed code instead of stopping the run.
-      if (intent.action === "read_document" || intent.action === "deliver_file") {
-        const port = deps.desktop;
-        if (!allowed.has(intent.action) || (intent.action === "read_document" ? !port.readDocument : !port.deliverFile)) {
+      // The agent may start its own graphics/browser. The controller binds the owner and agent, and the owner's
+      // pause, security stop and budget gates still apply, so this can never resume a stopped agent.
+      if (intent.action === "start_desktop" || intent.action === "start_browser") {
+        if (!allowed.has(intent.action)) {
           stop("needs_owner", { type: "message", text: notAllowedText(intent.action) });
           break;
         }
+        const ensure = intent.action === "start_desktop" ? deps.desktop.ensureVisual : deps.desktop.ensureBrowser;
+        if (!ensure) {
+          history.push(summarizeIntent(currentTurn, intent, "failed", "visual_unavailable"));
+          if (!(await emit(intent, modelInfo, { result: "blocked", executed: false, code: "visual_unavailable" }))) { stop("receipt_error"); break; }
+          stop("needs_owner", { type: "message", text: "I cannot start the desktop in this run." });
+          break;
+        }
+        let status: Awaited<ReturnType<NonNullable<DesktopPort["ensureVisual"]>>>;
+        try { status = await withinDeadline(ensure()); }
+        catch (error) {
+          if (stopIfStopped()) break;
+          const raw = errorCode(error);
+          const code = typeof raw === "string" && /^[a-z_]{1,64}$/.test(raw) ? raw : `${intent.action}_failed`;
+          steps.push({ index: steps.length + 1, intent, executed: false, groundingMethod: null, grounded: null, verified: false, ...modelInfo });
+          history.push(summarizeIntent(currentTurn, intent, "failed", code));
+          if (!(await emit(intent, modelInfo, { result: "blocked", executed: false, code }))) { stop("receipt_error"); break; }
+          stop("needs_owner", { type: "message", text: lifecycleFailure(code) });
+          break;
+        }
+        steps.push({ index: steps.length + 1, intent, executed: true, groundingMethod: null, grounded: null, verified: false, ...modelInfo });
+        history.push({ ...summarizeIntent(currentTurn, intent), state: `${status.graphics}/${status.browser}` });
+        if (!(await emit(intent, modelInfo, { result: "executed", executed: true, code: intent.action, lifecycle: status }))) { stop("receipt_error"); break; }
+        continue;
+      }
+
+      // File actions: default-deny by name like every other action. Search accepts read_document or a narrower
+      // search_document grant. They never touch the screen, so a failure is reported to the model with the desktop's
+      // fixed code instead of stopping the run.
+      if (intent.action === "read_document" || intent.action === "search_document" || intent.action === "deliver_file") {
+        const port = deps.desktop;
+        const readAllowed = allowed.has("read_document");
+        const permitted = intent.action === "read_document" ? readAllowed && Boolean(port.readDocument)
+          : intent.action === "search_document" ? (readAllowed || allowed.has("search_document")) && Boolean(port.searchDocument)
+          : allowed.has("deliver_file") && Boolean(port.deliverFile);
+        if (!permitted) {
+          stop("needs_owner", { type: "message", text: notAllowedText(intent.action === "search_document" ? "read_document" : intent.action) });
+          break;
+        }
+        let hits: number | undefined;
         try {
           if (intent.action === "read_document") {
             const offset = intent.offset ?? 0;
             documents.push({ name: intent.name, window: await withinDeadline(port.readDocument!(intent.name, offset)) });
             documentRefs.push({ name: intent.name, offset });
+          } else if (intent.action === "search_document") {
+            const result = await withinDeadline(port.searchDocument!(intent.name, intent.query));
+            searches.push({ name: intent.name, query: intent.query, result });
+            if (searches.length > MAX_SEARCHES) searches.splice(0, searches.length - MAX_SEARCHES);
+            hits = result.results.length;
           } else {
             const file = await withinDeadline(port.deliverFile!(intent.from, intent.name));
             delivered.push(file.name);
@@ -509,13 +767,44 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
           if (stopIfStopped()) break;
           const code = errorCode(error);
           const safeCode = typeof code === "string" && /^[a-z_]{1,64}$/.test(code) ? code : "tool_failed";
-          history.push(summarizeIntent(currentTurn, intent, "failed", safeCode));
-          if (!(await emit(intent, modelInfo, { result: "failed", executed: false, code: safeCode }))) { stop("receipt_error"); break; }
+          const summary = summarizeIntent(currentTurn, intent, "failed", safeCode);
+          history.push(intent.action === "search_document" ? { ...summary, hits: 0 } : summary);
+          if (!(await emit(intent, modelInfo, { result: "failed", executed: false, code: safeCode, hits: intent.action === "search_document" ? 0 : undefined }))) { stop("receipt_error"); break; }
           continue;
         }
         steps.push({ index: steps.length + 1, intent, executed: true, groundingMethod: null, grounded: null, verified: false, ...modelInfo });
-        history.push(summarizeIntent(currentTurn, intent));
-        if (!(await emit(intent, modelInfo, { result: "executed", executed: true }))) { stop("receipt_error"); break; }
+        const summary = summarizeIntent(currentTurn, intent);
+        history.push(hits === undefined ? summary : { ...summary, hits });
+        if (!(await emit(intent, modelInfo, { result: "executed", executed: true, hits }))) { stop("receipt_error"); break; }
+        continue;
+      }
+
+      // TASK-086. Chat-history search over this agent's own messages. It never touches the screen.
+      if (intent.action === "search_history") {
+        if ((!allowed.has("search_history") && !allowed.has("remember")) || !deps.history) {
+          stop("needs_owner", { type: "message", text: notAllowedText("remember") });
+          break;
+        }
+        let hits;
+        try { hits = await withinDeadline(deps.history.search(intent.query)); }
+        catch (error) {
+          if (stopIfStopped()) break;
+          const raw = errorCode(error);
+          const code = typeof raw === "string" && /^[a-z_]{1,64}$/.test(raw) ? raw : "history_search_failed";
+          history.push({ ...summarizeIntent(currentTurn, intent, "failed", code), hits: 0 });
+          if (!(await emit(intent, modelInfo, { result: "failed", executed: false, code, hits: 0 }))) { stop("receipt_error"); break; }
+          continue;
+        }
+        if (!hits.length) {
+          history.push({ ...summarizeIntent(currentTurn, intent, "failed", "no_match"), hits: 0 });
+          if (!(await emit(intent, modelInfo, { result: "failed", executed: false, code: "no_match", hits: 0 }))) { stop("receipt_error"); break; }
+          continue;
+        }
+        historySearches.push({ query: intent.query, hits });
+        if (historySearches.length > 2) historySearches.splice(0, historySearches.length - 2);
+        steps.push({ index: steps.length + 1, intent, executed: true, groundingMethod: null, grounded: null, verified: false, ...modelInfo });
+        history.push({ ...summarizeIntent(currentTurn, intent), hits: hits.length });
+        if (!(await emit(intent, modelInfo, { result: "executed", executed: true, hits: hits.length }))) { stop("receipt_error"); break; }
         continue;
       }
 
@@ -532,7 +821,12 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
           continue;
         }
         let proposed;
-        try { proposed = await withinDeadline(deps.memory.propose({ scope: intent.scope, title: intent.title, text: intent.text, reason: intent.reason })); }
+        try {
+          proposed = await withinDeadline(deps.memory.propose({
+            scope: intent.scope, title: intent.title, text: intent.text ?? "", reason: intent.reason,
+            op: intent.op, quote: intent.quote ?? null,
+          }));
+        }
         catch { proposed = { ok: false as const, code: "memory_unavailable" }; }
         if (!proposed.ok) {
           const code = /^[a-z_]{1,64}$/.test(proposed.code) ? proposed.code : "memory_unavailable";
@@ -541,10 +835,11 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
           if (!(await emit(intent, modelInfo, { result: "blocked", executed: false, code }))) { stop("receipt_error"); break; }
           continue;
         }
-        memoryQueued += 1;
+        const applied = proposed.applied === true;
+        if (applied) memorySaved += 1; else memoryQueued += 1;
         steps.push({ index: steps.length + 1, intent, executed: true, groundingMethod: null, grounded: null, verified: false, ...modelInfo });
         history.push(summarizeIntent(currentTurn, intent));
-        if (!(await emit(intent, modelInfo, { result: "executed", executed: true, code: "queued" }))) { stop("receipt_error"); break; }
+        if (!(await emit(intent, modelInfo, { result: "executed", executed: true, code: applied ? "saved" : "queued" }))) { stop("receipt_error"); break; }
         continue;
       }
 
@@ -580,7 +875,7 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
           continue;
         }
         const text = argumentText(args);
-        const scope = deriveScope({ task: deps.task, allowedHosts: deps.allowedHosts, startHref });
+        const scope = deriveScope({ task: deps.scopeTask ?? deps.task, allowedHosts: deps.allowedHosts, startHref, extraOwnerTexts: deps.scopeTexts });
         const verdict = checkTyped(text, scope, null);
         if (!verdict.ok) {
           const code = verdict.rule === "recipient" ? "out_of_scope_recipient" : "out_of_scope_host";
@@ -600,7 +895,7 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
         }
 
         let tool: Awaited<ReturnType<ToolPort["prepare"]>>;
-        try { tool = await withinDeadline(deps.tools.prepare(intent.name, runSignal)); }
+        try { tool = await withinDeadline(deps.tools.prepare(intent.name, runSignal, deps.allowedTools ? { allowedTools: deps.allowedTools } : undefined)); }
         catch (error) {
           if (stopIfStopped()) break;
           const raw = errorCode(error);
@@ -624,7 +919,7 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
           try {
             answer = await deps.approvals.request({
               agentId: deps.agent.id, runId: receipts?.runId ?? null, actionClass: risky,
-              site: tool.host, controlName: `${tool.serverKey}.${tool.tool}`.slice(0, 120), signal: runSignal, astra: deps.astra === true,
+              site: tool.host, controlName: `${tool.serverKey}.${tool.tool}`.slice(0, 120), signal: runSignal, astra: deps.astra === true, ...(deps.helperLabel ? { helperLabel: deps.helperLabel } : {}),
             });
           } catch {
             resumeDeadline(0);
@@ -682,6 +977,19 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
           stop("security_stop");
           break;
         }
+        // TASK-073c. A crashed or cancelled earlier run may have left pending records or grants.
+        // Clear them once before this run's first shell action; the per-agent lock is already held.
+        if (!pushApprovalsCleared) {
+          pushApprovalsCleared = true;
+          if (typeof deps.shell.clearApprovals === "function") {
+            try { await withinDeadline(deps.shell.clearApprovals()); }
+            catch {
+              if (stopIfStopped()) break;
+              stop("needs_owner", { type: "message", text: "I stopped because I could not clear earlier push approvals." });
+              break;
+            }
+          }
+        }
         let shellResult;
         try {
           shellResult = await withinDeadline(deps.shell.run({
@@ -697,27 +1005,222 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
           if (!(await emit(intent, modelInfo, { result: "failed", executed: false, code }))) { stop("receipt_error"); break; }
           continue;
         }
+        // TASK-073c. The gateway records a blocked protected ref as pending. Poll after every
+        // shell step; a polling failure stops the run rather than guessing.
+        let pendingPushes: PushPending[] = [];
+        if (typeof deps.shell.pending === "function") {
+          try { pendingPushes = await withinDeadline(deps.shell.pending()); }
+          catch {
+            if (stopIfStopped()) break;
+            stop("needs_owner", { type: "message", text: "I stopped because I could not check whether the push needs your approval." });
+            break;
+          }
+        }
+        const freshPushes = pendingPushes.filter((item) => !handledPushes.has(item.id));
         const expectation = checkShellExpect(intent.expect, shellResult);
-        const code = shellResult.timedOut ? "timeout" : shellResult.exit !== 0 ? "exit_nonzero" : expectation === "fail" ? "expect_failed" : null;
+        const code = freshPushes.length > 0 ? "push_blocked"
+          : shellResult.timedOut ? "timeout" : shellResult.exit !== 0 ? "exit_nonzero" : expectation === "fail" ? "expect_failed" : null;
         toolResults.push({ name: `shell:${intent.command.trim().split(/[ \t]+/)[0] ?? ""}`.slice(0, 200), is_error: shellResult.exit !== 0, text: formatShellResult(shellResult) });
         if (toolResults.length > 3) toolResults.splice(0, toolResults.length - 3);
         steps.push({ index: steps.length + 1, intent, executed: true, groundingMethod: null, grounded: null, verified: false, ...modelInfo });
         history.push(summarizeIntent(currentTurn, intent, "executed", code ?? undefined));
         if (!(await emit(intent, modelInfo, { result: "executed", executed: true, code, exit: shellResult.exit, timeout: shellResult.timedOut }))) { stop("receipt_error"); break; }
+        if (freshPushes.length === 0) continue;
+
+        // One card per pending ref, deduplicated by its proxy id. Denying any ref clears the whole
+        // request group; granting one ref never authorizes another.
+        if (!deps.approvals) {
+          stop("needs_owner", { type: "message", text: "I stopped because this push needs your approval, and approvals are not available in this run." });
+          break;
+        }
+        const approved: { item: PushPending; reason: string }[] = [];
+        let denied: { item: PushPending; reason: string } | null = null;
+        let approvalFailed = false;
+        for (const item of freshPushes) {
+          handledPushes.add(item.id);
+          pauseDeadline();
+          let answer;
+          try {
+            answer = await deps.approvals.request({
+              agentId: deps.agent.id, runId: receipts?.runId ?? null, actionClass: item.actionClass,
+              site: item.site, controlName: item.controlName, signal: runSignal, astra: deps.astra === true, ...(deps.helperLabel ? { helperLabel: deps.helperLabel } : {}),
+            });
+          } catch {
+            resumeDeadline(0);
+            stop("needs_owner", { type: "message", text: "I stopped because the push approval request could not be completed." });
+            approvalFailed = true;
+            break;
+          }
+          resumeDeadline(answer.waitedMs);
+          if (answer.decision === "deny") { denied = { item, reason: answer.reason }; break; }
+          // Record the decision before any grant exists. A failed receipt issues nothing.
+          const decisionCode = answer.reason === "astra" ? "astra_allowed" : "push_approved";
+          if (!(await emit(intent, modelInfo, { result: "blocked", executed: false, code: decisionCode }))) {
+            stop("receipt_error");
+            approvalFailed = true;
+            break;
+          }
+          approved.push({ item, reason: answer.reason });
+        }
+        if (approvalFailed) break;
+        if (denied) {
+          try { if (typeof deps.shell.deny === "function") await withinDeadline(deps.shell.deny(denied.item.id)); } catch { /* expiry is the fallback */ }
+          const decisionCode = denied.reason === "timeout" ? "approval_timeout"
+            : denied.reason === "aborted" ? "approval_aborted" : "approval_denied";
+          if (!(await emit(intent, modelInfo, { result: "blocked", executed: false, code: decisionCode }))) { stop("receipt_error"); break; }
+          if (!stopIfStopped()) {
+            stop("needs_owner", { type: "message", text: denied.reason === "timeout"
+              ? "I stopped because the push was not approved in time."
+              : denied.reason === "aborted" ? "I stopped because the run ended before the push was approved."
+                : "I stopped because you denied this push." });
+          }
+          break;
+        }
+        if (approved.length !== freshPushes.length) break;
+        let grantFailed = false;
+        for (const decision of approved) {
+          try {
+            if (typeof deps.shell.grant !== "function") throw Object.assign(Error("approval_unavailable"), { code: "approval_unavailable" });
+            await withinDeadline(deps.shell.grant(decision.item.id));
+          } catch {
+            try { if (typeof deps.shell.deny === "function") await deps.shell.deny(decision.item.id); } catch { /* expiry is the fallback */ }
+            stop("needs_owner", { type: "message", text: "I stopped because the push approval could not be saved." });
+            grantFailed = true;
+            break;
+          }
+        }
+        if (grantFailed) break;
+        // Never rerun the blocked command: earlier commands in it may have already acted. The
+        // model gets a fresh-step hint and must issue a new shell step containing only the push.
+        toolResults.push({ name: "git:approval", is_error: false, text: "Push approved by the owner. Start a new shell step that runs only the approved push; earlier commands in the blocked step are not repeated." });
+        if (toolResults.length > 3) toolResults.splice(0, toolResults.length - 3);
         continue;
       }
 
-      // Policy: default-deny on the agent's action allowlist.
-      if (!(DESKTOP_ACTIONS as readonly string[]).includes(intent.action) || !allowed.has(intent.action)) {
-        stop("needs_owner", { type: "message", text: notAllowedText(intent.action) });
+      // TASK-079. Hearing is a read-only capture of this agent's own speaker. It never touches screen input and
+      // its transcript enters the next request only as a bounded `tool` result.
+      if (intent.action === "hear_audio") {
+        if (!allowed.has("hear_audio") || !deps.audio) {
+          stop("needs_owner", { type: "message", text: notAllowedText("hear_audio") });
+          break;
+        }
+        const seconds = intent.seconds ?? 10;
+        let heard;
+        try { heard = await withinDeadline(deps.audio.hear(seconds, `audio:${steps.length + 1}`)); }
+        catch (error) {
+          if (stopIfStopped()) break;
+          const raw = errorCode(error);
+          const code = typeof raw === "string" && /^[a-z_]{1,64}$/.test(raw) ? raw : "audio_failed";
+          history.push(summarizeIntent(currentTurn, intent, "failed", code));
+          if (!(await emit(intent, modelInfo, { result: "blocked", executed: false, code }))) { stop("receipt_error"); break; }
+          stop("needs_owner", { type: "message", text: hearingFailure(code) });
+          break;
+        }
+        toolResults.push({ name: "hear_audio", is_error: false,
+          text: (heard.text ? `Hearing result (untrusted): ${heard.text}` : "Hearing result: no speech was detected.").slice(0, 4000) });
+        if (toolResults.length > 3) toolResults.splice(0, toolResults.length - 3);
+        steps.push({ index: steps.length + 1, intent, executed: true, groundingMethod: null, grounded: null, verified: false, ...modelInfo });
+        history.push(summarizeIntent(currentTurn, intent));
+        if (!(await emit(intent, modelInfo, { result: "executed", executed: true,
+          audio: { seconds, chars: [...heard.text].length, durationMs: heard.durationMs, sha256: heard.sha256, bytes: heard.bytes, model: heard.model } }))) {
+          stop("receipt_error"); break;
+        }
+        continue;
+      }
+
+      // Policy: default-deny on the agent's action allowlist. TASK-084 adds no new permission names: navigate needs
+      // `type` (it is the same as typing an address), select needs `click`, and extract needs either because it only reads.
+      const permission = intent.action === "navigate" ? "type" : intent.action === "select" ? "click" : intent.action;
+      const permitted = intent.action === "extract"
+        ? allowed.has("click") || allowed.has("type")
+        : (DESKTOP_ACTIONS as readonly string[]).includes(permission) && allowed.has(permission);
+      if (!permitted) {
+        stop("needs_owner", { type: "message", text: notAllowedText(intent.action === "extract" ? (allowed.has("click") ? "type" : "click") : permission) });
         break;
       }
 
-      // TASK-049. A `type` may only send the run to a host the owner named, or to an email the owner named. A refusal
-      // writes one blocked receipt and tells the model; the second refusal stops the run.
-      if (intent.action === "type") {
-        const scope = deriveScope({ task: deps.task, allowedHosts: deps.allowedHosts, startHref });
-        const verdict = checkTyped(intent.text, scope, snapshot?.href ?? null);
+      // A screen action on a stopped desktop acquires it through the bounded lifecycle, then re-grounds on fresh state.
+      // The generation is re-read by the port, so an old screenshot or context is never reused.
+      if (!shot) {
+        try {
+          if (!deps.desktop.ensureVisual) throw Object.assign(Error("visual_unavailable"), { code: "visual_unavailable" });
+          await withinDeadline(deps.desktop.ensureVisual());
+          shot = await withinDeadline(deps.desktop.screenshot());
+          if (!shot) throw Object.assign(Error("visual_unavailable"), { code: "visual_unavailable" });
+          snapshot = await withinDeadline(deps.desktop.snapshot()).catch(() => null);
+          if (startHref === null && snapshot && hostFromUrl(snapshot.href)) startHref = snapshot.href;
+        } catch (error) {
+          if (stopIfStopped()) break;
+          const raw = errorCode(error);
+          const code = typeof raw === "string" && /^[a-z_]{1,64}$/.test(raw) ? raw : "desktop_start_failed";
+          history.push(summarizeIntent(currentTurn, intent, "failed", code));
+          if (!(await emit(intent, modelInfo, { result: "blocked", executed: false, code }))) { stop("receipt_error"); break; }
+          stop("needs_owner", { type: "message", text: lifecycleFailure(code) });
+          break;
+        }
+      }
+      if (!shot) { stop("desktop_error"); break; }
+
+      // TASK-084. Extract saves the exact page text under a name, so one type step can reuse it with {{name}}. The
+      // value is checked against the canary and the task's hosts first; it only enters run memory when the page shows it.
+      if (intent.action === "extract") {
+        if (!deps.desktop.findText) {
+          stop("needs_owner", { type: "message", text: "I cannot read page text in this run." });
+          break;
+        }
+        if (deps.canary && containsCanary(intent.value, deps.canary)) {
+          const safeIntent: Intent = { action: "extract", name: intent.name, value: "", expect: "" };
+          steps.push({ index: steps.length + 1, intent: safeIntent, executed: false, groundingMethod: null, grounded: null, verified: false, ...modelInfo });
+          if (!(await emit(safeIntent, modelInfo, { result: "blocked", executed: false, code: "canary_blocked", before: shot }))) { stop("receipt_error"); break; }
+          securityCause = "typed_text";
+          stop("security_stop");
+          break;
+        }
+        const scope = deriveScope({ task: deps.scopeTask ?? deps.task, allowedHosts: deps.allowedHosts, startHref, extraOwnerTexts: deps.scopeTexts });
+        const verdict = checkTyped(intent.value, scope, null);
+        if (!verdict.ok) {
+          const rule = verdict.rule ?? "host";
+          const code = rule === "host" ? "out_of_scope_host" : rule === "recipient" ? "out_of_scope_recipient" : "page_out_of_scope";
+          steps.push({ index: steps.length + 1, intent, executed: false, groundingMethod: null, grounded: null, verified: false, ...modelInfo });
+          history.push(summarizeIntent(currentTurn, intent, "failed", "out_of_scope"));
+          if (!(await emit(intent, modelInfo, { result: "blocked", executed: false, code, before: shot }))) { stop("receipt_error"); break; }
+          try { await deps.onScopeBlocked?.(rule, receipts?.runId); } catch { /* the refusal stands */ }
+          scopeRefusals += 1;
+          if (scopeRefusals >= 2) { stop("scope_blocked"); break; }
+          continue;
+        }
+        if (!values.has(intent.name) && values.size >= 10) {
+          history.push(summarizeIntent(currentTurn, intent, "failed", "value_limit"));
+          if (!(await emit(intent, modelInfo, { result: "blocked", executed: false, code: "value_limit" }))) { stop("receipt_error"); break; }
+          continue;
+        }
+        let found;
+        try { found = await withinDeadline(deps.desktop.findText(intent.value)); }
+        catch (error) {
+          if (stopIfStopped()) break;
+          const raw = errorCode(error);
+          const code = typeof raw === "string" && /^[a-z_]{1,64}$/.test(raw) ? raw : "text_check_failed";
+          history.push(summarizeIntent(currentTurn, intent, "failed", code));
+          if (!(await emit(intent, modelInfo, { result: "failed", executed: false, code }))) { stop("receipt_error"); break; }
+          continue;
+        }
+        if (!found.found) {
+          history.push(summarizeIntent(currentTurn, intent, "failed", "text_not_found"));
+          if (!(await emit(intent, modelInfo, { result: "failed", executed: false, code: "text_not_found" }))) { stop("receipt_error"); break; }
+          continue;
+        }
+        values.set(intent.name, intent.value);
+        steps.push({ index: steps.length + 1, intent, executed: true, groundingMethod: null, grounded: null, verified: false, ...modelInfo });
+        history.push(summarizeIntent(currentTurn, intent));
+        if (!(await emit(intent, modelInfo, { result: "executed", executed: true }))) { stop("receipt_error"); break; }
+        continue;
+      }
+
+      // TASK-049. A `type` may only send the run to a host the owner named, or to an email the owner named. A navigate
+      // names a host too. A refusal writes one blocked receipt and tells the model; the second refusal stops the run.
+      if (intent.action === "type" || intent.action === "navigate") {
+        const scope = deriveScope({ task: deps.scopeTask ?? deps.task, allowedHosts: deps.allowedHosts, startHref, extraOwnerTexts: deps.scopeTexts });
+        const verdict = intent.action === "type" ? checkTyped(intent.text, scope, snapshot?.href ?? null) : checkTyped(intent.url, scope, null);
         if (!verdict.ok) {
           const rule = verdict.rule ?? "host";
           const code = rule === "host" ? "out_of_scope_host" : rule === "recipient" ? "out_of_scope_recipient" : "page_out_of_scope";
@@ -734,7 +1237,7 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
 
       missedNames = undefined;
       let point = null;
-      if (intent.action === "click") {
+      if (intent.action === "click" || intent.action === "select") {
         point = await withinDeadline(grounder.ground(intent, shot, snapshot)).catch(() => null);
         if (!validPoint(point, shot)) {
           // First miss on a readable page: show the model the visible names once. Otherwise hand off.
@@ -743,9 +1246,9 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
             missedNames = suggestNames(snapshot, intent.target);
             continue;
           }
-          const frames = snapshot && snapshot.frames > 0 ? " It may be inside an embedded frame that I can't click yet." : "";
+          const hidden = snapshot ? " It may be inside a closed shadow root, which I can't reach." : "";
           stop("needs_owner", { type: "message", text: snapshot
-            ? `I can't locate that control on the page, so I am handing this back to you.${frames}`
+            ? `I can't locate that control on the page, so I am handing this back to you.${hidden}`
             : "I can't locate that on the screen yet, so I am handing this back to you." });
           break;
         }
@@ -779,7 +1282,7 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
           answer = await deps.approvals.request({
             agentId: deps.agent.id, runId: receipts?.runId ?? null, actionClass: risky,
             site: hostFromUrl(snapshot?.href), controlName: record.grounded?.name ?? "this action", signal: runSignal,
-            astra: deps.astra === true,
+            astra: deps.astra === true, ...(deps.helperLabel ? { helperLabel: deps.helperLabel } : {}),
           });
         } catch {
           resumeDeadline(0);
@@ -801,7 +1304,7 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
         astraAllowed = answer.reason === "astra";
 
         // The answer can arrive long after the screenshot the request was based on. Read the page again and re-ground.
-        let freshShot: Screenshot;
+        let freshShot: Screenshot | null;
         let freshSnapshot: PageSnapshot | null;
         try {
           freshShot = await withinDeadline(deps.desktop.screenshot());
@@ -811,6 +1314,7 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
           stop(errorCode(error) === "takeover_active" ? "paused_by_owner" : "desktop_error");
           break;
         }
+        if (!freshShot) { stop("desktop_error"); break; }
         let freshPoint = point;
         if (intent.action === "click") {
           freshPoint = await withinDeadline(grounder.ground(intent, freshShot, freshSnapshot)).catch(() => null);
@@ -866,7 +1370,7 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
         emitted = true;
         if (!(await emit(intent, modelInfo, { ...receiptBase, gate: record.gate, verification: record.verification, after: afterShot, result: record.verification.status, executed: true, code: astraAllowed ? "astra_allowed" : undefined }))) { stop("receipt_error"); break; }
         if (stopIfStopped()) break;
-        if (usage.inputTokens + usage.outputTokens >= tokenLimit) { stop("token_limit"); break; }
+        if (weightedTokens(usage) >= tokenLimit) { stop("token_limit"); break; }
         if (!record.verified) {
           stop("needs_owner", { type: "message", text: "The action was attempted, but its expected result was not verified. I stopped; please inspect the desktop before continuing." });
           break;
@@ -898,13 +1402,19 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
       } catch { /* fall through to the fixed card */ }
     }
     if (!card) card = { type: "message", text: FIXED_TEXT[outcome as keyof typeof FIXED_TEXT] };
-    if (!cardPosted) {
+    if (!cardPosted && !deps.silent) {
       try { await deps.postCard(card); cardPosted = true; } catch { /* the caller sees cardPosted: false */ }
     }
-    return { outcome, steps, usage, cardPosted };
+    return { outcome, steps, usage, cardPosted, ...(summary ? { summary } : {}), finalCard: card };
   } finally {
     if (deadline) clearTimeout(deadline);
-    deps.signal?.removeEventListener("abort", onOwnerAbort);
+    deps.signal?.removeEventListener("abort", onDependencyAbort);
+    deps.subagents?.cancelAll();
+    // TASK-073c. Cancellation or completion clears this run's push records. A failed cleanup is
+    // bounded by the control timeout and by the proxy's own expiry; release follows either way.
+    if (pushApprovalsCleared && typeof deps.shell?.clearApprovals === "function") {
+      try { await deps.shell.clearApprovals(); } catch { /* expiry is the fallback */ }
+    }
     // Held until the card is posted, so a second run cannot start mid-report.
     releaseAgent();
   }

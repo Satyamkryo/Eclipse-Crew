@@ -1,0 +1,8 @@
+# Throwaway UI-evidence stack: app + fresh postgres only, published on 127.0.0.1:3100.
+# Used with: docker compose -p ui-align -f docker-compose.yml -f ui-align.override.yml up -d app postgres
+services:
+  app:
+    image: main-app:ui-align
+    build: !reset null
+    ports: !override
+      - "127.0.0.1:3100:3000"

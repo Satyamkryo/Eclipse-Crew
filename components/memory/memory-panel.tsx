@@ -19,6 +19,8 @@ export type MemoryDocumentView = { entries: MemoryEntry[]; chars: number; cap: n
 export type MemoryViewData = {
   soul: { text: string; updatedAt: string | null };
   user: MemoryDocumentView; memory: MemoryDocumentView; private: MemoryDocumentView;
+  mode: "auto" | "ask";
+  agents: { id: string; name: string }[];
   mirror: { ok: boolean; reason: "not_writable" | "missing" | null };
 };
 type Doc = "user" | "memory" | "private" | "soul";
@@ -44,6 +46,7 @@ export function MemoryPanel({ agentId, csrfToken, timeZone }: { agentId?: string
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<MemoryEntry | null>(null);
   const [version, setVersion] = useState(0);
+  const [modeBusy, setModeBusy] = useState(false);
 
   useEffect(() => {
     if (!agentId) return;
@@ -78,8 +81,36 @@ export function MemoryPanel({ agentId, csrfToken, timeZone }: { agentId?: string
   }
   const current = data as MemoryViewData;
 
+  const setMode = async (mode: "auto" | "ask", all: boolean) => {
+    if (modeBusy) return;
+    setModeBusy(true);
+    try {
+      const response = all
+        ? await fetch("/api/memory/upgrade", { method: "POST", headers: { "x-csrf-token": csrfToken } })
+        : await fetch(`/api/memory/${agentId}`, { method: "PATCH", headers: { "Content-Type": "application/json", "x-csrf-token": csrfToken }, body: JSON.stringify({ mode }) });
+      if (response.ok) setVersion((value) => value + 1);
+    } finally { setModeBusy(false); }
+  };
+
   return (
     <div className="flex flex-col">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border bg-corona/12 px-4 py-2">
+        <p className="text-xs text-muted-foreground">
+          {current.mode === "auto"
+            ? "Automatic memory is on: a fact you stated can be saved at once, with Undo in chat."
+            : "Memory only saves what you approve. Turn it on to let agents remember what you tell them."}
+        </p>
+        <div className="flex flex-wrap gap-2">
+          {current.mode === "ask" ? (
+            <>
+              <Button type="button" size="sm" disabled={modeBusy} onClick={() => setMode("auto", false)}>Turn on for this agent</Button>
+              <Button type="button" size="sm" variant="secondary" disabled={modeBusy} onClick={() => setMode("auto", true)}>Upgrade memory for all agents</Button>
+            </>
+          ) : (
+            <Button type="button" size="sm" variant="secondary" disabled={modeBusy} onClick={() => setMode("ask", false)}>Turn off automatic memory</Button>
+          )}
+        </div>
+      </div>
       <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border px-4 py-3">
         <div role="tablist" aria-label="Memory views" className="flex rounded-md border border-border p-0.5">
           {(["documents", "changes", "history"] as const).map((id) => (
@@ -122,7 +153,7 @@ export function MemoryPanel({ agentId, csrfToken, timeZone }: { agentId?: string
         <>
           {adding || editing ? (
             <EntryForm agentId={agentId} csrfToken={csrfToken} doc={doc === "soul" ? "memory" : doc}
-              entry={editing ?? undefined}
+              agents={current.agents} entry={editing ?? undefined}
               onCancel={() => { setAdding(false); setEditing(null); }}
               onSaved={() => { setAdding(false); setEditing(null); setVersion((value) => value + 1); }} />
           ) : null}

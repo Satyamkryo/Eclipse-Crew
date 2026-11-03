@@ -52,12 +52,16 @@ export function ApprovalActions({ approvalId, csrfToken }: { approvalId: string;
 
   const approval = data.approval;
   const pending = approval.state === "pending";
+  // TASK-073c. A blocked push reuses this card; its control name says what the remote change is.
+  const actionText = /^push to /i.test(approval.controlName) ? "push"
+    : /^(delete |move tag )/i.test(approval.controlName) ? "remote change"
+      : classLabel(approval.actionClass).toLowerCase();
   return (
     <div className="mt-4 flex flex-col gap-3">
       <div className="flex items-start gap-2">
         <ShieldQuestion aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-corona" />
         <div className="min-w-0">
-          <p className="break-words text-sm font-medium">Allow this {classLabel(approval.actionClass).toLowerCase()}?</p>
+          <p className="break-words text-sm font-medium">Allow this {actionText}?</p>
           <p className="mt-1 break-words text-sm text-muted-foreground">{approval.controlName}</p>
           <p className="mt-1 break-words text-xs text-muted-foreground">
             {approval.site ? <>Site: <span className="font-mono">{approval.site}</span></> : "This page has no site address, so it can only be allowed once."}

@@ -20,6 +20,12 @@ const compose = (...args) => docker(["compose", ...args]);
 const checked = (result, description) => {
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
   for (const secret of [bootstrap, appPassword, migratorPassword, desktopSecret]) assert.ok(!output.includes(secret), `${description} leaked a synthetic password`);
+  if (result.status !== 0 && description === "restored exact teach/audio contracts") {
+    const logs = compose("logs", "--no-color", "postgres");
+    const errors = `${logs.stdout ?? ""}${logs.stderr ?? ""}`.split(/\r?\n/).filter((line) => line.includes("ERROR:")).slice(-3).join("\n");
+    assert.ok(![bootstrap, appPassword, migratorPassword, desktopSecret].some((secret) => errors.includes(secret)), "diagnostic excludes synthetic secrets");
+    console.error("[DEBUG-db-closeout]", errors);
+  }
   assert.equal(result.status, 0, `${description}: ${output}`);
   return result.stdout.trim();
 };
@@ -42,7 +48,11 @@ test.after(() => {
 
 test("isolated database provisioning and permissions", { timeout: 900000 }, async () => {
   try {
-    checked(compose("up", "-d", "--build", "app"), "start disposable services");
+    // Environment workaround (Docker policy unchanged): this Docker Desktop refuses compose-managed
+    // builds that request the fs.read entitlement, so the app image is built directly from its explicit
+    // context/Dockerfile first under this run's unique project tag; compose then starts with --no-build.
+    checked(docker(["build", "--file", "Dockerfile", "--tag", `${project}-app:latest`, "."]), "direct app image build");
+    checked(compose("up", "-d", "--no-build", "app"), "start disposable services");
     const provision = () => spawnSync(process.execPath, ["scripts/db-provision.mjs"], { env, encoding: "utf8", timeout: 60000 });
     const migrate = () => spawnSync(process.execPath, ["scripts/db-migrate.mjs"], { env, encoding: "utf8", timeout: 120000 });
     checked(provision(), "fresh provisioning");
@@ -81,7 +91,7 @@ test("isolated database provisioning and permissions", { timeout: 900000 }, asyn
     checked(sql("ALTER TABLE public.model_roles DROP CONSTRAINT model_roles_mode_check; ALTER TABLE public.model_roles ADD CONSTRAINT model_roles_mode_check CHECK (mode in ('active','off','meta'))"), "restore model role mode check");
     checked(sql("ALTER TABLE public.model_roles DROP CONSTRAINT model_roles_role_check; ALTER TABLE public.model_roles ADD CONSTRAINT model_roles_role_check CHECK (role in ('main','sam') AND role <> '')"), "alter model role check fixture");
     assert.notEqual(provision().status, 0, "altered model role definition fails preflight despite matching old substrings");
-    checked(sql("ALTER TABLE public.model_roles DROP CONSTRAINT model_roles_role_check; ALTER TABLE public.model_roles ADD CONSTRAINT model_roles_role_check CHECK (role in ('main','sam'))"), "restore model role check");
+    checked(sql("ALTER TABLE public.model_roles DROP CONSTRAINT model_roles_role_check; ALTER TABLE public.model_roles ADD CONSTRAINT model_roles_role_check CHECK (role in ('main','sam','background'))"), "restore model role check");
     checked(sql("ALTER TABLE public.model_roles DROP CONSTRAINT model_roles_main_shape_check; ALTER TABLE public.model_roles ADD CONSTRAINT model_roles_main_shape_check CHECK (role <> 'main' OR (mode = 'active' AND provider_id IS NOT NULL AND model IS NOT NULL AND use_main_key = false AND model <> ''))"), "alter main role shape fixture");
     assert.notEqual(provision().status, 0, "altered main role shape fails preflight despite matching old substrings");
     checked(sql("ALTER TABLE public.model_roles DROP CONSTRAINT model_roles_main_shape_check; ALTER TABLE public.model_roles ADD CONSTRAINT model_roles_main_shape_check CHECK (role <> 'main' OR (mode = 'active' AND provider_id IS NOT NULL AND model IS NOT NULL AND use_main_key = false))"), "restore main role shape check");

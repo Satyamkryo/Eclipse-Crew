@@ -173,9 +173,15 @@ test("hostile input never throws and never passes", async () => {
 
 // ---- receipt field rules ----
 test("actions keep typed text and file contents out, and confidence follows the evidence", () => {
-  assert.deepEqual(actionFor({ action: "type", text: "hunter2-secret \u{1F600}", expect: "x" }), { kind: "type", chars: 16 });
+  assert.deepEqual(actionFor({ action: "type", text: "hunter2-secret \u{1F600}", expect: "x" }), { kind: "type", chars: 16, values: [] });
   assert.deepEqual(actionFor({ action: "key", keys: "Control+L", expect: "x" }), { kind: "key", keys: "Control+L" });
   assert.deepEqual(actionFor({ action: "read_document", name: "r.txt", expect: "x" }), { kind: "read_document", name: "r.txt", offset: 0 });
+  assert.deepEqual(actionFor({ action: "search_document", name: "r.txt", query: "termination", expect: "x" }), { kind: "search_document", name: "r.txt", chars: 11, hits: 0 });
+  assert.deepEqual(actionFor({ action: "extract", name: "headline", value: "Hello world", expect: "x" }), { kind: "extract", name: "headline", chars: 11 });
+  assert.deepEqual(actionFor({ action: "search_history", query: "vendor", expect: "x" }), { kind: "search_history", chars: 6, hits: 0 });
+  assert.deepEqual(actionFor({ action: "remember", op: "forget", scope: "agent", title: "City", reason: "x" }), { kind: "remember", op: "forget", scope: "agent", chars: 0 });
+  assert.deepEqual(actionFor({ action: "navigate", url: "https://a.example/x?q=1", expect: "x" }), { kind: "navigate", host: "a.example" });
+  assert.deepEqual(actionFor({ action: "select", target: "Country", option: "Germany", expect: "x" }), { kind: "select", target: "Country", option_chars: 7 });
   assert.equal(actionFor({ action: "finish", summary: "done" }), null);
   const pass = (method) => ({ phase: "verify", method, status: "pass", code: "c" });
   const click = { kind: "click", target: "Go" };
@@ -185,6 +191,8 @@ test("actions keep typed text and file contents out, and confidence follows the 
   assert.equal(confidenceFor(click, "blocked", [pass("page_structure")]), "low");
   assert.equal(confidenceFor(click, "unknown", []), "low");
   assert.equal(confidenceFor({ kind: "deliver_file", from: "work", name: "a" }, "executed", []), "none");
+  assert.equal(confidenceFor({ kind: "search_document", name: "a", chars: 4, hits: 2 }, "executed", []), "none");
+  assert.equal(confidenceFor({ kind: "extract", name: "a", chars: 4 }, "executed", []), "none");
   assert.equal(screenshotHash(undefined), null);
   assert.equal(screenshotHash(PNG), createHash("sha256").update(Buffer.from(PNG, "base64")).digest("hex"));
 });
@@ -232,7 +240,7 @@ test("each executed step writes one chained receipt; the sealed run verifies and
   assert.equal(sink.rows.length, 2); assert.ok(sink.sealed);
   const [first, second] = receiptsOf(sink);
   assert.deepEqual([first.idx, second.idx, first.v, first.run_id, first.agent_id], [1, 2, 1, RUN_ID, AGENT]);
-  assert.deepEqual(first.action, { kind: "type", chars: 14 });
+  assert.deepEqual(first.action, { kind: "type", chars: 14, values: [] });
   assert.deepEqual(second.action, { kind: "key", keys: "Enter" });
   assert.equal(first.result, "pass"); assert.equal(first.confidence, "high");
   assert.equal(first.sam, "off"); assert.equal(first.model, "muse-spark-1.3"); assert.equal(first.route, "main");
@@ -294,21 +302,43 @@ test("file actions are receipted by name only, with a failed read recorded as fa
   const desktop = fakeDesktop({
     listFiles: async () => [{ area: "inbox", name: "report.txt", size: 10, kind: "text" }],
     readDocument: async (name) => { if (name === "gone.txt") throw Object.assign(new Error("x"), { code: "file_not_found" }); return { kind: "text", format: "text", truncated: false, text: "TOP SECRET CONTENT", offset: 0, nextOffset: null, totalChars: 18 }; },
+    searchDocument: async (name, query) => { assert.equal(query, "termination"); return { format: "pdf", totalChars: 1000, results: [
+      { offset: 10, page: 2, text: "TOP SECRET PASSAGE", score: 1 }, { offset: 60, page: 3, text: "second passage", score: 0.5 }] }; },
     deliverFile: async (from, name) => ({ name, size: 5, kind: "text", sha256: "a".repeat(64) }),
   });
   const { result } = await loop({ sink, desktop, script: [
     step({ action: "read_document", name: "report.txt", expect: "read" }),
     step({ action: "read_document", name: "gone.txt", expect: "read" }),
     step({ action: "deliver_file", from: "work", name: "out.txt", expect: "delivered" }),
+    step({ action: "search_document", name: "report.pdf", query: "termination", expect: "passages" }),
     step({ action: "finish", summary: "ok" }),
   ] });
   assert.equal(result.outcome, "finished");
   const receipts = receiptsOf(sink);
   assert.deepEqual(receipts.map((r) => [r.idx, r.action.kind, r.result, r.confidence, r.before_hash]), [
-    [1, "read_document", "executed", "none", null], [2, "read_document", "failed", "none", null], [3, "deliver_file", "executed", "none", null]]);
+    [1, "read_document", "executed", "none", null], [2, "read_document", "failed", "none", null], [3, "deliver_file", "executed", "none", null],
+    [4, "search_document", "executed", "none", null]]);
   assert.equal(receipts[1].code, "file_not_found");
-  assert.ok(!JSON.stringify(sink.export()).includes("TOP SECRET"), "document contents never reach a receipt");
+  assert.deepEqual(receipts[3].action, { kind: "search_document", name: "report.pdf", chars: 11, hits: 2 });
+  assert.ok(!JSON.stringify(sink.export()).includes("TOP SECRET"), "document contents and passages never reach a receipt");
   assert.equal(verifyRunExport(sink.export()).ok, true);
+});
+
+test("extract and {{name}} are receipted by name and length only, never the value", async () => {
+  const sink = memorySink();
+  const desktop = fakeDesktop({ findText: async (text) => ({ found: text === "Hello world", count: 1 }) });
+  const { result } = await loop({ sink, desktop, script: [
+    step({ action: "extract", name: "headline", value: "Hello world", expect: "saved" }),
+    step({ action: "type", text: "Title: {{headline}}", expect: "typed in the field" }),
+    step({ action: "finish", summary: "ok" }),
+  ] });
+  assert.equal(result.outcome, "finished");
+  const receipts = receiptsOf(sink);
+  assert.deepEqual(receipts[0].action, { kind: "extract", name: "headline", chars: 11 });
+  assert.deepEqual(receipts[1].action, { kind: "type", chars: 18, values: ["headline"] });
+  assert.deepEqual(receipts.map((receipt) => receipt.confidence), ["none", "high"]);
+  assert.equal(JSON.stringify(sink.export()).includes("Hello world"), false, "the extracted value never reaches a receipt");
+  assert.deepEqual(desktop.calls.filter(([name]) => name === "type"), [["type", "Title: Hello world"]]);
 });
 
 test("steps with SAM unavailable say so in the receipt", async () => {

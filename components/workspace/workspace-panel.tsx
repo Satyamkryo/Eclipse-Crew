@@ -19,8 +19,8 @@ const emptyCopy: Record<Exclude<TabId, "desktop" | "settings">, string> = {
   memory: "No memory entries yet.",
 };
 
-export function WorkspacePanel({ desktop, settings, history, memory }: { desktop?: ReactNode; settings?: ReactNode; history?: ReactNode; memory?: ReactNode }) {
-  const [active, setActive] = useState<TabId>("desktop");
+export function WorkspacePanel({ initialTab, desktop, settings, history, memory }: { initialTab?: TabId; desktop?: ReactNode; settings?: ReactNode; history?: ReactNode; memory?: ReactNode }) {
+  const [active, setActive] = useState<TabId>(initialTab ?? "desktop");
   const buttons = useRef<Array<HTMLButtonElement | null>>([]);
 
   const select = (index: number, focus: boolean) => {
@@ -55,7 +55,7 @@ export function WorkspacePanel({ desktop, settings, history, memory }: { desktop
       <div role="tabpanel" id="workspace-panel-content" aria-labelledby={`workspace-tab-${active}`} tabIndex={0}
         className="min-h-0 flex-1 overflow-y-auto focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring">
         {active === "desktop" && (desktop ? <div className="p-4">{desktop}</div> :
-          <Empty title="No desktop open" body="Select an active agent in Agents to open its live desktop." />)}
+          <Empty title="No desktop open" body="Select an active agent to use its desktop. A stopped desktop can be started from Settings; a paused agent must be resumed first." />)}
         {active === "settings" && (settings ? <div className="p-6">{settings}</div> : (
           <div className="flex flex-col gap-4 p-6">
             <div>

@@ -3,7 +3,7 @@ import { useId, useState } from "react";
 import { Check, ChevronDown, ChevronRight, CircleAlert, ImageOff, RotateCcw, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import type { StepView } from "@/lib/receipts/history-view";
+import type { CompactStep, StepView } from "@/lib/receipts/history-view";
 import { TONE_CLASS, formatCost, shortHash } from "./format";
 
 const RESULT_LABEL: Record<string, string> = {
@@ -107,6 +107,28 @@ export function StepRow({ runId, step, canRewind, onRewind }: {
           ) : null}
         </div>
       ) : null}
+    </li>
+  );
+}
+
+// TASK-083. Compact form for the chat's live card: number, action, model chip, cost and status. No thumbnails.
+export function CompactStepRow({ step }: { step: CompactStep }) {
+  const ok = step.tone === "success";
+  const Icon = ok ? Check : step.tone === "danger" ? X : CircleAlert;
+  const label = RESULT_LABEL[step.result] ?? "Not verified";
+  return (
+    <li className="border-b border-border last:border-b-0 motion-safe:animate-in motion-safe:fade-in motion-safe:duration-200">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-2 py-1.5 text-xs">
+        <span className="w-5 shrink-0 font-mono text-muted-foreground tabular-nums">{step.idx}</span>
+        <span className="min-w-0 flex-1 basis-32 truncate">
+          {step.action}{step.target ? <span className="text-muted-foreground"> · {step.target}</span> : null}
+        </span>
+        {step.model ? <span className="rounded border border-border px-1 font-mono text-text-subtle">{step.model}</span> : null}
+        <span className="font-mono tabular-nums">{formatCost(step.costMicroUsd)}</span>
+        <span className={cn("inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-0.5", TONE_CLASS[step.tone])}>
+          <Icon aria-hidden className="size-3" strokeWidth={1.5} />{label}
+        </span>
+      </div>
     </li>
   );
 }

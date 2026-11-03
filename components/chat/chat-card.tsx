@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Archive, CalendarClock, CircleHelp, FileText, Gauge, Image as ImageIcon, Music, MessageSquare, Plug, ShieldQuestion, Sparkles, Video } from "lucide-react";
+import { Archive, CalendarClock, CircleHelp, ClipboardList, FileText, Gauge, Image as ImageIcon, Music, MessageSquare, Plug, ShieldQuestion, Sparkles, Video } from "lucide-react";
 import type { ChatMessage } from "@/lib/chat/schema";
 import { formatBytes } from "@/lib/chat/upload";
 import { FileCardActions } from "@/components/chat/file-card-actions";
@@ -7,6 +7,7 @@ import { RoutineCardActions } from "@/components/chat/routine-card-actions";
 import { SkillUpdateReview } from "@/components/heal/skill-update-review";
 import { ApprovalActions } from "@/components/approvals/approval-actions";
 import { ChangeActions } from "@/components/memory/change-actions";
+import { MemoryUndo } from "@/components/memory/memory-undo";
 
 const FILE_ICONS = { image: ImageIcon, pdf: FileText, document: FileText, text: FileText, audio: Music, video: Video, archive: Archive } as const;
 const FILE_KIND_LABELS = { image: "Image", pdf: "PDF", document: "Document", text: "Text", audio: "Audio", video: "Video", archive: "Archive" } as const;
@@ -18,16 +19,24 @@ export function ChatCard({ message, agentId, csrfToken }: { message: ChatMessage
     : card.type === "skill_update" ? "Skill update proposed"
     : card.type === "approval" ? "Approval needed"
     : card.type === "memory_change" ? "Memory change proposed"
+    : card.type === "memory_saved" ? "Memory saved"
+    : card.type === "memory_tidied" ? "Memory tidied"
+    : card.type === "crew_report" ? "Crew report"
     : card.type === "budget_warning" || card.type === "budget_paused" ? "Budget alert"
       : message.sourceTag === "user" ? "Your message" : "Agent message";
   const needsYou = card.type === "budget_warning" || card.type === "budget_paused" || card.type === "teach_paused" || card.type === "skill_update" || card.type === "approval" || card.type === "memory_change";
   return (
     <article aria-label={label} data-card-type={card.type}
-      className={`rounded-lg border bg-card p-4 text-sm text-card-foreground ${needsYou ? "border-corona" : "border-border"}`}>
+      className={`text-sm text-card-foreground ${card.type === "message" ? "" : `rounded-lg border bg-card p-4 ${needsYou ? "border-corona" : "border-border"}`}`}>
       {card.type === "message" && (
-        <div className="flex gap-3">
-          <MessageSquare aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
-          <p className="min-w-0 whitespace-pre-wrap break-words leading-6">{card.text}</p>
+        <div className="min-w-0">
+          <p className="whitespace-pre-wrap break-words leading-6">{card.text}</p>
+            {card.continueRunId && agentId && (
+              <Link href={`/?agent=${agentId}&panel=history&run=${card.continueRunId}&continue=1`}
+                className="mt-3 inline-flex h-8 items-center rounded-md border border-border-strong bg-surface px-3 text-xs font-medium transition-colors duration-150 hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-ring">
+                Continue from the last saved step
+              </Link>
+            )}
         </div>
       )}
 
@@ -111,6 +120,9 @@ export function ChatCard({ message, agentId, csrfToken }: { message: ChatMessage
             <CardTitle icon={ShieldQuestion} title="Approval needed" />
             <span className="rounded-md bg-corona/12 px-2 py-0.5 text-xs text-corona">Needs you</span>
           </div>
+          {card.helperLabel && (
+            <p className="mt-2 text-xs text-muted-foreground">{card.helperLabel} wants to use {card.controlName}.</p>
+          )}
           {csrfToken
             ? <ApprovalActions approvalId={card.approvalId} csrfToken={csrfToken} />
             : <p className="mt-3 text-sm text-muted-foreground">Open this chat to allow or deny the action.</p>}
@@ -130,6 +142,67 @@ export function ChatCard({ message, agentId, csrfToken }: { message: ChatMessage
         </>
       )}
 
+      {card.type === "memory_saved" && (
+        <>
+          <CardTitle icon={Sparkles} title="Memory saved" />
+          <p className="mt-2 break-words">{card.title}</p>
+          <div className="mt-2">{csrfToken ? <MemoryUndo kind="version" id={card.versionId} csrfToken={csrfToken} /> : null}</div>
+        </>
+      )}
+
+      {card.type === "memory_tidied" && (
+        <>
+          <CardTitle icon={Sparkles} title="Memory tidied" />
+          <p className="mt-2 text-muted-foreground">{card.merged} merged, {card.archived} archived.</p>
+          <div className="mt-2">{csrfToken ? <MemoryUndo kind="batch" id={card.batchId} csrfToken={csrfToken} /> : null}</div>
+        </>
+      )}
+
+      {card.type === "crew_report" && (
+        <>
+          <CardTitle icon={ClipboardList} title="Crew report" />
+          <p className="mt-3 text-xs text-muted-foreground">
+            Recorded work from <time dateTime={card.windowStart}>{reportTime(card.windowStart, card.timezone)}</time>
+            {" "}to <time dateTime={card.windowEnd}>{reportTime(card.windowEnd, card.timezone)}</time> ({card.timezone}).
+          </p>
+          <dl className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3" aria-label="Report counts">
+            <ReportCount label="Completed" value={card.counts.completed} />
+            <ReportCount label="Still running" value={card.counts.running} />
+            <ReportCount label="Interrupted" value={card.counts.interrupted} />
+            <ReportCount label="Failed" value={card.counts.failed} />
+            <ReportCount label="Needs you" value={card.counts.needsYou} />
+            <div className="rounded-md border border-border px-2 py-1.5">
+              <dt className="text-xs text-muted-foreground">Spend</dt>
+              <dd className="tabular-nums text-sm">{usd(card.costMicroUsd)}</dd>
+            </div>
+          </dl>
+          {card.totalRuns === 0 ? (
+            <p className="mt-3 text-sm text-muted-foreground">No recorded work in this window.</p>
+          ) : (
+            <>
+              <p className="mt-3 text-xs text-muted-foreground">
+                {card.totalRuns} {card.totalRuns === 1 ? "run" : "runs"} started. Up to ten are linked here.
+              </p>
+              <ul className="mt-2 divide-y divide-border border-t border-border" aria-label="Report runs">
+                {card.runs.map((run) => (
+                  <li key={run.runId} className="flex flex-wrap items-start justify-between gap-2 py-2">
+                    <Link href={`/?agent=${run.agentId}`} className="min-w-0 break-words text-sm underline underline-offset-4">
+                      {run.agentName}: {run.label}
+                    </Link>
+                    <span className="shrink-0 text-xs text-muted-foreground">
+                      {run.outcomeLabel}{run.sealed ? "" : " · proof not sealed"}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+          <p className="mt-3 text-xs text-muted-foreground">
+            System-generated local summary, not a signed receipt. <Link href="/jobs?range=24h" className="underline underline-offset-4">Open Jobs for this window</Link>.
+          </p>
+        </>
+      )}
+
       {card.type === "skill_update" && (
         <>
           <CardTitle icon={Sparkles} title="Skill update proposed" />
@@ -143,6 +216,25 @@ export function ChatCard({ message, agentId, csrfToken }: { message: ChatMessage
       )}
     </article>
   );
+}
+
+function ReportCount({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="rounded-md border border-border px-2 py-1.5">
+      <dt className="text-xs text-muted-foreground">{label}</dt>
+      <dd className="tabular-nums text-sm">{value}</dd>
+    </div>
+  );
+}
+
+function reportTime(value: string, timezone: string) {
+  try {
+    return new Intl.DateTimeFormat("en-US", {
+      timeZone: timezone, month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", timeZoneName: "short",
+    }).format(new Date(value));
+  } catch {
+    return value;
+  }
 }
 
 function nextRunText(value: string, timezone: string) {

@@ -62,7 +62,14 @@ test("desktop inputs preserve approved package pins and browser sandbox constrai
   assert.match(dockerfile, /RUN --network=none --mount=.*from=package_archives/);
   assert.match(dockerfile, /apt-get --no-download install/);
   assert.doesNotMatch(dockerfile, /apt-get.*update|snapshot\.ubuntu\.com/);
-  assert.match(dockerfile, /65eedec10a9948b2168e37ba70a6ada69a9c5d9bf3078e2733a371fd1f011d15/);
+  assert.match(dockerfile, /browser-build.mjs fetch/);
+  assert.doesNotMatch(dockerfile, /chromium-browser-snapshots/);
+  const browserLock = JSON.parse(await readFile("docker/desktop/browser-build.lock.json", "utf8"));
+  assert.equal(browserLock.browsers.amd64.bytes, 201329937);
+  assert.equal(browserLock.browsers.amd64.sha256, "b711c720f774be355197f32edf37e0651418ba036d92446ee2da19ac017540a7");
+  assert.equal(browserLock.browsers.arm64.bytes, 200722708);
+  assert.equal(browserLock.browsers.arm64.sha256, "1f496a826c9ba4d6a5f5bf2de686145fe718528c2cc3dbeb96b5893b89653724");
+  assert.equal(browserLock.browsers.arm64.url, "https://storage.googleapis.com/chrome-for-testing-public/156.0.8078.80/linux-arm64/chrome-linux-arm64.zip");
   assert.match(dockerfile, /48cc0e21e048790e54c0cf5749c2725005313d652651c40b7a21feb9697aaf75/);
   assert.match(dockerfile, /USER 65534:65534/);
   assert.doesNotMatch(dockerfile, /--allow-unauthenticated|Verify-Peer[ =]+false|npm (?:install|i)\b|playwright install/);
@@ -76,7 +83,7 @@ test("desktop inputs preserve approved package pins and browser sandbox constrai
 
 test("package lock has the approved digest and refuses a mutated manifest or unsafe source entry", async () => {
   const original = await readFile("docker/desktop/ubuntu-packages.lock.json");
-  const manifest = validateManifest(original); assert.equal(manifest.packages.length, 388);
+  const manifest = validateManifest(original); assert.equal(manifest.packages.length, 445);
   validateManifest(Buffer.from(original.toString().replace(/\n/g, "\r\n")));
   assert.throws(() => validateManifest(Buffer.from(original.toString().replace('"schema": 1', '"schema": 2'))));
   const entry = manifest.packages[0];

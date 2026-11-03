@@ -37,6 +37,8 @@ test("a step view shows the action, method and SAM state, and cost in micro-USD"
   assert.equal(off.method, "Page structure (SAM off)");
   assert.equal(methodLabel([], "unavailable", "wait"), "No check passed (SAM unavailable)");
   assert.equal(methodLabel([], "off", "read_document"), "File action, no screen check");
+  assert.deepEqual(actionLabel({ kind: "search_document", name: "report.pdf", chars: 11, hits: 2 }), { text: "Searched document", target: "report.pdf" });
+  assert.equal(methodLabel([], "off", "search_document"), "File action, no screen check");
 });
 
 test("typed text is only ever a character count in a step view", () => {
@@ -110,6 +112,7 @@ test.before(async () => {
   for (const file of ["0009_receipts_runs_steps.sql", "0010_curly_ultimo.sql", "0012_quick_molten_man.sql"]) {
     await adminPool.query(readFileSync(new URL(`../drizzle/${file}`, import.meta.url), "utf8").replaceAll("--> statement-breakpoint", ""));
   }
+  await adminPool.query(`ALTER TABLE runs ADD COLUMN heartbeat_at timestamptz, ADD COLUMN cancel_requested_at timestamptz;`);
   await adminPool.query(`CREATE ROLE app_role LOGIN PASSWORD '${password}'; GRANT SELECT, INSERT, UPDATE ON runs TO app_role; GRANT SELECT, INSERT ON steps TO app_role; GRANT SELECT, INSERT ON step_evidence TO app_role; GRANT SELECT, INSERT ON checkpoints TO app_role;`);
   appPool = new pg.Pool({ host: "127.0.0.1", port, user: "app_role", password, database: "postgres" });
   app = drizzle({ client: appPool });

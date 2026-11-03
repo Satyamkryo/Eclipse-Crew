@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -47,6 +47,14 @@ test("shell runner rejects invalid input before spawning", async () => {
     await assert.rejects(runShell({ home: HOME, env: {}, ...input }), (error) => error.code === "shell_invalid");
   }
   await assert.rejects(runShell({ home: HOME, env: {}, command: "echo", cwd: "../../etc" }), (error) => error.code === "shell_cwd_invalid");
+});
+
+test("shell runner keeps the process, file and address-space caps", async () => {
+  const source = await readFile(new URL("../docker/desktop/shell-runner.mjs", import.meta.url), "utf8");
+  assert.match(source, /ulimit -u 512/);
+  assert.match(source, /ulimit -f 1048576/);
+  assert.match(source, /ulimit -v 4194304/, "the live check passed with the 4 GiB virtual-memory cap");
+  assert.match(source, /ulimit -c 0/);
 });
 
 test("shell runner executes a command as the current user on Linux", { skip: process.platform !== "linux" }, async () => {

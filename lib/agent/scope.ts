@@ -116,12 +116,19 @@ export function deriveScope(input: {
   task: string;
   allowedHosts?: readonly string[] | null;
   startHref?: string | null;
+  // TASK-083. Hosts and emails the owner named in earlier included messages; agent replies never add scope.
+  extraOwnerTexts?: readonly string[];
 }): Scope {
   const hosts: string[] = [];
   for (const allowed of input.allowedHosts ?? []) pushHost(hosts, normalizeHost(allowed));
   for (const host of extractTargets(input.task).hosts) pushHost(hosts, host);
+  const emails = [...extractTargets(input.task).emails];
+  for (const text of input.extraOwnerTexts ?? []) {
+    for (const host of extractTargets(text).hosts) pushHost(hosts, host);
+    for (const email of extractTargets(text).emails) if (!emails.includes(email) && emails.length < MAX_TARGETS) emails.push(email);
+  }
   pushHost(hosts, hostFromUrl(input.startHref));
-  return { hosts: hosts.slice(0, MAX_TARGETS + 64), emails: extractTargets(input.task).emails };
+  return { hosts: hosts.slice(0, MAX_TARGETS + 64), emails: emails.slice(0, MAX_TARGETS) };
 }
 
 export function hostInScope(host: unknown, scope: Scope): boolean {

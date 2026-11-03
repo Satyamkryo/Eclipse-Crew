@@ -7,7 +7,7 @@ export type MemoryScope = (typeof MEMORY_SCOPES)[number];
 
 // Caps count title + body of active entries. SOUL keeps the existing 2,000-character persona cap.
 export const MEMORY_CAPS: Record<MemoryDocument | "soul", number> = {
-  user: 1_375, memory: 2_200, private: 2_200, soul: 2_000,
+  user: 1_500, memory: 3_000, private: 2_200, soul: 2_000,
 };
 export const MAX_VISIBLE_TO = 10;
 
@@ -85,6 +85,8 @@ export interface MemoryEntryView {
   author: "owner" | "agent";
   sourceRunId: string | null;
   sourceLabel: string | null;
+  // TASK-086. Set when a repeat restates the fact; tidy keeps confirmed entries ahead of stale ones.
+  lastConfirmedAt: string | null;
   version: number;
   createdAt: string;
   updatedAt: string;

@@ -216,7 +216,7 @@ function agentDatabase(rows = {}) {
   const query = (kind, table) => kind === "insert"
     ? { values: (values) => {
       result(kind, table, values);
-      return { returning: async () => [{ agentId: values.id ?? AGENT }] };
+      return { onConflictDoNothing() { return this; }, returning: async () => [{ agentId: values.id ?? AGENT }] };
     } }
     : kind === "update"
       ? { set: (values) => ({ where: (condition) => ({ returning: async () => { result(kind, table, values, condition); return [{ agentId: AGENT }]; } }) }) }

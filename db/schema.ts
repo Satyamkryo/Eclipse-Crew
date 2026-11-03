@@ -73,6 +73,8 @@ export const agentPolicies = pgTable(
     domains: text("domains").array().notNull().default(sql`'{}'::text[]`),
     actions: text("actions").array().notNull().default(sql`'{}'::text[]`),
     memoryScopes: text("memory_scopes").array().notNull().default(sql`'{}'::text[]`),
+    // TASK-086. auto: a change that quotes the owner's own message applies at once. ask: everything waits for approval.
+    memoryMode: text("memory_mode").notNull().default("auto"),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
@@ -81,6 +83,7 @@ export const agentPolicies = pgTable(
     check("agent_policies_domains_check", sql`cardinality(${table.domains}) <= 64`),
     check("agent_policies_actions_check", sql`cardinality(${table.actions}) <= 64`),
     check("agent_policies_memory_scopes_check", sql`cardinality(${table.memoryScopes}) <= 3`),
+    check("agent_policies_memory_mode_check", sql`${table.memoryMode} in ('auto', 'ask')`),
   ],
 );
 
@@ -200,9 +203,87 @@ export const messages = pgTable(
     index("messages_owner_id_idx").on(table.ownerId),
     index("messages_session_created_idx").on(table.sessionId, table.createdAt, table.id),
     index("messages_run_id_idx").on(table.runId),
+    // TASK-086. Agent-scoped full-text search over its own chat, owner-scoped in every query.
+    index("messages_search_idx").using("gin", sql`to_tsvector('simple', coalesce(${table.content}->>'text','') || ' ' || coalesce(${table.content}->>'question',''))`),
     check("messages_role_check", sql`${table.role} in ('user', 'agent', 'system')`),
-    check("messages_card_type_check", sql`${table.cardType} in ('message', 'clarification', 'tool_connection', 'routine', 'file', 'budget_warning', 'budget_paused', 'teach_paused', 'skill_update', 'approval', 'memory_change')`),
+    check("messages_card_type_check", sql`${table.cardType} in ('message', 'clarification', 'tool_connection', 'routine', 'file', 'budget_warning', 'budget_paused', 'teach_paused', 'skill_update', 'approval', 'memory_change', 'memory_saved', 'memory_tidied', 'crew_report')`),
     check("messages_source_tag_check", sql`${table.sourceTag} in ('user', 'agent', 'tool', 'system')`),
+  ],
+);
+
+// TASK-058. One starter-crew setup per owner. Member rows preallocate the agent UUID before provisioning, so a retry or a
+// restart resumes the same identities instead of creating a second crew. No row here grants anything by itself.
+export const starterCrewSetups = pgTable(
+  "starter_crew_setups",
+  {
+    id: uuid("id").primaryKey(),
+    ownerId: uuid("owner_id").notNull(),
+    state: text("state").notNull().default("creating"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("starter_crew_setups_owner_idx").on(table.ownerId),
+    check("starter_crew_setups_state_check", sql`${table.state} in ('creating', 'partial', 'complete')`),
+  ],
+);
+
+export const starterCrewMembers = pgTable(
+  "starter_crew_members",
+  {
+    id: uuid("id").primaryKey(),
+    ownerId: uuid("owner_id").notNull(),
+    setupId: uuid("setup_id").notNull().references(() => starterCrewSetups.id, { onDelete: "cascade" }),
+    templateId: text("template_id").notNull(),
+    // Preallocated app identity. No FK: a partially provisioned agent survives a retry and is audited once.
+    agentId: uuid("agent_id").notNull(),
+    state: text("state").notNull().default("pending"),
+    errorCode: text("error_code"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("starter_crew_members_owner_id_idx").on(table.ownerId),
+    uniqueIndex("starter_crew_members_setup_template_idx").on(table.setupId, table.templateId),
+    check("starter_crew_members_template_check", sql`${table.templateId} in ('pr-reviewer', 'dev-agent', 'daily-briefer', 'inbox-triage', 'research-analyst', 'travel-assistant')`),
+    check("starter_crew_members_state_check", sql`${table.state} in ('pending', 'creating', 'created', 'failed')`),
+    check("starter_crew_members_error_check", sql`${table.errorCode} is null or ${table.errorCode} ~ '^[a-z_]{1,64}$'`),
+  ],
+);
+
+// TASK-058. One deterministic morning report per owner. Disabled by default; local_time is HH:MM in the owner's zone and
+// every delivery keeps the exact UTC occurrence beside the zone it was resolved in.
+export const crewReportSettings = pgTable(
+  "crew_report_settings",
+  {
+    ownerId: uuid("owner_id").primaryKey(),
+    enabled: boolean("enabled").notNull().default(false),
+    recipientAgentId: uuid("recipient_agent_id").references(() => agents.id, { onDelete: "set null" }),
+    localTime: text("local_time").notNull().default("09:00"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    check("crew_report_settings_time_check", sql`${table.localTime} ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'`),
+  ],
+);
+
+export const crewReportDeliveries = pgTable(
+  "crew_report_deliveries",
+  {
+    id: uuid("id").primaryKey(),
+    ownerId: uuid("owner_id").notNull(),
+    recipientAgentId: uuid("recipient_agent_id").notNull(),
+    scheduledAt: timestamp("scheduled_at", { withTimezone: true }).notNull(),
+    timezone: text("timezone").notNull(),
+    // Null means the occurrence was handled without a card (recipient missing, paused or unavailable).
+    messageId: uuid("message_id").references(() => messages.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("crew_report_deliveries_owner_id_idx").on(table.ownerId),
+    uniqueIndex("crew_report_deliveries_owner_scheduled_idx").on(table.ownerId, table.scheduledAt),
+    check("crew_report_deliveries_timezone_check", sql`char_length(${table.timezone}) between 1 and 100`),
   ],
 );
 
@@ -280,7 +361,7 @@ export const modelRoles = pgTable(
     index("model_roles_owner_id_idx").on(table.ownerId),
     index("model_roles_provider_id_idx").on(table.providerId),
     uniqueIndex("model_roles_owner_role_idx").on(table.ownerId, table.role),
-    check("model_roles_role_check", sql`${table.role} in ('main', 'sam')`),
+    check("model_roles_role_check", sql`${table.role} in ('main', 'sam', 'background')`),
     check("model_roles_mode_check", sql`${table.mode} in ('active', 'off', 'meta')`),
     check("model_roles_routing_check", sql`${table.routing} in ('fixed', 'auto') and (${table.routing} = 'fixed' or ${table.hardModel} is not null) and (${table.role} = 'main' or (${table.routing} = 'fixed' and ${table.hardModel} is null))`),
     check(
@@ -290,6 +371,11 @@ export const modelRoles = pgTable(
     check(
       "model_roles_sam_shape_check",
       sql`${table.role} <> 'sam' or ((${table.mode} = 'off' and ${table.providerId} is null and ${table.model} is null and ${table.useMainKey} = false) or (${table.mode} = 'meta' and ${table.providerId} is not null and ${table.model} is not null))`,
+    ),
+    // TASK-086. Optional: no row means the memory jobs use Main.
+    check(
+      "model_roles_background_shape_check",
+      sql`${table.role} <> 'background' or (${table.mode} = 'active' and ${table.providerId} is not null and ${table.model} is not null and ${table.useMainKey} = false)`,
     ),
   ],
 );
@@ -315,10 +401,15 @@ export const runs = pgTable(
     headHash: text("head_hash"),
     usage: jsonb("usage"),
     signature: text("signature"),
+    // TASK-085. Updated every 15 s while a run is alive; the sweeper seals an unsealed run after 3 minutes.
+    heartbeatAt: timestamp("heartbeat_at", { withTimezone: true }),
+    // TASK-085. Set by a cancel from another process; the next heartbeat observes it and stops as aborted.
+    cancelRequestedAt: timestamp("cancel_requested_at", { withTimezone: true }),
   },
   (table) => [
     index("runs_owner_id_idx").on(table.ownerId),
     index("runs_owner_started_idx").on(table.ownerId, table.startedAt.desc()),
+    index("runs_heartbeat_idx").on(table.heartbeatAt).where(sql`${table.signature} is null`),
     check(
       "runs_sealed_check",
       sql`(${table.signature} is null and ${table.endedAt} is null and ${table.stepCount} is null and ${table.headHash} is null and ${table.usage} is null) or (${table.signature} is not null and ${table.endedAt} is not null and ${table.stepCount} is not null and ${table.headHash} is not null and ${table.usage} is not null)`,
@@ -583,6 +674,10 @@ export const runMeta = pgTable(
     executionId: uuid("execution_id"),
     replayScriptId: uuid("replay_script_id").references(() => replayScripts.id, { onDelete: "set null" }),
     retryOf: uuid("retry_of").references(() => runs.id),
+    // TASK-085. The sender run when this run was started by a teammate handoff.
+    handoffOf: uuid("handoff_of").references(() => runs.id),
+    // TASK-076. The parent run when this run is a screenless helper.
+    parentRunId: uuid("parent_run_id").references(() => runs.id),
     label: text("label"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -590,7 +685,8 @@ export const runMeta = pgTable(
     index("run_meta_owner_id_idx").on(table.ownerId),
     index("run_meta_owner_execution_idx").on(table.ownerId, table.executionId),
     index("run_meta_retry_of_idx").on(table.retryOf),
-    check("run_meta_trigger_check", sql`${table.trigger} in ('chat', 'run_now', 'schedule', 'replay', 'branch', 'heal')`),
+    index("run_meta_parent_run_idx").on(table.parentRunId),
+    check("run_meta_trigger_check", sql`${table.trigger} in ('chat', 'run_now', 'schedule', 'replay', 'branch', 'heal', 'handoff', 'subagent')`),
     check("run_meta_label_check", sql`${table.label} is null or char_length(${table.label}) between 1 and 120`),
   ],
 );
@@ -647,7 +743,7 @@ export const auditLog = pgTable(
     uniqueIndex("audit_log_owner_seq_idx").on(table.ownerId, table.seq),
     uniqueIndex("audit_log_owner_source_ref_idx").on(table.ownerId, table.sourceRef).where(sql`${table.sourceRef} is not null`),
     check("audit_log_seq_check", sql`${table.seq} > 0`),
-    check("audit_log_kind_check", sql`${table.kind} in ('tripwire', 'scope_blocked', 'egress_blocked', 'approval_denied', 'agent_stopped', 'crew_stopped', 'crew_resumed', 'login', 'password_changed', 'email_changed', 'sessions_revoked', 'agent_created', 'agent_updated', 'agent_paused', 'agent_resumed', 'agent_deleted', 'astra_enabled', 'astra_disabled', 'approval_allowed', 'permission_revoked', 'memory_approved', 'memory_rejected', 'memory_undone', 'connection_added', 'connection_replaced', 'connection_removed', 'composio_key_saved', 'composio_key_removed', 'composio_account_connected', 'composio_account_revoked')`),
+    check("audit_log_kind_check", sql`${table.kind} in ('tripwire', 'scope_blocked', 'egress_blocked', 'approval_denied', 'agent_stopped', 'crew_stopped', 'crew_resumed', 'login', 'password_changed', 'email_changed', 'sessions_revoked', 'agent_created', 'agent_updated', 'agent_paused', 'agent_resumed', 'agent_deleted', 'astra_enabled', 'astra_disabled', 'approval_allowed', 'permission_revoked', 'memory_approved', 'memory_rejected', 'memory_undone', 'memory_auto_saved', 'memory_tidied', 'memory_upgrade_applied', 'connection_added', 'connection_replaced', 'connection_removed', 'connection_device_started', 'connection_device_connected', 'connection_device_expired', 'composio_key_saved', 'composio_key_removed', 'composio_account_connected', 'composio_account_revoked', 'run_interrupted', 'run_handed_off', 'message_mentioned')`),
     check("audit_log_code_check", sql`${table.code} is null or ${table.code} ~ '^[a-z_]{1,48}$'`),
     check("audit_log_hash_check", sql`${table.entryHash} ~ '^[0-9a-f]{64}$' and ${table.prevHash} ~ '^[0-9a-f]{64}$' and ${table.keyId} ~ '^sha256:[0-9a-f]{64}$'`),
     check("audit_log_signature_check", sql`${table.signature} ~ '^[A-Za-z0-9_-]+$'`),
@@ -675,6 +771,8 @@ export const memoryEntries = pgTable(
     author: text("author").notNull(),
     sourceRunId: uuid("source_run_id"),
     sourceLabel: text("source_label"),
+    // TASK-086. Set when a repeat restates the fact; tidy keeps confirmed entries ahead of stale ones.
+    lastConfirmedAt: timestamp("last_confirmed_at", { withTimezone: true }),
     version: integer("version").notNull().default(1),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -713,6 +811,8 @@ export const memoryVersions = pgTable(
     authorAgentId: uuid("author_agent_id"),
     reason: text("reason"),
     sourceRunId: uuid("source_run_id"),
+    // TASK-086. One tidy batch shares an id so the whole batch can be undone together.
+    batchId: uuid("batch_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
@@ -721,7 +821,8 @@ export const memoryVersions = pgTable(
     uniqueIndex("memory_versions_owner_doc_seq_idx").on(table.ownerId, table.docKey, table.seq),
     check("memory_versions_seq_check", sql`${table.seq} >= 1`),
     check("memory_versions_doc_key_check", sql`${table.docKey} = 'user' or ${table.docKey} ~ '^agent:[0-9a-f-]{36}:(memory|private|soul)$'`),
-    check("memory_versions_op_check", sql`${table.op} in ('add', 'edit', 'remove', 'pin', 'unpin', 'soul_edit', 'undo')`),
+    check("memory_versions_op_check", sql`${table.op} in ('add', 'edit', 'remove', 'pin', 'unpin', 'soul_edit', 'undo', 'merge', 'shorten', 'archive')`),
+    index("memory_versions_batch_idx").on(table.ownerId, table.batchId),
     check("memory_versions_before_check", sql`${table.before} is null or jsonb_typeof(${table.before}) = 'object'`),
     check("memory_versions_after_check", sql`${table.after} is null or jsonb_typeof(${table.after}) = 'object'`),
     check("memory_versions_author_check", sql`${table.author} in ('owner', 'agent')`),
@@ -740,6 +841,9 @@ export const memoryChanges = pgTable(
     runId: uuid("run_id"),
     doc: text("doc").notNull(),
     scope: text("scope").notNull(),
+    // TASK-086. replace and forget name an existing entry by its exact title; add creates one.
+    op: text("op").notNull().default("add"),
+    quote: text("quote"),
     title: text("title").notNull(),
     body: text("body").notNull(),
     reason: text("reason").notNull(),
@@ -755,11 +859,29 @@ export const memoryChanges = pgTable(
     index("memory_changes_owner_state_idx").on(table.ownerId, table.state),
     check("memory_changes_doc_check", sql`${table.doc} in ('user', 'memory', 'private')`),
     check("memory_changes_scope_check", sql`${table.scope} in ('global', 'agent', 'private')`),
+    check("memory_changes_op_check", sql`${table.op} in ('add', 'replace', 'forget')`),
+    check("memory_changes_quote_check", sql`${table.quote} is null or char_length(${table.quote}) between 12 and 600`),
     check("memory_changes_title_check", sql`char_length(${table.title}) between 1 and 80`),
     check("memory_changes_body_check", sql`char_length(${table.body}) between 1 and 600`),
     check("memory_changes_reason_check", sql`char_length(${table.reason}) between 1 and 120`),
     check("memory_changes_flags_check", sql`cardinality(${table.flags}) <= 8`),
     check("memory_changes_state_check", sql`${table.state} in ('pending', 'approved', 'rejected')`),
+  ],
+);
+
+// TASK-086. Per-agent cursor for background review, and the last tidy time per document (docKey -> ISO timestamp).
+export const memoryReviewState = pgTable(
+  "memory_review_state",
+  {
+    agentId: uuid("agent_id").primaryKey().references(() => agents.id, { onDelete: "cascade" }),
+    ownerId: uuid("owner_id").notNull(),
+    lastMessageId: uuid("last_message_id"),
+    lastTidyAt: jsonb("last_tidy_at").notNull().default(sql`'{}'::jsonb`),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("memory_review_state_owner_idx").on(table.ownerId),
+    check("memory_review_state_tidy_check", sql`jsonb_typeof(${table.lastTidyAt}) = 'object'`),
   ],
 );
 
@@ -800,6 +922,13 @@ export const connections = pgTable(
     bindings: jsonb("bindings").notNull(),
     encryptedToken: text("encrypted_token").notNull(),
     tokenHint: text("token_hint").notNull(),
+    // TASK-088. A GitHub App sign-in stores a refresh token and expiries too. `source` tells the UI which
+    // sign-in path created the row; `status` becomes `expired` when the refresh token is rejected.
+    encryptedRefreshToken: text("encrypted_refresh_token"),
+    tokenExpiresAt: timestamp("token_expires_at", { withTimezone: true }),
+    refreshExpiresAt: timestamp("refresh_expires_at", { withTimezone: true }),
+    source: text("source").notNull().default("pasted"),
+    status: text("status").notNull().default("active"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -809,6 +938,41 @@ export const connections = pgTable(
     check("connections_preset_check", sql`${table.preset} in ('github', 'custom')`),
     check("connections_label_check", sql`char_length(${table.label}) between 1 and 60`),
     check("connections_bindings_check", sql`jsonb_typeof(${table.bindings}) = 'array' and jsonb_array_length(${table.bindings}) between 1 and 4`),
+    check("connections_source_check", sql`${table.source} in ('pasted', 'github_app')`),
+    check("connections_status_check", sql`${table.status} in ('active', 'expired')`),
+  ],
+);
+
+// TASK-088. One pending GitHub App device sign-in per agent. The device code is encrypted and never leaves the
+// server; the UI only sees the short user code, the link and the state.
+export const githubDeviceFlows = pgTable(
+  "github_device_flows",
+  {
+    id: uuid("id").primaryKey(),
+    ownerId: uuid("owner_id").notNull(),
+    agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+    label: text("label").notNull(),
+    encryptedDeviceCode: text("encrypted_device_code").notNull(),
+    userCode: text("user_code").notNull(),
+    verificationUri: text("verification_uri").notNull(),
+    intervalSeconds: integer("interval_seconds").notNull(),
+    status: text("status").notNull().default("pending"),
+    errorCode: text("error_code"),
+    connectionId: uuid("connection_id").references(() => connections.id, { onDelete: "set null" }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("github_device_flows_owner_idx").on(table.ownerId),
+    index("github_device_flows_agent_idx").on(table.ownerId, table.agentId),
+    index("github_device_flows_status_idx").on(table.status, table.expiresAt),
+    check("github_device_flows_label_check", sql`char_length(${table.label}) between 1 and 60`),
+    check("github_device_flows_user_code_check", sql`${table.userCode} ~ '^[A-Z0-9-]{4,32}$'`),
+    check("github_device_flows_uri_check", sql`${table.verificationUri} ~ '^https://github\\.com/'`),
+    check("github_device_flows_interval_check", sql`${table.intervalSeconds} between 1 and 60`),
+    check("github_device_flows_status_check", sql`${table.status} in ('pending', 'connected', 'expired', 'denied', 'error')`),
+    check("github_device_flows_error_check", sql`${table.errorCode} is null or char_length(${table.errorCode}) between 1 and 64`),
   ],
 );
 

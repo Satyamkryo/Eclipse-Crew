@@ -6,14 +6,22 @@ import { ChevronLeft, FileText, Hand, Loader2, Minimize2, Monitor, ShieldCheck, 
 import { Button } from "@/components/ui/button";
 import { AstraBadge } from "@/components/ui/astra-badge";
 
+type TakeoverCheck = {
+  available: boolean;
+  eligible: boolean;
+  onPointerDown: (event: React.PointerEvent) => void;
+  onKeyDown: (event: React.KeyboardEvent) => void;
+  onRequest: () => void;
+};
+
 type Props = {
   agentName: string;
   astraMode: boolean;
   status: "connecting" | "live" | "error";
   takenOver: boolean;
   busy: boolean;
-  // Phones (< 768 px) are view-only here: no Take over button and no input.
-  phone: boolean;
+  // The shared keyboard+mouse input check from LiveView (same state inline and expanded).
+  takeover: TakeoverCheck;
   modelName?: string;
   // Epoch ms when the stream became live, or null.
   connectedAt: number | null;
@@ -25,7 +33,6 @@ type Props = {
   teachControls?: ReactNode;
   // Forwards keys to the desktop during a takeover (the same handler the inline view uses).
   onScreenKeyDown: (event: React.KeyboardEvent) => void;
-  onTakeOver: () => void;
   onHandBack: () => void;
   onExit: () => void;
 };
@@ -44,11 +51,10 @@ function initials(name: string) {
 
 // The expanded desktop view (docs/DESIGN.md). It fills the app window, never uses the browser Fullscreen API, and holds
 // the same stream element as the inline view, so nothing reconnects and a takeover stays active.
-export function ExpandedView({ agentName, astraMode, status, takenOver, busy, phone, modelName, connectedAt, error, slotRef, overlay, teachControls, onScreenKeyDown, onTakeOver, onHandBack, onExit }: Props) {
+export function ExpandedView({ agentName, astraMode, status, takenOver, busy, takeover, modelName, connectedAt, error, slotRef, overlay, teachControls, onScreenKeyDown, onHandBack, onExit }: Props) {
   const layer = useRef<HTMLDivElement>(null);
   const exitButton = useRef<HTMLButtonElement>(null);
   const [now, setNow] = useState(() => Date.now());
-  const canTakeOver = status === "live" && !phone;
   const statusLabel = status === "live" ? "Live" : status === "connecting" ? "Connecting…" : "Offline";
 
   useEffect(() => {
@@ -58,7 +64,7 @@ export function ExpandedView({ agentName, astraMode, status, takenOver, busy, ph
 
   // The workspace behind stays visible to nobody: no focus, no clicks, hidden from assistive tech while this is open.
   useEffect(() => {
-    const background = document.querySelector<HTMLElement>("main[aria-label=\"Eclipse Crew workspace\"]");
+    const background = document.querySelector<HTMLElement>("main[aria-label=\"Eclipse Crew\"]");
     if (background) background.inert = true;
     exitButton.current?.focus();
     return () => { if (background) background.inert = false; };
@@ -76,12 +82,20 @@ export function ExpandedView({ agentName, astraMode, status, takenOver, busy, ph
     else if (!event.shiftKey && current === last) { event.preventDefault(); first.focus(); }
   };
 
-  const controlButton = status === "live" && (takenOver || canTakeOver) && (
-    <Button size="sm" variant={takenOver ? "primary" : "secondary"} disabled={busy} onClick={takenOver ? onHandBack : onTakeOver}>
+  const controlButton = status === "live" && (takenOver ? (
+    <Button size="sm" variant="primary" disabled={busy} onClick={onHandBack}>
       {busy ? <Loader2 aria-hidden="true" className="size-4 animate-spin" /> : <Hand aria-hidden="true" className="size-4" />}
-      {takenOver ? "Hand back" : "Take over"}
+      Hand back
     </Button>
-  );
+  ) : takeover.available ? (
+    <Button size="sm" variant="secondary" disabled={busy} aria-describedby="expanded-takeover-check"
+      onPointerDown={takeover.onPointerDown} onKeyDown={takeover.onKeyDown} onClick={takeover.onRequest}>
+      {busy ? <Loader2 aria-hidden="true" className="size-4 animate-spin" /> : <Hand aria-hidden="true" className="size-4" />}
+      Take over
+    </Button>
+  ) : (
+    <span id="expanded-takeover-check" className="max-w-40 text-right text-xs text-muted-foreground">Connect a keyboard and mouse to take over</span>
+  ));
 
   return createPortal(
     <div ref={layer} role="dialog" aria-modal="true" aria-label={`${agentName} desktop, full screen`} onKeyDown={trapFocus}
@@ -121,6 +135,11 @@ export function ExpandedView({ agentName, astraMode, status, takenOver, busy, ph
             {status === "live" && !takenOver && <span className="pointer-events-none absolute bottom-2 right-2 rounded-md bg-surface px-2 py-1 text-xs text-muted-foreground">view-only</span>}
           </div>
           {error && status === "live" && <p role="alert" className="border-t border-border bg-background px-3 py-2 text-xs text-danger">{error}</p>}
+          {status === "live" && !takenOver && takeover.available && !takeover.eligible && (
+            <p id="expanded-takeover-check" className="border-t border-border bg-background px-3 py-2 text-xs text-muted-foreground">
+              Input check: click Take over with your mouse, then press Enter to confirm your keyboard. This check never sends anything to the desktop.
+            </p>
+          )}
         </div>
 
         <aside aria-label="Desktop status" className="hidden min-h-0 flex-col gap-4 overflow-y-auto lg:flex">

@@ -40,6 +40,25 @@ test("captured state holds the task, history, document references and counters, 
   assert.deepEqual(parseState(text), state);
 });
 
+test("value names survive a checkpoint, but an extracted value never does", () => {
+  const { text, state } = captureState(snapshot({ valueNames: ["headline", "price"],
+    previous: { action: "extract", name: "headline", value: "TOP SECRET HEADLINE", expect: "saved" } }));
+  assert.deepEqual(state.valueNames, ["headline", "price"]);
+  assert.equal(text.includes("TOP SECRET HEADLINE"), false);
+  assert.match(state.previous, /\[19 characters\]/);
+  assert.ok(parseState(text));
+  const old = { ...state }; delete old.valueNames;
+  assert.ok(parseState(JSON.stringify(old)), "older checkpoints without value names still parse");
+  assert.equal(parseState(JSON.stringify({ ...state, valueNames: ["UPPER", "a".repeat(33)] })), null);
+});
+
+test("a search step keeps its hit count and never its query or passages", () => {
+  const { text, state } = captureState(snapshot({ history: [{ step: 1, action: "search_document", file: "report.pdf", hits: 3, result: "executed" }] }));
+  assert.equal(state.history[0].hits, 3);
+  assert.equal(text.includes("termination"), false);
+  assert.ok(parseState(text));
+});
+
 test("a stored state is refused when it has unknown fields, wrong types or is too large", () => {
   const { text, state } = captureState(snapshot());
   for (const bad of [{ ...state, extra: 1 }, { ...state, v: 2 }, { ...state, history: [{ step: 1, action: "click", result: "weird" }] }, { ...state, counters: { ...state.counters, repeats: -1 }, }, { ...state, history: [{ step: 1, action: "click", result: "executed", secret: "x" }] }, "text", null])
@@ -87,6 +106,7 @@ test.before(async () => {
   assert.ok(adminPool, "database became reachable");
   for (const file of ["0009_receipts_runs_steps.sql", "0012_quick_molten_man.sql"])
     await adminPool.query(readFileSync(new URL(`../drizzle/${file}`, import.meta.url), "utf8").replaceAll("--> statement-breakpoint", ""));
+  await adminPool.query(`ALTER TABLE runs ADD COLUMN heartbeat_at timestamptz, ADD COLUMN cancel_requested_at timestamptz;`);
   await adminPool.query(`CREATE ROLE app_role LOGIN PASSWORD '${password}'; GRANT SELECT, INSERT, UPDATE ON runs TO app_role; GRANT SELECT, INSERT ON steps TO app_role; GRANT SELECT, INSERT ON checkpoints TO app_role;`);
   appPool = new pg.Pool({ host: "127.0.0.1", port, user: "app_role", password, database: "postgres" });
   app = drizzle({ client: appPool });

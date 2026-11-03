@@ -23,7 +23,8 @@ export async function POST(request: Request, { params }: { params: Promise<{ age
     if (!card) return Response.json({ error: "file_not_found" }, { status: 404, headers: NO_STORE });
     if (!canOpenOnDesktop(card.name, card.kind)) return Response.json({ error: "type_blocked" }, { status: 415, headers: NO_STORE });
     const status = await desktopSession(agent.data, session.ownerId, "session.status");
-    if (status.state !== "running" || !status.generation) return Response.json({ error: "session_not_running" }, { status: 409, headers: NO_STORE });
+    if (status.state !== "running" || status.browser !== "running" || !status.generation)
+      return Response.json({ error: "session_not_running" }, { status: 409, headers: NO_STORE });
     await desktopCommand(agent.data, session.ownerId, status.generation, "file.open", { name: card.name });
     return Response.json({ ok: true }, { headers: NO_STORE });
   } catch (error) {

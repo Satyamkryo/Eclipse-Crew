@@ -10,8 +10,11 @@ import { setTimeout as delay } from "node:timers/promises";
 import { validateIds, validateRegistry } from "./agent-store.mjs";
 import { OperationSchema, WorkerOperationSchema, resultFor, validatePng } from "./controller-schema.mjs";
 import { fingerprint, readSnapshot, sessionCookies, writeSnapshot } from "./cookie-snapshot.mjs";
+import { seedDesktop } from "./desktop-config.mjs";
+import { AgentAudio } from "./agent-audio.mjs";
+import { BROWSER_EXECUTABLE, BROWSER_PROFILE } from "./browser-build.mjs";
 import { checkOpenable } from "./outbox-reader.mjs";
-import { takeSnapshot, verifySnapshot } from "./page-snapshot.mjs";
+import { collectFrames, measureOrigin, takeSnapshot, verifySnapshot } from "./page-snapshot.mjs";
 import { startSocketToTcpForwarder, startTcpToSocketForwarder } from "./egress-relay.mjs";
 
 const COOKIE_SAVE_INTERVAL_MS = 30_000;
@@ -79,7 +82,79 @@ async function cleanDisplay(record, tracked) {
   catch (e) { if (e.code !== "ENOENT") throw e; }
   await unlink(lock);
 }
-export async function startSession(input, { onFailure = () => {}, onRuntime = () => {} } = {}) {
+async function sweepSessionProcesses(uid) {
+  // Dock-launched xterm children are not in the worker's tracked list. Only verified
+  // agent-owned native desktop programs are reaped here; nothing else.
+  const native = new Set(["xterm", "pcmanfm", "tint2", "dbus-daemon", "pulseaudio"]);
+  const isNative = (argv) => native.has((argv[0] ?? "").split("/").pop());
+  for (const item of await readdir("/proc")) {
+    const pid = +item;
+    if (!Number.isInteger(pid) || pid < 1 || pid === process.pid) continue;
+    const identity = await processIdentity(pid);
+    if (identity?.uid !== uid || identity.zombie) continue;
+    let argv; try { argv = (await readFile(`/proc/${pid}/cmdline`, "utf8")).split("\0").filter(Boolean); } catch { continue; }
+    if (!isNative(argv)) continue;
+    try { process.kill(pid, "SIGKILL"); } catch { /* already stopped */ }
+  }
+  for (let i = 0; i < 20; i++) {
+    let alive = false;
+    for (const item of await readdir("/proc")) {
+      const pid = +item; if (!Number.isInteger(pid) || pid < 1 || pid === process.pid) continue;
+      const identity = await processIdentity(pid);
+      if (identity?.uid !== uid || identity.zombie) continue;
+      let argv; try { argv = (await readFile(`/proc/${pid}/cmdline`, "utf8")).split("\0").filter(Boolean); } catch { continue; }
+      if (isNative(argv)) { alive = true; break; }
+    }
+    if (!alive) return;
+    await delay(50);
+  }
+}
+async function findBrowserPid(profile, uid) {
+  // 15 s covers a cold first start on a freshly built image; the caller is still bounded by the lifecycle timeout.
+  for (let i = 0; i < 150; i++) {
+    for (const item of await readdir("/proc")) {
+      const pid = +item; if (!Number.isInteger(pid) || pid < 1) continue;
+      const identity = await processIdentity(pid);
+      if (identity?.uid !== uid || identity.zombie) continue;
+      let argv; try { argv = (await readFile(`/proc/${pid}/cmdline`, "utf8")).split("\0").filter(Boolean); } catch { continue; }
+      // Chromium re-execs with its whole command line packed into argv[0], so inspect the joined text.
+      const command = argv.join(" ");
+      if (command.includes("--type=")) continue;
+      if (!command.includes(BROWSER_EXECUTABLE)) continue;
+      const at = argv.findIndex((arg) => arg === "--user-data-dir");
+      if (command.includes(`--user-data-dir=${profile}`) || at >= 0 && argv[at + 1] === profile) return pid;
+    }
+    await delay(100);
+  }
+  return null;
+}
+function dbusSessionConfig(socketPath) {
+  // Private session bus with no servicedir, so nothing can activate a service.
+  return `<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN" "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>session</type>
+  <listen>unix:path=${socketPath}</listen>
+  <auth>EXTERNAL</auth>
+  <policy context="default">
+    <allow user="*"/>
+    <allow own="*"/>
+    <allow send_type="method_call"/>
+    <allow send_type="signal"/>
+    <allow send_type="method_return"/>
+    <allow send_type="error"/>
+    <allow receive_type="method_call"/>
+    <allow receive_type="method_return"/>
+    <allow receive_type="error"/>
+    <allow receive_type="signal"/>
+  </policy>
+  <limit name="max_connections_per_user">64</limit>
+  <limit name="max_message_size">16777216</limit>
+</busconfig>
+`;
+}
+// Sandbox, graphics and browser are independent. The worker process is the sandbox: shell and file work need it,
+// while Xvfb/Chromium/VNC can be started, stopped or lost without ending it.
+export async function startSession(input, { onRuntime = () => {}, onEvent = () => {}, autoStart = true } = {}) {
   const record = sessionRecord(input); const uid = process.getuid();
   if (uid !== record.uid || process.getgid() !== record.gid || process.getgroups().some((group) => group !== record.gid)) fail("worker_identity_invalid");
   const status = await readFile("/proc/self/status", "utf8");
@@ -90,18 +165,28 @@ export async function startSession(input, { onFailure = () => {}, onRuntime = ()
   if (interfaces.length !== 1 || interfaces[0] !== "lo") fail("namespace_required");
   const nsDirectory = `/run/eclipse-ns/${record.agentId}`;
   await privateDirectory(record.home, uid); await privateDirectory(`${record.home}/.config`, uid);
-  const profile = `${record.home}/.config/chromium`; await privateDirectory(profile, uid); await privateDirectory(record.downloads, uid);
-  await recoverProfile(profile, uid);
-  // A conflicting X server is never removed or adopted.
-  for (const name of [`/tmp/.X${record.display}-lock`, `/tmp/.X11-unix/X${record.display}`]) {
-    try { await lstat(name); fail("display_conflict"); } catch (e) { if (e.code !== "ENOENT") throw e; }
-  }
+  const profile = `${record.home}/${BROWSER_PROFILE}`; await privateDirectory(profile, uid); await privateDirectory(record.downloads, uid);
   const directory = await mkdtemp(runtimePrefix(record.uid)); const original = await lstat(directory);
   onRuntime(directory);
-  const authority = `${directory}/Xauthority`; const children = []; let context; let closing = false; let ready = false;
+  const authority = `${directory}/Xauthority`;
+  const env = { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: record.home, USER: record.name, LOGNAME: record.name, LANG: "C.UTF-8",
+    XDG_RUNTIME_DIR: `${directory}/runtime`, XDG_CONFIG_HOME: `${record.home}/.config`, XDG_DATA_HOME: `${record.home}/.local/share`,
+    XDG_CACHE_HOME: `${record.home}/.cache`, DBUS_SESSION_BUS_ADDRESS: `unix:path=${directory}/runtime/bus`,
+    DBUS_SYSTEM_BUS_ADDRESS: "disabled:", TERM: "xterm-256color", TMPDIR: directory };
+  const command = (executable, args, extra = {}) => spawnSync(executable, args, { env, stdio: "ignore", timeout: 1000, ...extra });
+  const audio = new AgentAudio({ directory, home: record.home, uid, env });
+  let children = []; let context = null; let teach = null; let vnc = null; let vncForwarder = null; let vncAbort = new AbortController();
+  let graphics = "stopped", browser = "stopped"; let sandboxReady = false; let closing = false;
+  let graphicsClosing = false, browserClosing = false, browserPid = null;
+  let graphicsStart = null, browserStart = null, lifecycle = Promise.resolve();
+  let egressForwarder; let gatewayForwarder;
   // Session cookies (no expiry) are not kept by Chromium's profile; see cookie-snapshot.mjs.
   let cookieTimer; let savedCookies = ""; let savingCookies = false;
-  let egressForwarder; let gatewayForwarder;
+  const emit = (value) => { try { onEvent(value); } catch { /* events are informational */ } };
+  const serialize = (work) => { const next = lifecycle.catch(() => {}).then(work); lifecycle = next.catch(() => {}); return next; };
+  const state = () => ({ agentId: record.agentId, state: sandboxReady ? "running" : "starting",
+    sandbox: sandboxReady ? "running" : "starting", graphics, browser, display: record.display,
+    ...(vnc && graphics === "running" ? { vncPort: vnc.vncPort, vncReady: true } : {}) });
   const saveCookies = async () => {
     if (!context || savingCookies) return; savingCookies = true;
     try {
@@ -109,63 +194,195 @@ export async function startSession(input, { onFailure = () => {}, onRuntime = ()
       if (text !== savedCookies) { await writeSnapshot(profile, cookies); savedCookies = text; }
     } catch { /* A failed save never affects the session; the next save retries. */ } finally { savingCookies = false; }
   };
-  const env = { PATH: "/usr/local/bin:/usr/bin:/bin", HOME: record.home, USER: record.name, LOGNAME: record.name, LANG: "C.UTF-8",
-    DISPLAY: `:${record.display}`, XAUTHORITY: authority, XDG_RUNTIME_DIR: `${directory}/runtime`, TMPDIR: directory };
-  const command = (executable, args, extra = {}) => spawnSync(executable, args, { env, stdio: "ignore", timeout: 1000, ...extra });
-  const start = (executable, args) => {
-    const child = spawn(executable, args, { env, stdio: "ignore", shell: false }); children.push(child);
-    child.once("error", () => { if (!closing) onFailure("session_component_failed"); });
-    child.once("exit", () => { if (ready && !closing) onFailure("session_component_failed"); }); return child;
+  const startChild = (role, executable, args) => {
+    const child = spawn(executable, args, { env, stdio: "ignore", shell: false });
+    const item = { child, role, pid: child.pid }; children.push(item);
+    const lost = () => {
+      if (closing) return;
+      if (role === "graphics" && !graphicsClosing && (graphics === "running" || graphics === "starting")) {
+        graphics = "failed"; emit({ state: "desktop_failed", reason: "session_component_failed" });
+      }
+    };
+    child.once("error", lost); child.once("exit", lost); return child;
   };
-  const until = async (probe, code) => {
-    for (let i = 0; i < 60; i++) { if (children.some((c) => c.exitCode !== null || c.signalCode !== null)) fail(code); if (probe()) return; await delay(100); }
+  const roleAlive = (role) => children.some((item) => item.role === role && item.child.exitCode === null && item.child.signalCode === null);
+  const untilRole = async (role, probe, code) => {
+    for (let i = 0; i < 60; i++) { if (!roleAlive(role)) fail(code); if (probe()) return; await delay(100); }
     fail(code);
   };
-  const close = async () => {
-    if (closing) return; closing = true;
-    clearInterval(cookieTimer);
-    await egressForwarder?.close().catch(() => {});
-    await gatewayForwarder?.close().catch(() => {});
-    if (context && ready) { savingCookies = false; await Promise.race([saveCookies(), delay(1500)]); }
-    if (context) await Promise.race([context.close().catch(() => {}), delay(3000)]);
-    for (const child of [...children].reverse()) { try { child.kill("SIGTERM"); } catch { /* already stopped */ } }
-    for (let i = 0; i < 20 && children.some((c) => c.exitCode === null && c.signalCode === null); i++) await delay(50);
-    for (const child of children) if (child.exitCode === null && child.signalCode === null) { try { child.kill("SIGKILL"); } catch { /* already stopped */ } }
-    for (let i = 0; i < 20 && children.some((c) => c.exitCode === null && c.signalCode === null); i++) await delay(50);
-    await cleanDisplay(record, children.map((child) => ({ pid: child.pid })));
-    const st = await lstat(directory);
-    if (st.isDirectory() && st.uid === uid && st.ino === original.ino && await realpath(directory) === directory) await rm(directory, { recursive: true });
+  const windowSearch = (pattern) => {
+    const result = command("xdotool", ["search", "--classname", pattern], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+    return result.status === 0 && result.stdout.trim().length > 0;
+  };
+  const stopGraphicsChildren = async () => {
+    graphicsClosing = true;
+    vncAbort.abort();
+    await vnc?.close().catch(() => {}); vnc = null;
+    await vncForwarder?.close().catch(() => {}); vncForwarder = null;
+    for (const item of [...children].reverse()) if (item.role === "graphics") { try { item.child.kill("SIGTERM"); } catch { /* already stopped */ } }
+    for (let i = 0; i < 20 && children.some((item) => item.role === "graphics" && item.child.exitCode === null && item.child.signalCode === null); i++) await delay(50);
+    for (const item of children) if (item.role === "graphics" && item.child.exitCode === null && item.child.signalCode === null) { try { item.child.kill("SIGKILL"); } catch { /* already stopped */ } }
+    for (let i = 0; i < 20 && children.some((item) => item.role === "graphics" && item.child.exitCode === null && item.child.signalCode === null); i++) await delay(50);
+    await sweepSessionProcesses(uid);
+    await audio.stop().catch(() => {});
+    await cleanDisplay(record, children.map((item) => ({ pid: item.pid }))).catch(() => {});
+    await unlink(authority).catch((error) => { if (error.code !== "ENOENT") throw error; });
+    children = children.filter((item) => item.role !== "graphics");
+  };
+  const stopBrowser = async () => {
+    if (browser === "stopped" && !context && !browserPid) return;
+    browserClosing = true;
+    clearInterval(cookieTimer); cookieTimer = undefined;
+    if (context && browser === "running") { savingCookies = false; await Promise.race([saveCookies(), delay(1500)]); }
+    const current = context; context = null; teach = null;
+    if (current) await Promise.race([current.close().catch(() => {}), delay(3000)]);
+    // A close can hang behind a renderer; only the verified browser process is ever signalled.
+    const pid = browserPid ?? await findBrowserPid(profile, uid).catch(() => null);
+    if (pid) {
+      const identity = await processIdentity(pid);
+      if (identity && identity.uid === uid && !identity.zombie) {
+        try { process.kill(pid, "SIGTERM"); } catch { /* exited */ }
+        for (let i = 0; i < 20; i++) { const now = await processIdentity(pid); if (!now || now.zombie) break; await delay(50); }
+        const now = await processIdentity(pid);
+        if (now && !now.zombie) { try { process.kill(pid, "SIGKILL"); } catch { /* exited */ } }
+      }
+    }
+    browserPid = null;
+    await unlink(`${directory}/browser.pid`).catch((error) => { if (error.code !== "ENOENT") throw error; });
+    browser = "stopped"; browserClosing = false;
+    if (!closing) emit({ state: "browser_stopped" });
+  };
+  const ensureGraphics = async () => {
+    if (graphics === "running") return;
+    if (graphicsStart) return graphicsStart;
+    graphicsStart = (async () => {
+      graphics = "starting"; graphicsClosing = false; emit({ state: "desktop_starting" });
+      // A conflicting X server is never removed or adopted.
+      for (const name of [`/tmp/.X${record.display}-lock`, `/tmp/.X11-unix/X${record.display}`]) {
+        try { await lstat(name); fail("display_conflict"); } catch (e) { if (e.code !== "ENOENT") throw e; }
+      }
+      await mkdir(`${directory}/runtime`, { mode: 0o700 }).catch((error) => { if (error.code !== "EEXIST") throw error; });
+      if (!authority) fail("unsafe_session_path");
+      await writeFile(authority, "", { flag: "wx", mode: 0o600 }).catch((error) => { if (error.code !== "EEXIST") throw error; });
+      const result = command("xauth", ["-f", authority], { input: `add :${record.display} MIT-MAGIC-COOKIE-1 ${randomBytes(16).toString("hex")}\n`, stdio: ["pipe", "ignore", "ignore"] });
+      if (result.status !== 0) fail("xauthority_failed");
+      env.DISPLAY = `:${record.display}`; env.XAUTHORITY = authority;
+      startChild("graphics", "Xvfb", [`:${record.display}`, "-screen", "0", "1024x768x24", "-nolisten", "tcp", "-auth", authority, "-noreset"]);
+      await untilRole("graphics", () => command("xdpyinfo", []).status === 0, "display_start_failed");
+      if (command("xdpyinfo", [], { env: { ...env, XAUTHORITY: `${directory}/absent` } }).status === 0) fail("display_authentication_failed");
+      startChild("graphics", "openbox", ["--sm-disable"]);
+      await untilRole("graphics", () => /window id # 0x[1-9a-f]/i.test(command("xprop", ["-root", "_NET_SUPPORTING_WM_CHECK"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).stdout ?? ""), "window_manager_start_failed");
+      // TASK-077. Seed only missing agent-local desktop config, then start the private bus
+      // before the native desktop children so nothing can reach a host or system bus.
+      await seedDesktop({ home: record.home, downloads: record.downloads, uid });
+      const busPath = `${directory}/runtime/bus`;
+      await writeFile(`${directory}/dbus.conf`, dbusSessionConfig(busPath), { flag: "wx", mode: 0o600 }).catch((error) => { if (error.code !== "EEXIST") throw error; });
+      startChild("graphics", "dbus-daemon", ["--config-file", `${directory}/dbus.conf`, "--nofork", "--nopidfile"]);
+      await untilRole("graphics", () => command("test", ["-S", busPath]).status === 0, "session_component_failed");
+      const busStat = await lstat(busPath);
+      if (!busStat.isSocket() || busStat.uid !== uid) fail("session_component_failed");
+      if (vncAbort.signal.aborted) vncAbort = new AbortController();
+      const { startVnc } = await import("./vnc-session.mjs");
+      vnc = await startVnc({ directory, display: record.display, signal: vncAbort.signal, onFailure: () => {
+        if (!closing && !graphicsClosing && graphics === "running") { graphics = "failed"; emit({ state: "desktop_failed", reason: "session_component_failed" }); }
+      } });
+      // TASK-071: the controller reaches this pathname socket; x11vnc stays on the namespace loopback.
+      vncForwarder = await startSocketToTcpForwarder({ socketPath: `${nsDirectory}/vnc.sock`, port: vnc.vncPort });
+      emit({ state: "vnc_ready", vncPort: vnc.vncPort, password: vnc.password });
+      startChild("graphics", "pcmanfm", ["--desktop", "--profile=default"]);
+      await untilRole("graphics", () => windowSearch("[Pp]cmanfm"), "session_component_failed");
+      startChild("graphics", "tint2", ["-c", `${record.home}/.config/tint2/tint2rc`]);
+      await untilRole("graphics", () => windowSearch("[Tt]int2"), "session_component_failed");
+      graphics = "running"; emit({ state: "desktop_running", display: record.display });
+    })().catch(async (error) => {
+      await stopGraphicsChildren().catch(() => {});
+      graphics = "failed";
+      if (!closing) emit({ state: "desktop_failed", reason: SESSION_FAILURES.has(error.message) ? error.message : "session_component_failed" });
+      throw error;
+    }).finally(() => { graphicsStart = null; });
+    return graphicsStart;
+  };
+  const ensureBrowser = async () => {
+    if (browser === "running" && context) return;
+    if (browserStart) return browserStart;
+    browserStart = (async () => {
+      await ensureGraphics();
+      browser = "starting"; browserClosing = false; emit({ state: "browser_starting" });
+      // TASK-079. The private speaker starts before Chromium; a failed speaker never blocks the browser.
+      try { await audio.start(); } catch { /* hearing unavailable */ }
+      await recoverProfile(profile, uid);
+      const { chromium } = await import("playwright-core");
+      try {
+        context = await chromium.launchPersistentContext(profile, { executablePath: BROWSER_EXECUTABLE, chromiumSandbox: true,
+          headless: false, viewport: null, env, downloadsPath: record.downloads, timeout: 15000,
+          // TASK-045: the token is Playwright's proxy password (Chromium answers the 407 in memory, never argv/env).
+          // Loopback bypass keeps the mock vendor fixture reachable; shared loopback is a TASK-071 limit.
+          // TASK-071: plain loopback proxy; the supervisor relay adds the token outside this namespace.
+          proxy: { server: "http://127.0.0.1:3128", bypass: "127.0.0.1,localhost" },
+          args: ["--window-position=0,0", "--window-size=1024,768", "--disable-dev-shm-usage", "--disable-background-networking", "--no-first-run"] });
+      } catch (cause) {
+        browser = "failed"; emit({ state: "browser_failed", reason: "browser_start_failed" });
+        throw Error("browser_start_failed", { cause });
+      }
+      try {
+        const restored = await readSnapshot(profile, uid);
+        if (restored.length) await context.addCookies(restored);
+      } catch { /* Start without restored cookies rather than failing the browser. */ }
+      try { savedCookies = fingerprint(sessionCookies(await context.cookies())); } catch { savedCookies = ""; }
+      cookieTimer = setInterval(() => { void saveCookies(); }, COOKIE_SAVE_INTERVAL_MS); cookieTimer.unref();
+      context.once("close", () => {
+        if (closing || browserClosing) return;
+        clearInterval(cookieTimer); cookieTimer = undefined; context = null; teach = null; browser = "stopped";
+        emit({ state: "browser_stopped" });
+      });
+      // TASK-077. The dock focuses the browser by the real process, never by window title.
+      browserPid = await findBrowserPid(profile, uid);
+      if (!browserPid) {
+        await Promise.race([context.close().catch(() => {}), delay(3000)]);
+        context = null; browser = "failed"; emit({ state: "browser_failed", reason: "browser_start_failed" });
+        fail("browser_start_failed");
+      }
+      await writeFile(`${directory}/browser.pid`, `${browserPid}\n`, { mode: 0o600 });
+      teach = new TeachCapture(context, { env });
+      browser = "running"; emit({ state: "browser_running" });
+    })().catch((error) => { if (browser !== "failed") { browser = "failed"; if (!closing) emit({ state: "browser_failed", reason: "browser_start_failed" }); } throw error; })
+      .finally(() => { browserStart = null; });
+    return browserStart;
+  };
+  const session = {
+    get context() { return context; },
+    get teach() { return teach; },
+    audio,
+    env, display: record.display, directory, home: record.home, nsDirectory,
+    state,
+    startDesktop: () => serialize(async () => { await ensureGraphics(); await ensureBrowser(); return state(); }),
+    stopDesktop: () => serialize(async () => { await stopBrowser(); if (graphics !== "stopped") { await stopGraphicsChildren(); graphics = "stopped"; if (!closing) emit({ state: "desktop_stopped" }); } return state(); }),
+    startBrowser: () => serialize(async () => { await ensureBrowser(); return state(); }),
+    stopBrowser: () => serialize(async () => { await stopBrowser(); return state(); }),
+    async close() {
+      if (closing) return; closing = true;
+      await audio.stop().catch(() => {});
+      await stopBrowser().catch(() => {});
+      if (graphics !== "stopped" || vnc || vncForwarder) { await stopGraphicsChildren().catch(() => {}); graphics = "stopped"; }
+      await egressForwarder?.close().catch(() => {});
+      await gatewayForwarder?.close().catch(() => {});
+      const st = await lstat(directory).catch(() => null);
+      if (st?.isDirectory() && st.uid === uid && st.ino === original.ino && await realpath(directory) === directory) await rm(directory, { recursive: true });
+    },
   };
   try {
+    // The sandbox only needs its private runtime, the egress relays and the agent's config; no display or browser.
     await mkdir(`${directory}/runtime`, { mode: 0o700 }); await writeFile(authority, "", { flag: "wx", mode: 0o600 });
-    const result = command("xauth", ["-f", authority], { input: `add :${record.display} MIT-MAGIC-COOKIE-1 ${randomBytes(16).toString("hex")}\n`, stdio: ["pipe", "ignore", "ignore"] });
-    if (result.status !== 0) fail("xauthority_failed");
-    start("Xvfb", [`:${record.display}`, "-screen", "0", "1024x768x24", "-nolisten", "tcp", "-auth", authority, "-noreset"]);
-    await until(() => command("xdpyinfo", []).status === 0, "display_start_failed");
-    if (command("xdpyinfo", [], { env: { ...env, XAUTHORITY: `${directory}/absent` } }).status === 0) fail("display_authentication_failed");
-    start("openbox", ["--sm-disable"]);
-    await until(() => /window id # 0x[1-9a-f]/i.test(command("xprop", ["-root", "_NET_SUPPORTING_WM_CHECK"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).stdout ?? ""), "window_manager_start_failed");
     egressForwarder = await startTcpToSocketForwarder({ socketPath: `${nsDirectory}/egress.sock` }).catch(() => fail("egress_not_configured"));
     // TASK-073b: git's plain-HTTP gateway stays optional so a session without the supervisor relay still starts.
     gatewayForwarder = await startTcpToSocketForwarder({ port: 3129, socketPath: `${nsDirectory}/gateway.sock` }).catch(() => null);
-    const { chromium } = await import("playwright-core");
-    try { context = await chromium.launchPersistentContext(profile, { executablePath: "/opt/chromium/chrome-linux/chrome", chromiumSandbox: true,
-      headless: false, viewport: null, env, downloadsPath: record.downloads, timeout: 15000,
-      // TASK-045: the token is Playwright's proxy password (Chromium answers the 407 in memory, never argv/env).
-      // Loopback bypass keeps the mock vendor fixture reachable; shared loopback is a TASK-071 limit.
-      // TASK-071: plain loopback proxy; the supervisor relay adds the token outside this namespace.
-      proxy: { server: "http://127.0.0.1:3128", bypass: "127.0.0.1,localhost" },
-      args: ["--window-position=0,0", "--window-size=1024,768", "--disable-dev-shm-usage", "--disable-background-networking", "--no-first-run"] }); }
-    catch (cause) { throw Error("browser_start_failed", { cause }); }
-    try {
-      const restored = await readSnapshot(profile, uid);
-      if (restored.length) await context.addCookies(restored);
-    } catch { /* Start without restored cookies rather than failing the session. */ }
-    try { savedCookies = fingerprint(sessionCookies(await context.cookies())); } catch { savedCookies = ""; }
-    cookieTimer = setInterval(() => { void saveCookies(); }, COOKIE_SAVE_INTERVAL_MS); cookieTimer.unref();
-    context.once("close", () => { if (!closing) onFailure("session_component_failed"); }); ready = true;
-    return { context, env, display: record.display, directory, home: record.home, nsDirectory, close };
-  } catch (e) { await close().catch(() => {}); throw e; }
+    await seedDesktop({ home: record.home, downloads: record.downloads, uid });
+    sandboxReady = true;
+    // Direct callers (tests and the standalone smoke scripts) keep the original one-call graphical session.
+    // The supervisor passes autoStart:false and drives the three lifecycles over the framed pipe.
+    if (autoStart) await session.startDesktop();
+    return session;
+  } catch (e) { await session.close().catch(() => {}); throw e; }
 }
 
 // Safe URL: strip credentials, search, hash — return only origin + pathname
@@ -185,11 +402,11 @@ function pageId(page) {
   if (!pageIds.has(page)) pageIds.set(page, randomUUID());
   return pageIds.get(page);
 }
-function boundedOperation(run) {
+function boundedOperation(run, timeoutMs = OPERATION_TIMEOUT_MS) {
   const controller = new AbortController();
   let timer;
   const deadline = new Promise((_, reject) => {
-    timer = setTimeout(() => { controller.abort(); reject(operationError("uncertain_outcome")); }, OPERATION_TIMEOUT_MS);
+    timer = setTimeout(() => { controller.abort(); reject(operationError("uncertain_outcome")); }, timeoutMs);
   });
   return Promise.race([Promise.resolve().then(() => run(controller.signal)), deadline]).finally(() => clearTimeout(timer));
 }
@@ -313,12 +530,117 @@ async function requireSafeFocus(context, signal) {
 }
 const xKeys = { Control: "ctrl", Alt: "alt", Shift: "shift", Meta: "super", Enter: "Return", Space: "space", Backspace: "BackSpace",
   ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right", PageUp: "Prior", PageDown: "Next" };
+
+// TASK-084. Page helpers. None of them returns page text: find_text returns a count, select changes one control.
+const normalizeSpace = (value) => String(value ?? "").replace(/\s+/g, " ").trim();
+function deepElementAt([x, y]) {
+  let hit = document.elementFromPoint(x, y);
+  const walked = new Set();
+  while (hit && hit.shadowRoot && !walked.has(hit.shadowRoot)) {
+    walked.add(hit.shadowRoot);
+    const deeper = hit.shadowRoot.elementFromPoint(x, y);
+    if (!deeper || deeper === hit) break;
+    hit = deeper;
+  }
+  return hit ?? null;
+}
+// A frame that holds password, one-time-code or card fields is sensitive: none of its text ever matches a find_text.
+function frameHasSensitiveFields() {
+  const seen = new Set();
+  const check = (root) => {
+    for (const input of root.querySelectorAll("input")) {
+      const type = (input.type || "").toLowerCase();
+      const autocomplete = (input.getAttribute("autocomplete") || "").toLowerCase();
+      if (type === "password" || /(?:^|\s)cc-|(?:^|\s)(?:one-time-code|current-password|new-password)/.test(autocomplete)) return true;
+    }
+    for (const element of root.querySelectorAll("*")) {
+      if (element.shadowRoot && !seen.has(element.shadowRoot)) {
+        seen.add(element.shadowRoot);
+        if (check(element.shadowRoot)) return true;
+      }
+    }
+    return false;
+  };
+  return check(document);
+}
+async function findText(page, text) {
+  const wanted = normalizeSpace(text);
+  if (!wanted) return { found: false, count: 0, source_tag: "tool", untrusted: true };
+  const infos = await collectFrames(page);
+  let count = 0;
+  try {
+    for (const info of infos) {
+      if (info.isPayment) continue;
+      if (await info.frame.evaluate(frameHasSensitiveFields).catch(() => true)) continue;
+      let matches;
+      try { matches = await info.frame.getByText(text, { exact: false }).all(); } catch { continue; }
+      for (const locator of matches.slice(0, 200)) {
+        try {
+          // getByText is case-insensitive; the value is only saved when the visible text contains it exactly.
+          if (normalizeSpace(await locator.textContent({ timeout: 1000 })).includes(wanted)) count += 1;
+        } catch { /* detached or hidden */ }
+        if (count >= 1000) break;
+      }
+      if (count >= 1000) break;
+    }
+  } finally {
+    for (const info of infos) await info.element?.dispose().catch(() => {});
+  }
+  return { found: count > 0, count, source_tag: "tool", untrusted: true };
+}
+async function choosePage(pages, wantedPageId) {
+  if (wantedPageId) {
+    const found = pages.find((candidate) => pageId(candidate) === wantedPageId);
+    if (!found) throw operationError("page_not_found");
+    return found;
+  }
+  if (pages.length === 1) return pages[0];
+  for (const candidate of pages) if (await candidate.evaluate(() => document.hasFocus())) return candidate;
+  throw operationError("page_not_found");
+}
+async function selectAt(session, page, command, signal) {
+  const move = (x, y) => desktopProcess(session, "xdotool", ["mousemove", String(x), String(y)], { signal });
+  const origin = await measureOrigin({ page, move, fail: operationError });
+  const infos = await collectFrames(page);
+  const local = { x: command.x - origin.x, y: command.y - origin.y };
+  let chosen = null;
+  for (const info of infos) {
+    const area = info.visibleBox;
+    if (area.width < 1 || area.height < 1) continue;
+    if (local.x < area.x || local.x >= area.x + area.width || local.y < area.y || local.y >= area.y + area.height) continue;
+    if (!chosen || info.depth >= chosen.depth) chosen = info;
+  }
+  let handle;
+  try {
+    if (!chosen) throw operationError("target_not_found");
+    handle = await chosen.frame.evaluateHandle(deepElementAt, [Math.round(local.x - chosen.offset.x), Math.round(local.y - chosen.offset.y)]);
+    const element = handle.asElement();
+    if (!element) throw operationError("target_not_found");
+    if (!(await element.evaluate((node) => node.tagName === "SELECT"))) throw operationError("target_not_found");
+    if (signal.aborted) throw operationError("uncertain_outcome");
+    try { await element.selectOption({ label: command.option }, { timeout: OPERATION_TIMEOUT_MS }); }
+    catch {
+      try { await element.selectOption({ value: command.option }, { timeout: OPERATION_TIMEOUT_MS }); }
+      catch { throw operationError("option_not_found"); }
+    }
+    return { ok: true };
+  } finally {
+    await handle?.dispose().catch(() => {});
+    for (const info of infos) await info.element?.dispose().catch(() => {});
+  }
+}
 async function performOperation(session, command, signal, trustedOwnerInput) {
   const { operation } = command;
   if (operation === "shell.run") {
     // TASK-073. The command runs as this worker user, inside this worker's network namespace.
     const { runShell } = await import("./shell-runner.mjs");
     return runShell({ command: command.command, cwd: command.cwd, timeout: command.timeout ?? 60, home: session.home, env: session.env });
+  }
+  if (operation === "audio.capture") {
+    // TASK-079. Capture only this session's monitor; the app validates the WAV again before transcription.
+    if (!session.audio) throw operationError("audio_unavailable");
+    const captured = await session.audio.capture(command.seconds, signal);
+    return { base64: captured.wav.toString("base64"), mime: "audio/wav", durationMs: captured.durationMs, source_tag: "tool", untrusted: true };
   }
   if (operation === "capture.screenshot") {
     const crop = command.crop;
@@ -329,6 +651,11 @@ async function performOperation(session, command, signal, trustedOwnerInput) {
     const png = await desktopProcess(session, "ffmpeg", args, { maxOutput: 4 * 1024 * 1024, signal });
     const dimensions = validatePng(png, crop ?? { width: 1024, height: 768 });
     return { ...dimensions, base64: png.toString("base64"), source_tag: "tool", untrusted: true };
+  }
+  if (operation === "input.select") {
+    const pages = session.context.pages();
+    if (pages.length > 32) throw operationError("too_many_pages");
+    return selectAt(session, await choosePage(pages), command, signal);
   }
   if (operation.startsWith("input.")) {
     if (!trustedOwnerInput && (operation === "input.type" || operation === "input.key")) await requireSafeFocus(session.context, signal);
@@ -364,13 +691,15 @@ async function performOperation(session, command, signal, trustedOwnerInput) {
   if (operation === "browser.pages") return { pages: await Promise.all(pages.map(async (page) => ({
     pageId: pageId(page), href: safeHref(page.url()).slice(0, 2048), title: (await page.title()).slice(0, 1024),
   }))), source_tag: "tool", untrusted: true };
-  let page;
-  if (command.pageId) page = pages.find((candidate) => pageId(candidate) === command.pageId);
-  else if (pages.length === 1) page = pages[0];
-  else {
-    for (const candidate of pages) if (await candidate.evaluate(() => document.hasFocus())) { page = candidate; break; }
+  const page = await choosePage(pages, command.pageId);
+  if (operation === "browser.navigate") {
+    // The browser context already sends every request through this agent's egress proxy.
+    try { await page.goto(command.url, { waitUntil: "domcontentloaded", timeout: 30_000 }); }
+    catch { throw operationError("navigation_failed"); }
+    if (signal.aborted) throw operationError("uncertain_outcome");
+    return { ok: true };
   }
-  if (!page) throw operationError("page_not_found");
+  if (operation === "page.find_text") return findText(page, command.text);
   if (operation === "page.snapshot" || operation === "page.verify") {
     // --sync can wait forever when already at this point. takeSnapshot awaits the measured
     // browser mouse event itself and tries another point when there was no movement.
@@ -378,7 +707,8 @@ async function performOperation(session, command, signal, trustedOwnerInput) {
     const snapshot = await takeSnapshot({ page, move, fail: operationError });
     if (signal.aborted) throw operationError("uncertain_outcome");
     if (operation === "page.verify") return { ...verifySnapshot(snapshot, command.predicate), source_tag: "tool", untrusted: true };
-    return { pageId: pageId(page), href: safeHref(snapshot.url).slice(0, 2048), title: snapshot.title, frames: snapshot.frames, elements: snapshot.elements, source_tag: "tool", untrusted: true };
+    return { pageId: pageId(page), href: safeHref(snapshot.url).slice(0, 2048), title: snapshot.title, frames: snapshot.frames,
+      paymentFrames: snapshot.paymentFrames, elements: snapshot.elements, source_tag: "tool", untrusted: true };
   }
   const locator = page.locator(command.selector);
   if (await locator.count() !== 1) throw operationError("ambiguous_locator");
@@ -404,9 +734,17 @@ export async function dispatchOperation(session, operation, params = {}, trusted
     throw operationError("invalid_operation");
   const parsed = OperationSchema.safeParse({ ...params, operation });
   if (!parsed.success) throw operationError("invalid_operation");
+  // Visual operations need the managed browser; shell and file tools only need the sandbox.
+  if ((operation.startsWith("input.") || ["capture.screenshot", "browser.pages", "page.snapshot", "page.verify", "page.find_text", "browser.navigate", "browser.locator", "file.open", "audio.capture"].includes(operation)) && !session.context)
+    throw operationError("visual_unavailable");
   if (operation === "shell.run") {
     // A long command must not mark the session uncertain, so it skips the 4 s operation bound and enforces its own timeout.
     return resultFor(operation, await performOperation(session, parsed.data, undefined, false), parsed.data);
+  }
+  if (operation === "audio.capture") {
+    // A capture may last up to 30 s, so it gets its own bound; the module also enforces it.
+    return boundedOperation(async (signal) => resultFor(operation, await performOperation(session, parsed.data, signal, false), parsed.data),
+      (parsed.data.seconds + 5) * 1000);
   }
   const command = parsed.data;
   const run = () => boundedOperation(async (signal) => resultFor(operation, await performOperation(session, command, signal, trustedOwnerInput), command));
@@ -457,6 +795,7 @@ async function main() {
       if ((await Promise.all(tracked.map((item) => processIdentity(item.pid)))).every((value) => !value || value.zombie || !tracked.some((item) => item.pid === value.pid && item.birth === value.birth))) break;
       await delay(50);
     }
+    await sweepSessionProcesses(process.getuid());
     await cleanDisplay(record, tracked);
     const runtime = JSON.parse(process.argv[5] ?? "null");
     if (runtime) {
@@ -475,16 +814,10 @@ async function main() {
   const { readFramed, writeFramed } = await import("./controller-channel.mjs");
   const record = JSON.parse(process.argv[2]); let session; let stopping = false;
   const frames = readFramed(process.stdin);
-  let vnc = null, vncStarting = null, vncForwarder = null;
-  const vncAbort = new AbortController();
-  const closeVnc = async () => { try { await vnc?.close(); } catch { /* */ } vnc = null; };
   const finish = async () => {
     if (stopping) return; stopping = true;
+    session?.audio?.cancel();
     session?.teach?.abort("session_stopped");
-    vncAbort.abort();
-    await vncStarting?.catch(() => {});
-    await vncForwarder?.close().catch(() => {});
-    await closeVnc();
     await session?.close().catch(() => {});
     process.exit(0);
   };
@@ -498,42 +831,29 @@ async function main() {
 
   session = await startSession(record, {
     onRuntime: (directory) => { void sendMsg({ state: "runtime", directory }); },
-    onFailure: () => { void sendMsg({ state: "failed", reason: "session_component_failed" }).then(() => finish()); },
+    onEvent: (event) => { void sendMsg(event); },
+    autoStart: false,
   });
-  session.teach = new TeachCapture(session.context, {env:session.env});
   if (stopping) { await session.close(); return; }
+  await sendMsg({ state: "sandbox_running" });
 
-  try {
-    const { startVnc } = await import("./vnc-session.mjs");
-    vncStarting = startVnc({ directory: session.directory, display: session.display, signal: vncAbort.signal,
-      onFailure: () => { void sendMsg({ state: "failed", reason: "session_component_failed" }).then(() => finish()); } });
-    vnc = await vncStarting; vncStarting = null;
-    if (stopping) { await closeVnc(); return; }
-    // TASK-071: the controller reaches this pathname socket; x11vnc stays on the namespace loopback.
-    vncForwarder = await startSocketToTcpForwarder({ socketPath: `${session.nsDirectory}/vnc.sock`, port: vnc.vncPort });
-    // Private framed pipe only; the root manager never includes this password in status.
-    await sendMsg({ state: "vnc_ready", vncPort: vnc.vncPort, password: vnc.password });
-  } catch {
-    await sendMsg({ state: "failed", reason: "session_component_failed" });
-    await finish(); return;
-  }
-
-  await sendMsg({ state: "running" });
-
-  // Now listen for operation commands from supervisor via stdin
+  // Operations and lifecycle commands from the supervisor; graphics/browser start and stop are bounded here.
   try {
     let work = Promise.resolve();
     for await (const message of frames) {
-      if (message?.command === "teach-abort" && Object.keys(message).length === 1) { session.teach.abort("lease_lost"); continue; }
-      if (message?.command === "stop" && Object.keys(message).length === 1) { session.teach.abort("session_stopped"); void finish(); break; }
+      if (message?.command === "teach-abort" && Object.keys(message).length === 1) { session.teach?.abort("lease_lost"); continue; }
+      if (message?.command === "capture-abort" && Object.keys(message).length === 1) { session.audio?.cancel(); continue; }
+      if (message?.command === "stop" && Object.keys(message).length === 1) { session.teach?.abort("session_stopped"); void finish(); break; }
       work = work.then(async () => {
       if (message?.command === "stop" && Object.keys(message).length === 1) {
         void finish(); return;
       } else if (message?.command === "teach-abort") {
-        session.teach.abort("lease_lost");
+        session.teach?.abort("lease_lost");
+      } else if (message?.command === "capture-abort") {
+        session.audio?.cancel();
       } else if (message?.command === "teach") {
         const parsed = TeachSchema.safeParse(message.params);
-        if (!parsed.success || message.requestId !== parsed.data.requestId) throw operationError("invalid_frame");
+        if (!parsed.success || message.requestId !== parsed.data.requestId || !session.teach) throw operationError("invalid_frame");
         try { await sendMsg({requestId:message.requestId,result:await session.teach.command(parsed.data)}); }
         catch { await sendMsg({requestId:message.requestId,error:{code:"operation_failed",message:"operation_failed"}}); }
       } else if (message?.command === "operation") {
@@ -544,9 +864,19 @@ async function main() {
           const result = await dispatchOperation(session, operation, params, ownerInput === true);
           await sendMsg({ requestId, result });
         } catch (err) {
-          const safeCodes = new Set(["invalid_operation", "uncertain_outcome", "desktop_command_failed", "desktop_result_too_large", "sensitive_target", "focused_target_unknown", "too_many_pages", "too_many_frames", "page_not_found", "ambiguous_locator", "target_not_found", "grounding_unavailable"]);
+          const safeCodes = new Set(["invalid_operation", "uncertain_outcome", "desktop_command_failed", "desktop_result_too_large", "sensitive_target", "focused_target_unknown", "too_many_pages", "too_many_frames", "page_not_found", "ambiguous_locator", "target_not_found", "grounding_unavailable", "visual_unavailable", "audio_unavailable", "audio_capture_failed", "capture_cancelled", "invalid_audio"]);
           const code = safeCodes.has(err?.code) ? err.code : err?.name === "TimeoutError" ? "uncertain_outcome" : "operation_failed";
           await sendMsg({ requestId, error: { code, message: code } });
+        }
+      } else if (["desktop.start", "desktop.stop", "browser.start", "browser.stop"].includes(message?.command)) {
+        if (Object.keys(message).length !== 2 || typeof message.requestId !== "string") throw operationError("invalid_frame");
+        const method = { "desktop.start": "startDesktop", "desktop.stop": "stopDesktop", "browser.start": "startBrowser", "browser.stop": "stopBrowser" }[message.command];
+        try {
+          const result = await session[method]();
+          await sendMsg({ requestId: message.requestId, result });
+        } catch (error) {
+          const code = SESSION_FAILURES.has(error?.message) ? error.message : "operation_failed";
+          await sendMsg({ requestId: message.requestId, error: { code, message: code } });
         }
       } else throw operationError("invalid_frame");
       }).catch(() => { void finish(); });

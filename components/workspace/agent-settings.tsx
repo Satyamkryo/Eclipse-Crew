@@ -6,7 +6,10 @@ import { LoaderCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AgentForm } from "@/components/workspace/agent-form";
 import { AstraSettings } from "@/components/workspace/astra-settings";
+import { CrewHandoffSetting } from "@/components/workspace/crew-handoff-setting";
 import { AgentSetup } from "@/components/workspace/agent-setup";
+import { DesktopLifecycle } from "@/components/workspace/desktop-lifecycle";
+import type { DesktopStatus } from "@/lib/desktop/client";
 import { ModalDialog } from "@/components/workspace/modal-dialog";
 import { AstraBadge } from "@/components/ui/astra-badge";
 import { useRemote } from "@/components/history/use-remote";
@@ -28,13 +31,14 @@ export type AgentSettingsData = {
   memoryScopes: string[];
 };
 
-export function AgentSettings({ agent, desktopRunning, csrfToken }: { agent: AgentSettingsData; desktopRunning: boolean; csrfToken: string }) {
+export function AgentSettings({ agent, desktopStatus, csrfToken }: { agent: AgentSettingsData; desktopStatus?: DesktopStatus; csrfToken: string }) {
   const router = useRouter();
   const [loading, setLoading] = useState<"pause" | "resume" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
-  const action = agent.status === "paused" || !desktopRunning ? "resume" : "pause";
-  const actionLabel = agent.status === "paused" ? "Resume agent" : desktopRunning ? "Pause agent" : "Start desktop";
+  // Pause/Resume is the agent's own state. Starting or stopping the desktop is a separate control below.
+  const action = agent.status === "paused" ? "resume" : "pause";
+  const actionLabel = agent.status === "paused" ? "Resume agent" : "Pause agent";
 
   async function changeStatus(action: "pause" | "resume") {
     setLoading(action);
@@ -75,7 +79,7 @@ export function AgentSettings({ agent, desktopRunning, csrfToken }: { agent: Age
               {agent.astraMode && <AstraBadge />}
             </p>
             <p className="mt-1 text-sm text-muted-foreground">
-              {agent.status === "paused" ? "Paused" : desktopRunning ? "Active · Desktop running" : "Active · Desktop stopped"} · Permissions are default deny.
+              {agent.status === "paused" ? "Paused" : "Active"} · Permissions are default deny.
             </p>
           </div>
           <Button type="button" variant="secondary" disabled={loading !== null}
@@ -90,8 +94,10 @@ export function AgentSettings({ agent, desktopRunning, csrfToken }: { agent: Age
             onSaved={() => router.refresh()} />
         </div>
       </section>
+      <DesktopLifecycle agentId={agent.id} csrfToken={csrfToken} initial={desktopStatus} />
       <AstraSettings agentId={agent.id} agentName={agent.name} astraMode={agent.astraMode} csrfToken={csrfToken} />
       <AgentSetup agentId={agent.id} actions={agent.actions} tools={agent.tools} domains={agent.domains} />
+      <CrewHandoffSetting csrfToken={csrfToken} />
       <SavedApprovals agentId={agent.id} csrfToken={csrfToken} />
       <section className="rounded-lg border border-border bg-card p-4">
         <h3 className="text-sm font-semibold">Delete agent</h3>

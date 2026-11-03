@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "browsers": {
+    "amd64": {
+      "version": "156.0.8078.80",
+      "url": "https://storage.googleapis.com/chrome-for-testing-public/156.0.8078.80/linux64/chrome-linux64.zip",
+      "bytes": 201329937,
+      "sha256": "b711c720f774be355197f32edf37e0651418ba036d92446ee2da19ac017540a7"
+    },
+    "arm64": {
+      "version": "156.0.8078.80",
+      "url": "https://storage.googleapis.com/chrome-for-testing-public/156.0.8078.80/linux-arm64/chrome-linux-arm64.zip",
+      "bytes": 200722708,
+      "sha256": "1f496a826c9ba4d6a5f5bf2de686145fe718528c2cc3dbeb96b5893b89653724"
+    }
+  }
+}

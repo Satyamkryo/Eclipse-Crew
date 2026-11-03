@@ -158,7 +158,7 @@ async function layout(record, create = false) {
   await directory("/workspace/homes", 0o755);
   await directory(`${SYSTEM}/downloads`, 0o755);
   await directory(home, 0o700, record.uid, create);
-  for (const suffix of ["inbox", "outbox", "work", ".config", ".config/chromium"]) await directory(`${home}/${suffix}`, 0o700, record.uid, create);
+  for (const suffix of ["inbox", "outbox", "work", ".config", ".config/chromium", ".config/chrome-for-testing"]) await directory(`${home}/${suffix}`, 0o700, record.uid, create);
   await directory(`${SYSTEM}/downloads/${record.agentId}`, 0o700, record.uid, create);
   const link = `${home}/Downloads`;
   try {

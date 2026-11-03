@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Check, Download, LoaderCircle, ShieldAlert, ShieldCheck, Square } from "lucide-react";
 import { Button, buttonVariants } from "@/components/ui/button";
+import { PageHeader } from "@/components/ui/page-header";
 import { ModalDialog } from "@/components/workspace/modal-dialog";
 import { cn } from "@/lib/utils";
 
@@ -183,15 +184,12 @@ export function SecurityCenter({ agents, csrfToken, timeZone }: { agents: AgentO
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-6 sm:px-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h1 className="text-2xl font-semibold tracking-tight">Security Center</h1>
-          <p className="mt-1 text-sm text-muted-foreground">Security events, the signed audit log and emergency controls.</p>
-        </div>
-        <a href="/api/audit/export" download className={cn(buttonVariants({ variant: "secondary", size: "sm" }))}>
-          <Download aria-hidden="true" className="size-4" strokeWidth={1.5} />Export audit log
-        </a>
-      </div>
+      <PageHeader icon={ShieldCheck} title="Security Center" subtitle="Security events, the signed audit log and emergency controls."
+        action={(
+          <a href="/api/audit/export" download className={cn(buttonVariants({ variant: "secondary", size: "sm" }))}>
+            <Download aria-hidden="true" className="size-4" strokeWidth={1.5} />Export audit log
+          </a>
+        )} />
 
       {status && !status.signing ? (
         <p role="alert" className="rounded-md border border-corona bg-corona/12 px-3 py-2 text-sm text-corona">

@@ -13,6 +13,8 @@ services:
       ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
       EGRESS_PROXY_SECRET: ${EGRESS_PROXY_SECRET:-}
       RECEIPT_SIGNING_KEY: ${RECEIPT_SIGNING_KEY:-}
+      GITHUB_APP_CLIENT_ID: ${GITHUB_APP_CLIENT_ID:-}
+      GITHUB_APP_SLUG: ${GITHUB_APP_SLUG:-eclipse-crew}
       MAX_UPLOAD_MB: ${MAX_UPLOAD_MB:-}
     depends_on:
       postgres:

@@ -1,5 +1,8 @@
 import { z } from "zod";
-import { ChatDataError, appendUserMessage, listAgentMessages, serializeMessage } from "@/lib/chat/data";
+import { ChatDataError, appendAgentCard, appendUserMessage, listAgentMessages, serializeMessage } from "@/lib/chat/data";
+import { listAgentRecords } from "@/lib/agents/data";
+import { namesAgent, parseMention } from "@/lib/chat/mentions";
+import { recordAuditBestEffort } from "@/lib/security/audit";
 import {
   chatHistoryQuerySchema,
   userMessageInputSchema,
@@ -67,9 +70,27 @@ export async function POST(request: Request, { params }: { params: Promise<{ age
     const parsed = userMessageInputSchema.safeParse(await readBoundedJson(request, 64 * 1024));
     if (!parsed.success) return Response.json({ error: "invalid_input" }, { status: 400 });
     const database = await getDatabase();
+    // TASK-085. A leading `@Name ` routes the owner's message to that teammate's chat and starts its run there.
+    const mention = parseMention(parsed.data.text);
+    if (mention) {
+      const agents = await listAgentRecords(database, session.ownerId);
+      const target = agents.find((agent) => namesAgent(agent.name, mention.name));
+      if (!target) return Response.json({ error: "mention_not_found" }, { status: 404 });
+      if (target.status !== "active") return Response.json({ error: "teammate_unavailable" }, { status: 409 });
+      const routed = await appendUserMessage(database, session.ownerId, target.id, mention.text);
+      startChatRun(database, session.ownerId, target.id, mention.text, undefined, routed.id);
+      await recordAuditBestEffort(database, session.ownerId, {
+        kind: "message_mentioned", agentId: target.id, ref: agentId, code: "routed",
+      });
+      if (target.id === agentId) return Response.json({ message: serializeMessage(routed) }, { status: 201 });
+      const notice = await appendAgentCard(database, session.ownerId, agentId, {
+        card: { type: "message", text: `Sent to ${target.name}.` }, sourceTag: "system",
+      });
+      return Response.json({ message: serializeMessage(notice) }, { status: 201 });
+    }
     const message = await appendUserMessage(database, session.ownerId, agentId, parsed.data.text);
     // The message is stored; the run answers later with a card and never changes this response.
-    startChatRun(database, session.ownerId, agentId, parsed.data.text);
+    startChatRun(database, session.ownerId, agentId, parsed.data.text, undefined, message.id);
     return Response.json({ message: serializeMessage(message) }, { status: 201 });
   } catch (error) {
     return chatErrorResponse(error);

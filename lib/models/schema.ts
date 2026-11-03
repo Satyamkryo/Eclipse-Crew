@@ -6,7 +6,7 @@ import { normalizeBaseUrl } from "../providers/transport";
 
 export const MAIN_MODEL = "muse-spark-1.3";
 export const SAM_MODEL = "sam-3.1";
-export const modelRoleSchema = z.enum(["main", "sam"]);
+export const modelRoleSchema = z.enum(["main", "sam", "background"]);
 export type ModelRole = z.infer<typeof modelRoleSchema>;
 
 const modelId = z.string().min(1).max(200).regex(/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/);
@@ -62,6 +62,24 @@ export const samModelSettingsSchema = z.object({
     context.addIssue({ code: "custom", path: ["apiKey"], message: "Same-key mode does not accept a key." });
   }
 });
+
+// TASK-086. Optional background model. Off clears the role; on saves a provider, model and key.
+export const backgroundModelSettingsSchema = z.object({
+  enabled: z.boolean(),
+  kind: z.enum(["meta", "openai-compatible"]),
+  model: modelId,
+  baseUrl: baseUrl.optional(),
+  apiKey: apiKey.optional(),
+}).strict().superRefine((value, context) => {
+  if (value.kind === "meta" && value.baseUrl) {
+    context.addIssue({ code: "custom", path: ["baseUrl"], message: "Meta uses a fixed endpoint." });
+  }
+  if (value.kind === "openai-compatible" && !value.baseUrl) {
+    context.addIssue({ code: "custom", path: ["baseUrl"], message: "Base URL is required." });
+  }
+});
+
+export type BackgroundModelSettingsInput = z.infer<typeof backgroundModelSettingsSchema>;
 
 export const testModelSchema = z.object({ role: modelRoleSchema }).strict();
 

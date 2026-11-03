@@ -37,7 +37,10 @@ export const ownerInputBodySchema = z.discriminatedUnion("operation", [
     toX: z.number().int().min(0).max(1023), toY: z.number().int().min(0).max(767) }).strict(),
 ]);
 const controlFields = { ownerId: uuid, agentId: uuid, requestId: uuid };
+export const LIFECYCLE_STATES = ["stopped", "starting", "running", "failed"] as const;
+export type LifecycleState = (typeof LIFECYCLE_STATES)[number];
 const sessionResult = z.object({ agentId: uuid, state: z.enum(["starting", "running", "stopped", "stopping", "failed"]),
+  sandbox: z.enum(LIFECYCLE_STATES).optional(), graphics: z.enum(LIFECYCLE_STATES).optional(), browser: z.enum(LIFECYCLE_STATES).optional(),
   generation: uuid.optional(), display: z.number().int().optional(), reason: z.string().max(128).optional(),
   vncPort: z.number().int().min(1).max(65535).optional(), vncReady: z.boolean().optional(), takenOver: z.boolean().optional() }).strict();
 const inputResult = z.object({ ok: z.literal(true) }).strict();
@@ -50,10 +53,17 @@ const locatorResult = z.object({ tag: z.string().max(64), text: z.string().max(4
 // Names come from an untrusted page: bounded and free of control characters. Positions are screen pixels (1024x768).
 const snapshotElementSchema = z.object({ ref: z.number().int().min(1).max(150), role: z.string().regex(/^[a-z]{1,32}$/),
   name: z.string().max(80).refine((value) => !/[\x00-\x1f\x7f-\x9f]/.test(value)), tag: z.string().regex(/^[a-z0-9-]{1,32}$/), focused: z.boolean().optional(),
+  frame: z.enum(["top", "child"]), shadow: z.boolean(),
   x: z.number().int().min(0).max(1023), y: z.number().int().min(0).max(767), width: z.number().int().min(1).max(1024), height: z.number().int().min(1).max(768) }).strict()
   .refine((value) => value.x + value.width <= 1024 && value.y + value.height <= 768);
 export const pageSnapshotResult = z.object({ pageId: uuid, href: z.string().max(2048), title: z.string().max(1024), frames: z.number().int().min(0).max(64),
+  paymentFrames: z.number().int().min(0).max(64),
   elements: z.array(snapshotElementSchema).max(150), source_tag: z.literal("tool"), untrusted: z.literal(true) }).strict();
+const findTextResult = z.object({ found: z.boolean(), count: z.number().int().min(0).max(1000),
+  source_tag: z.literal("tool"), untrusted: z.literal(true) }).strict();
+const waveResult = z.object({ base64: z.string().min(4).max(2_900_000).regex(/^[A-Za-z0-9+/]+={0,2}$/), mime: z.literal("audio/wav"),
+  durationMs: z.number().int().min(1).max(30_500), source_tag: z.literal("tool"), untrusted: z.literal(true) }).strict();
+export type FindTextResult = z.infer<typeof findTextResult>;
 const envelopeSchema = z.discriminatedUnion("outcome", [
   z.object({ outcome: z.literal("ok"), result: z.unknown() }).strict(),
   z.object({ outcome: z.literal("error"), code: z.string().regex(/^[a-z_]{1,64}$/) }).strict(),
@@ -118,14 +128,27 @@ const commandParams: Record<string, z.ZodType> = {
   "browser.pages": z.object({}).strict(),
   "page.snapshot": z.object({ pageId: uuid.optional() }).strict(),
   "page.verify": z.object({ predicate: verificationPredicate }).strict(),
+  // TASK-084. Page text is copied exactly; it may contain line breaks, but never other control characters.
+  "page.find_text": z.object({ text: z.string().min(1).max(2000).refine((value) => !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/.test(value)), pageId: uuid.optional() }).strict(),
+  "browser.navigate": z.object({ url: z.string().min(1).max(2048).refine((value) => {
+    try { const url = new URL(value); return (url.protocol === "http:" || url.protocol === "https:") && !url.username && !url.password; } catch { return false; }
+  }) }).strict(),
+  "input.select": z.object({ x: z.number().int().min(0).max(1023), y: z.number().int().min(0).max(767),
+    option: z.string().min(1).max(200).refine((value) => !/[\u0000-\u001f\u007f-\u009f]/.test(value)) }).strict(),
   "file.open": z.object({ name: z.string().min(1).max(255).refine((value) => !/[\u0000-\u001f\u007f-\u009f/\\]/.test(value) && !value.startsWith(".")) }).strict(),
   "browser.locator": z.object({ selector: z.string().min(1).max(512).refine((value) => !/[\x00-\x1f\x7f]/.test(value)), pageId: uuid.optional(), action: z.enum(["inspect", "click", "fill"]), text: textSchema.optional() }).strict().refine((v) => v.action !== "fill" || v.text !== undefined),
+  // TASK-079. The agent's private speaker, bounded to 30 seconds.
+  "audio.capture": z.object({ seconds: z.number().int().min(1).max(30) }).strict(),
 };
 export async function desktopCommand(agentId: string, ownerId: string, generation: string, operation: string, params: Record<string, unknown>): Promise<unknown> {
   if (!Object.hasOwn(commandParams, operation)) throw new Error("invalid_operation");
   const args = commandParams[operation].parse(params) as Record<string, unknown>;
-  const result: z.ZodType<unknown> = operation === "capture.screenshot" ? screenshotResult : operation === "browser.pages" ? pagesResult : operation === "page.snapshot" ? pageSnapshotResult : operation === "page.verify" ? pageVerificationResult : operation === "browser.locator" && args.action === "inspect" ? locatorResult : inputResult;
-  return desktopPost(`/v1/agents/${uuid.parse(agentId)}/commands`, { ...args, ...metadata(agentId, ownerId), ...z.object(generationField).parse({ generation }), operation }, result);
+  const result: z.ZodType<unknown> = operation === "capture.screenshot" ? screenshotResult : operation === "browser.pages" ? pagesResult
+    : operation === "page.snapshot" ? pageSnapshotResult : operation === "page.verify" ? pageVerificationResult
+    : operation === "page.find_text" ? findTextResult : operation === "audio.capture" ? waveResult
+    : operation === "browser.locator" && args.action === "inspect" ? locatorResult : inputResult;
+  return desktopPost(`/v1/agents/${uuid.parse(agentId)}/commands`, { ...args, ...metadata(agentId, ownerId), ...z.object(generationField).parse({ generation }), operation }, result,
+    operation === "audio.capture" ? (Number(args.seconds) + 10) * 1000 : FETCH_TIMEOUT_MS);
 }
 export async function desktopCreateAgent(agentId: string, ownerId: string) {
   const result = await desktopPost(`/v1/agents/${uuid.parse(agentId)}/commands`,
@@ -141,14 +164,23 @@ export async function desktopDeleteAgent(agentId: string, ownerId: string) {
   if (result.agentId !== agentId) throw new Error("invalid_response_agent");
   return { agentId: result.agentId };
 }
-export async function desktopSession(agentId: string, ownerId: string, operation: "session.start" | "session.status" | "session.stop") {
-  z.enum(["session.start", "session.status", "session.stop"]).parse(operation);
+export type SessionOperation = "session.start" | "session.status" | "session.stop" | "sandbox.start" | "desktop.start" | "desktop.stop" | "browser.start" | "browser.stop";
+export interface DesktopStatus {
+  agentId: string; state: string; sandbox: LifecycleState; graphics: LifecycleState; browser: LifecycleState;
+  generation?: string; display?: number; reason?: string; takenOver?: boolean; vncPort?: number; vncReady?: boolean;
+}
+export async function desktopSession(agentId: string, ownerId: string, operation: SessionOperation, generation?: string) {
+  z.enum(["session.start", "session.status", "session.stop", "sandbox.start", "desktop.start", "desktop.stop", "browser.start", "browser.stop"]).parse(operation);
   const result = await desktopPost(`/v1/agents/${uuid.parse(agentId)}/commands`,
-    { ...metadata(agentId, ownerId), operation }, sessionResult,
-    operation === "session.start" ? LIFECYCLE_TIMEOUT_MS : operation === "session.stop" ? 15000 : FETCH_TIMEOUT_MS);
+    { ...metadata(agentId, ownerId), operation, ...(generation ? { generation: uuid.parse(generation) } : {}) }, sessionResult,
+    operation === "session.status" ? FETCH_TIMEOUT_MS : LIFECYCLE_TIMEOUT_MS);
   if (result.agentId !== agentId) throw new Error("invalid_response_agent");
-  return { agentId: result.agentId, state: result.state, ...(result.generation ? { generation: result.generation } : {}),
-    ...(result.takenOver === undefined ? {} : { takenOver: result.takenOver }) };
+  return {
+    agentId: result.agentId, state: result.state, sandbox: result.sandbox ?? "stopped", graphics: result.graphics ?? "stopped", browser: result.browser ?? "stopped",
+    ...(result.generation ? { generation: result.generation } : {}), ...(result.display === undefined ? {} : { display: result.display }),
+    ...(result.reason ? { reason: result.reason } : {}), ...(result.takenOver === undefined ? {} : { takenOver: result.takenOver }),
+    ...(result.vncPort === undefined ? {} : { vncPort: result.vncPort }), ...(result.vncReady === undefined ? {} : { vncReady: result.vncReady }),
+  } satisfies DesktopStatus;
 }
 
 const UPLOAD_BASE_URL = "http://desktop:4311";
@@ -204,8 +236,17 @@ const listedFile = z.object({
   kind: z.enum(["image", "pdf", "document", "text", "audio", "video", "archive", "blocked", "unknown"]),
 }).strict();
 const textWindow = z.object({
-  kind: z.literal("text"), format: z.enum(["text", "pdf", "docx"]), truncated: z.boolean(),
-  text: z.string().min(1).max(60_000), offset: z.number().int().min(0), nextOffset: z.number().int().min(1).nullable(), totalChars: z.number().int().min(1),
+  kind: z.literal("text"), format: z.enum(["text", "pdf", "docx", "xlsx", "pptx"]), truncated: z.boolean(),
+  text: z.string().min(1).max(20_000), offset: z.number().int().min(0), nextOffset: z.number().int().min(1).nullable(), totalChars: z.number().int().min(1),
+}).strict();
+// TASK-082. Best-matching passages with the page, sheet or slide at each start. Passage text is untrusted document data.
+const documentSearch = z.object({
+  format: z.enum(["text", "pdf", "docx", "xlsx", "pptx"]),
+  totalChars: z.number().int().min(1),
+  results: z.array(z.object({
+    offset: z.number().int().min(0), page: z.number().int().min(1).nullable(),
+    text: z.string().min(1).max(1_500), score: z.number().finite(),
+  }).strict()).max(5),
 }).strict();
 const imageDocument = z.object({
   kind: z.literal("image"), mime: z.enum(["image/png", "image/jpeg", "image/webp"]), size: z.number().int().min(1).max(4 * 1024 * 1024),
@@ -217,9 +258,10 @@ const deliveredFile = z.object({
 }).strict();
 export type ListedFile = z.infer<typeof listedFile>;
 export type DocumentWindow = z.infer<typeof textWindow> | z.infer<typeof imageDocument>;
+export type DocumentSearchResult = z.infer<typeof documentSearch>;
 export type DeliveredFile = z.infer<typeof deliveredFile>;
 
-function fileToolPath(agentId: string, ownerId: string, action: "list" | "read" | "deliver") {
+function fileToolPath(agentId: string, ownerId: string, action: "list" | "read" | "deliver" | "search") {
   return `/v1/owners/${uuid.parse(ownerId)}/agents/${uuid.parse(agentId)}/files/${action}`;
 }
 export async function desktopListFiles(agentId: string, ownerId: string) {
@@ -232,6 +274,12 @@ export async function desktopReadFile(agentId: string, ownerId: string, name: st
 export async function desktopDeliverFile(agentId: string, ownerId: string, from: "downloads" | "work", name: string) {
   return desktopPost(fileToolPath(agentId, ownerId, "deliver"), { from: z.enum(["downloads", "work"]).parse(from), name: fileToolName.parse(name) },
     deliveredFile, 120_000, fileToolTarget);
+}
+// Indexing and search get their own budget on the desktop (180 s); the app waits a little longer than that.
+const searchQuery = z.string().min(1).max(200).refine((value) => !/[\u0000-\u001f\u007f-\u009f]/.test(value));
+export async function desktopSearchFile(agentId: string, ownerId: string, name: string, query: string) {
+  return desktopPost(fileToolPath(agentId, ownerId, "search"), { name: fileToolName.parse(name), query: searchQuery.parse(query) },
+    documentSearch, 190_000, fileToolTarget);
 }
 
 // ---- Per-step checkpoints (TASK-032). The desktop lists the agent's files with their hashes and returns file bytes; the app

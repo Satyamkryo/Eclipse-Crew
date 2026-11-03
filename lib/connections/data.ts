@@ -20,6 +20,12 @@ export type StoredConnection = {
   bindings: ConnectionBinding[];
   encryptedToken: string;
   tokenHint: string;
+  // TASK-088. Only GitHub App connections carry these; a pasted token has nulls and `pasted`.
+  encryptedRefreshToken: string | null;
+  tokenExpiresAt: Date | null;
+  refreshExpiresAt: Date | null;
+  source: "pasted" | "github_app";
+  status: "active" | "expired";
   createdAt: Date;
   updatedAt: Date;
 };
@@ -33,6 +39,11 @@ const fields = {
   bindings: connections.bindings,
   encryptedToken: connections.encryptedToken,
   tokenHint: connections.tokenHint,
+  encryptedRefreshToken: connections.encryptedRefreshToken,
+  tokenExpiresAt: connections.tokenExpiresAt,
+  refreshExpiresAt: connections.refreshExpiresAt,
+  source: connections.source,
+  status: connections.status,
   createdAt: connections.createdAt,
   updatedAt: connections.updatedAt,
 };
@@ -46,6 +57,11 @@ type ConnectionRow = {
   bindings: unknown;
   encryptedToken: string;
   tokenHint: string;
+  encryptedRefreshToken: string | null;
+  tokenExpiresAt: Date | null;
+  refreshExpiresAt: Date | null;
+  source: string;
+  status: string;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -62,6 +78,11 @@ function toStored(row: ConnectionRow): StoredConnection | null {
     bindings: parsed.data,
     encryptedToken: row.encryptedToken,
     tokenHint: row.tokenHint,
+    encryptedRefreshToken: row.encryptedRefreshToken ?? null,
+    tokenExpiresAt: row.tokenExpiresAt ?? null,
+    refreshExpiresAt: row.refreshExpiresAt ?? null,
+    source: row.source === "github_app" ? "github_app" : "pasted",
+    status: row.status === "expired" ? "expired" : "active",
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -94,6 +115,12 @@ export async function labelExists(database: ConnectionStore, ownerId: string, ag
   return rows.some((row) => row.id !== exceptId);
 }
 
+export async function findConnectionByLabel(database: ConnectionStore, ownerId: string, agentId: string, label: string): Promise<StoredConnection | undefined> {
+  const rows = await database.select(fields).from(connections)
+    .where(and(eq(connections.ownerId, ownerId), eq(connections.agentId, agentId), eq(connections.label, label))).limit(1);
+  return rows[0] ? toStored(rows[0] as ConnectionRow) ?? undefined : undefined;
+}
+
 export async function insertConnection(database: Pick<Transaction, "insert">, row: StoredConnection): Promise<void> {
   await database.insert(connections).values({
     id: row.id,
@@ -104,17 +131,30 @@ export async function insertConnection(database: Pick<Transaction, "insert">, ro
     bindings: row.bindings,
     encryptedToken: row.encryptedToken,
     tokenHint: row.tokenHint,
+    encryptedRefreshToken: row.encryptedRefreshToken,
+    tokenExpiresAt: row.tokenExpiresAt,
+    refreshExpiresAt: row.refreshExpiresAt,
+    source: row.source,
+    status: row.status,
   });
 }
 
 export async function updateConnection(
   database: Pick<Transaction, "update">, ownerId: string, id: string,
-  values: { label?: string; encryptedToken?: string; tokenHint?: string },
+  values: {
+    label?: string; encryptedToken?: string; tokenHint?: string; encryptedRefreshToken?: string | null;
+    tokenExpiresAt?: Date | null; refreshExpiresAt?: Date | null; source?: "pasted" | "github_app"; status?: "active" | "expired";
+  },
 ): Promise<boolean> {
   const updated = await database.update(connections).set({
     ...(values.label !== undefined ? { label: values.label } : {}),
     ...(values.encryptedToken !== undefined ? { encryptedToken: values.encryptedToken } : {}),
     ...(values.tokenHint !== undefined ? { tokenHint: values.tokenHint } : {}),
+    ...(values.encryptedRefreshToken !== undefined ? { encryptedRefreshToken: values.encryptedRefreshToken } : {}),
+    ...(values.tokenExpiresAt !== undefined ? { tokenExpiresAt: values.tokenExpiresAt } : {}),
+    ...(values.refreshExpiresAt !== undefined ? { refreshExpiresAt: values.refreshExpiresAt } : {}),
+    ...(values.source !== undefined ? { source: values.source } : {}),
+    ...(values.status !== undefined ? { status: values.status } : {}),
     updatedAt: new Date(),
   }).where(and(eq(connections.ownerId, ownerId), eq(connections.id, id))).returning({ id: connections.id });
   return Boolean(updated[0]);

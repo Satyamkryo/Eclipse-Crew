@@ -1,9 +1,9 @@
 import "server-only";
 
-import { and, asc, desc, eq, inArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
 
 import type { getDatabase } from "../../db/client";
-import { checkpoints, runs, stepEvidence, steps } from "../../db/schema";
+import { checkpoints, runMeta, runs, stepEvidence, steps } from "../../db/schema";
 import { verifyRunExport } from "./chain.mjs";
 import { stepResultOf, summarizeRun, viewStep, type ChainState, type RunDetail, type RunSummary } from "./history-view";
 import { loadRunExport } from "./store";
@@ -15,8 +15,10 @@ export const MAX_LISTED_RUNS = 20;
 // TASK-031. Read-only views over the proof tables, always scoped by owner. The History tab uses these.
 export async function listRuns(database: Database, ownerId: string, agentId: string, limit = MAX_LISTED_RUNS, now = new Date()): Promise<RunSummary[]> {
   const rows = await database.select().from(runs)
-    .where(and(eq(runs.ownerId, ownerId), eq(runs.agentId, agentId)))
-    .orderBy(desc(runs.startedAt)).limit(Math.min(Math.max(limit, 1), MAX_LISTED_RUNS));
+    .leftJoin(runMeta, and(eq(runMeta.runId, runs.id), eq(runMeta.ownerId, ownerId)))
+    .where(and(eq(runs.ownerId, ownerId), eq(runs.agentId, agentId), isNull(runMeta.parentRunId)))
+    .orderBy(desc(runs.startedAt)).limit(Math.min(Math.max(limit, 1), MAX_LISTED_RUNS))
+    .then((list) => list.map((row) => row.runs));
   if (!rows.length) return [];
   const results = await database.select({ runId: steps.runId, idx: steps.idx, receiptJson: steps.receiptJson }).from(steps)
     .where(and(eq(steps.ownerId, ownerId), inArray(steps.runId, rows.map((row) => row.id)))).orderBy(asc(steps.idx));
@@ -66,9 +68,28 @@ export async function loadRunDetail(database: Database, ownerId: string, runId: 
       status: row.status, stepResults: byBranch.get(row.id) ?? [], now,
     }));
   }
+  // TASK-076. Helper runs are linked by run_meta.parent_run_id, never by the signed header alone.
+  const helperMeta = await database.select({ runId: runMeta.runId }).from(runMeta)
+    .where(and(eq(runMeta.ownerId, ownerId), eq(runMeta.parentRunId, runId))).limit(MAX_LISTED_RUNS);
+  let helpers: RunSummary[] = [];
+  if (helperMeta.length) {
+    const helperRows = await database.select().from(runs)
+      .where(and(eq(runs.ownerId, ownerId), inArray(runs.id, helperMeta.map((row) => row.runId))))
+      .orderBy(asc(runs.startedAt));
+    if (helperRows.length) {
+      const helperSteps = await database.select({ runId: steps.runId, idx: steps.idx, receiptJson: steps.receiptJson }).from(steps)
+        .where(and(eq(steps.ownerId, ownerId), inArray(steps.runId, helperRows.map((row) => row.id)))).orderBy(asc(steps.idx));
+      const byHelper = new Map<string, string[]>();
+      for (const row of helperSteps) byHelper.set(row.runId, [...(byHelper.get(row.runId) ?? []), stepResultOf(row.receiptJson)]);
+      helpers = helperRows.map((row) => summarizeRun({
+        runId: row.id, headerText: row.headerJson, startedAt: row.startedAt, endedAt: row.endedAt, sealed: row.signature !== null,
+        status: row.status, stepResults: byHelper.get(row.id) ?? [], now,
+      }));
+    }
+  }
   const baseline = checkpointByIdx.get(0);
   return {
-    run: summary, agentId: run.agentId, keyId: run.keyId, chain, steps: stepViews, branches,
+    run: summary, agentId: run.agentId, keyId: run.keyId, chain, steps: stepViews, branches, helpers,
     baselineCheckpoint: !baseline ? "missing" : baseline.status === "complete" ? "saved" : "partial",
   };
 }

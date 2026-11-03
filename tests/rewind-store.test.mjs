@@ -51,7 +51,9 @@ test.before(async () => {
   assert.ok(adminPool, "database became reachable");
   for (const file of ["0009_receipts_runs_steps.sql", "0010_curly_ultimo.sql", "0012_quick_molten_man.sql"])
     await adminPool.query(readFileSync(new URL(`../drizzle/${file}`, import.meta.url), "utf8").replaceAll("--> statement-breakpoint", ""));
-  await adminPool.query(`CREATE ROLE app_role LOGIN PASSWORD '${password}'; GRANT SELECT, INSERT, UPDATE ON runs TO app_role; GRANT SELECT, INSERT ON steps TO app_role; GRANT SELECT, INSERT ON step_evidence TO app_role; GRANT SELECT, INSERT ON checkpoints TO app_role;`);
+  await adminPool.query(`ALTER TABLE runs ADD COLUMN heartbeat_at timestamptz, ADD COLUMN cancel_requested_at timestamptz;`);
+  await adminPool.query(`CREATE TABLE run_meta (run_id uuid PRIMARY KEY, owner_id uuid NOT NULL, parent_run_id uuid);`);
+  await adminPool.query(`CREATE ROLE app_role LOGIN PASSWORD '${password}'; GRANT SELECT, INSERT, UPDATE ON runs TO app_role; GRANT SELECT, INSERT ON steps TO app_role; GRANT SELECT, INSERT ON step_evidence TO app_role; GRANT SELECT, INSERT ON checkpoints TO app_role; GRANT SELECT, INSERT ON run_meta TO app_role;`);
   appPool = new pg.Pool({ host: "127.0.0.1", port, user: "app_role", password, database: "postgres" });
   app = drizzle({ client: appPool });
 });

@@ -60,6 +60,8 @@ test("pkt-line parser covers create, update, delete, multiple commands, capabili
   assert.equal(parsePktLines(pkt(`push-cert\0report-status\n`)).error, "push_cert_refused");
   assert.equal(parsePktLines(pkt(`${ZERO} ${NEW} refs/remotes/origin/x\n`)).error, "invalid_push_command");
   assert.equal(parsePktLines(Buffer.from("zzzz")).error, "invalid_pkt_line");
+  const duplicate = parsePktLines(Buffer.concat([pkt(`${ZERO} ${NEW} refs/heads/a\0report-status\n`), pkt(`${OLD} ${NEW} refs/heads/a\n`), flush]));
+  assert.equal(duplicate.error, "duplicate_ref");
   const many = []; for (let i = 0; i < 1200; i++) many.push(pkt(`${ZERO} ${NEW} refs/heads/b${i}\n`)); many.push(flush);
   assert.equal(parsePktLines(Buffer.concat(many)).error, "pkt_line_too_large");
 });
@@ -77,8 +79,13 @@ test("push classification names default-branch, delete, tag-move and lookup-fail
 });
 
 test("gateway path and preface accept only github.com repos and the relay's HMAC", () => {
-  assert.deepEqual(parseGatewayPath("/git/github.com/owner/repo.git/info/refs?service=git-upload-pack").service, "git-upload-pack");
+  const withGit = parseGatewayPath("/git/github.com/owner/repo.git/info/refs?service=git-upload-pack");
+  assert.equal(withGit.service, "git-upload-pack");
+  assert.deepEqual(parseGatewayPath("/git/github.com/owner/repo/info/refs?service=git-upload-pack"), withGit);
   assert.equal(parseGatewayPath("/git/github.com/owner/repo.git/git-receive-pack").method, "POST");
+  assert.deepEqual(parseGatewayPath("/git/github.com/owner/repo/git-receive-pack"), parseGatewayPath("/git/github.com/owner/repo.git/git-receive-pack"));
+  assert.equal(parseGatewayPath("/git/github.com/owner/repo/tree/main"), null);
+  assert.equal(parseGatewayPath("/git/github.com/owner/repo/blob/main/README.md"), null);
   assert.equal(parseGatewayPath("/git/gitlab.com/owner/repo.git/info/refs?service=git-upload-pack"), null);
   assert.equal(parseGatewayPath("/git/github.com/../repo.git/info/refs?service=git-upload-pack"), null);
   assert.equal(parseGatewayPath("/git/github.com/owner/repo.git/info/refs?service=git-receive-pack&x=1"), null);
@@ -139,9 +146,69 @@ test("gateway refuses encoding, unknown paths and missing credentials", async ()
     const otherHost = await request(address.port, `${preface()}GET /git/gitlab.com/owner/repo.git/info/refs?service=git-upload-pack HTTP/1.1\r\n\r\n`);
     assert.equal(status(otherHost), 404);
     credentials.set(AGENT, []);
-    const missing = await request(address.port, `${preface()}GET /git/github.com/owner/repo.git/info/refs?service=git-upload-pack HTTP/1.1\r\n\r\n`);
+    const missing = await request(address.port, `${preface()}GET /git/github.com/owner/repo.git/info/refs?service=git-receive-pack HTTP/1.1\r\n\r\n`);
     assert.equal(status(missing), 403);
     assert.match(missing, /credential_required/);
     assert.equal(record.options.length, 0);
   } finally { await gateway.close(); }
+});
+
+test("public clone and fetch work without a connection; pushes still need one; an upstream 401 stays a fixed 403", async () => {
+  const registry = createRegistry(); registry.setPolicy(AGENT, ["github.com"], false);
+  const credentials = createCredentialStore(); credentials.set(AGENT, []);
+  const record = { options: [], body: [], ended: false };
+  const gateway = createGitGateway({ desktopSecret: SECRET, registry, credentials, upstream: fakeUpstream(record), resolve: async () => [{ address: "140.82.121.4", family: 4 }],
+    lookupDefaultBranch: async () => "main" });
+  const address = await gateway.listen(0, "127.0.0.1");
+  try {
+    const clone = await request(address.port, `${preface()}GET /git/github.com/owner/repo/info/refs?service=git-upload-pack HTTP/1.1\r\nHost: 127.0.0.1:3129\r\nAuthorization: Bearer attacker\r\n\r\n`);
+    assert.equal(status(clone), 200);
+    assert.match(clone, /upstream-ok/);
+    assert.equal(record.options.length, 1);
+    assert.equal(record.options[0].path, "/owner/repo.git/info/refs?service=git-upload-pack");
+    assert.equal("authorization" in record.options[0].headers, false, "no credential is sent for a public clone");
+    assert.equal(JSON.stringify(record.options).includes("attacker"), false);
+
+    const uploadBody = Buffer.concat([pkt(`${ZERO} ${NEW} refs/heads/fix-1\0report-status\n`), flush]);
+    const fetch = await request(address.port, `${preface()}POST /git/github.com/owner/repo/git-upload-pack HTTP/1.1\r\nContent-Type: application/x-git-upload-pack-request\r\nContent-Length: ${uploadBody.length}\r\n\r\n${uploadBody.toString("latin1")}`);
+    assert.equal(status(fetch), 200);
+    assert.equal(record.options.length, 2);
+    assert.equal("authorization" in record.options[1].headers, false);
+
+    const before = record.options.length;
+    const push = await request(address.port, `${preface()}GET /git/github.com/owner/repo/info/refs?service=git-receive-pack HTTP/1.1\r\n\r\n`);
+    assert.equal(status(push), 403);
+    assert.match(push, /credential_required/);
+    assert.equal(record.options.length, before, "a push discovery never reaches GitHub without a connection");
+
+    registry.setPolicy(AGENT, [], false);
+    const blocked = await request(address.port, `${preface()}GET /git/github.com/owner/repo/info/refs?service=git-upload-pack HTTP/1.1\r\n\r\n`);
+    assert.equal(status(blocked), 403);
+    assert.match(blocked, /agent_unavailable/);
+    assert.equal(record.options.length, before, "the allowlist still applies to a public read");
+  } finally { await gateway.close(); }
+
+  registry.setPolicy(AGENT, ["github.com"], false);
+  const privateGateway = createGitGateway({ desktopSecret: SECRET, registry, credentials,
+    upstream: (options, onResponse) => {
+      const requestEvents = new EventEmitter();
+      requestEvents.write = () => {}; requestEvents.destroy = () => {};
+      requestEvents.end = () => {
+        const response = new EventEmitter();
+        response.statusCode = 401; response.statusMessage = "Unauthorized";
+        response.headers = { "www-authenticate": 'Basic realm="GitHub"' };
+        response.resume = () => {};
+        onResponse(response);
+        setImmediate(() => response.emit("end"));
+      };
+      return requestEvents;
+    },
+    resolve: async () => [{ address: "140.82.121.4", family: 4 }] });
+  const privateAddress = await privateGateway.listen(0, "127.0.0.1");
+  try {
+    const denied = await request(privateAddress.port, `${preface()}GET /git/github.com/owner/repo/info/refs?service=git-upload-pack HTTP/1.1\r\n\r\n`);
+    assert.equal(status(denied), 403);
+    assert.match(denied, /credential_required/);
+    assert.equal(/www-authenticate/i.test(denied), false);
+  } finally { await privateGateway.close(); }
 });

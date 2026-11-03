@@ -6,7 +6,7 @@ import { TeachSchema, CommandSchema, OwnerInputSchema, TakeoverSchema, StreamSch
 import { bridgeRfb } from "./rfb-bridge.mjs";
 
 const MAX_BODY = 16384;
-const SAFE_CODES = new Set(["auth_failed", "source_denied", "invalid_command", "invalid_json", "body_too_large", "not_found", "method_not_allowed", "invalid_content_type", "agent_unavailable", "session_not_running", "session_start_failed", "session_start_timeout", "session_cleanup_failed", "stale_generation", "takeover_active", "takeover_conflict", "invalid_lease", "not_in_takeover", "capture_blocked_during_takeover", "viewer_not_active", "viewer_limit", "stream_unavailable", "duplicate_request_id", "queue_full", "uncertain_outcome", "invalid_worker_result", "sensitive_target", "focused_target_unknown", "too_many_pages", "too_many_frames", "page_not_found", "target_not_found", "desktop_command_failed", "desktop_result_too_large", "forbidden_target", "unknown_page", "ambiguous_locator", "grounding_unavailable", "invalid_png", "operation_failed", "display_conflict", "profile_busy_or_unsafe", "supervisor_stopping"]);
+const SAFE_CODES = new Set(["auth_failed", "source_denied", "invalid_command", "invalid_json", "body_too_large", "not_found", "method_not_allowed", "invalid_content_type", "agent_unavailable", "session_not_running", "session_start_failed", "session_start_timeout", "session_cleanup_failed", "stale_generation", "takeover_active", "takeover_conflict", "invalid_lease", "not_in_takeover", "capture_blocked_during_takeover", "viewer_not_active", "viewer_limit", "stream_unavailable", "duplicate_request_id", "queue_full", "uncertain_outcome", "invalid_worker_result", "sensitive_target", "focused_target_unknown", "too_many_pages", "too_many_frames", "page_not_found", "target_not_found", "desktop_command_failed", "desktop_result_too_large", "forbidden_target", "unknown_page", "ambiguous_locator", "grounding_unavailable", "visual_unavailable", "invalid_png", "operation_failed", "display_conflict", "profile_busy_or_unsafe", "supervisor_stopping", "desktop_start_failed", "desktop_stop_failed", "browser_start_failed", "browser_stop_failed", "desktop_setup_failed", "desktop_not_running", "browser_not_running", "sandbox_start_failed", "agent_paused", "security_stopped", "budget_exhausted"]);
 export const safeCode = (error) => SAFE_CODES.has(error?.code) ? error.code : "operation_failed";
 const reply = (res, status, value) => {
   if (res.headersSent || res.destroyed) return;
@@ -63,6 +63,11 @@ export function createController(manager, secret, { resolveApp = () => dns.looku
       else if (c.operation === "session.start") result = await manager.start(c.ownerId, c.agentId);
       else if (c.operation === "session.stop") result = await manager.stop(c.ownerId, c.agentId, c.generation);
       else if (c.operation === "session.status") result = await manager.status(c.ownerId, c.agentId);
+      else if (c.operation === "sandbox.start") result = await manager.ensureSandbox(c.ownerId, c.agentId);
+      else if (c.operation === "desktop.start") result = await manager.startDesktop(c.ownerId, c.agentId, c.generation);
+      else if (c.operation === "desktop.stop") result = await manager.stopDesktop(c.ownerId, c.agentId, c.generation);
+      else if (c.operation === "browser.start") result = await manager.startBrowser(c.ownerId, c.agentId, c.generation);
+      else if (c.operation === "browser.stop") result = await manager.stopBrowser(c.ownerId, c.agentId, c.generation);
       else if (c.operation === "agent.create") {
         const created = await manager.create(c.ownerId, c.agentId);
         if (created.agentId !== c.agentId) throw Error("invalid_agent_result");

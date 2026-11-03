@@ -51,7 +51,7 @@ test.before(async () => {
     REVOKE ALL ON SCHEMA drizzle FROM PUBLIC, eclipse_app; REVOKE CREATE, TEMP ON DATABASE postgres FROM PUBLIC, eclipse_app; GRANT USAGE ON SCHEMA public TO eclipse_app;
     GRANT SELECT, INSERT, UPDATE ON owner, agent_policies, runs TO eclipse_app;
     GRANT SELECT, INSERT, UPDATE, DELETE ON sessions, agents TO eclipse_app;
-    GRANT SELECT, INSERT ON chat_sessions, messages, steps, step_evidence, checkpoints, cost_entries TO eclipse_app;
+    GRANT SELECT, INSERT ON chat_sessions, messages, steps, step_evidence, checkpoints, cost_entries, run_meta TO eclipse_app;
     GRANT SELECT, INSERT, DELETE ON replay_scripts TO eclipse_app;
     GRANT SELECT, INSERT ON replay_script_versions TO eclipse_app;
     GRANT SELECT, INSERT, UPDATE ON replay_script_proposals TO eclipse_app;`);

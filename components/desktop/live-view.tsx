@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { AlertTriangle, Loader2, Maximize2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { getForwardedKeyChord } from "@/lib/desktop/key-chord";
@@ -8,6 +8,7 @@ import { ExpandedView } from "@/components/desktop/expanded-view";
 import { AstraBadge } from "@/components/ui/astra-badge";
 import { TeachControls } from "@/components/desktop/teach-controls";
 import { useTeachCapture } from "@/lib/teach/client";
+import { initTakeoverEligibility, isTakeoverEligible, resetTakeoverEvidence, useTakeoverEligibility } from "@/components/desktop/use-takeover-eligibility";
 
 type Lease = { generation: string; connectionId: string; leaseId: string };
 type ActiveView = { generation: string; connectionId: string; csrfToken: string; disposed: boolean; lease: Lease | null; pending: number; inputBlocked: boolean };
@@ -25,6 +26,7 @@ export function LiveView({ agentId, agentName, modelName, astraMode }: { agentId
   const wasExpanded = useRef(false);
   const textRef = useRef<HTMLTextAreaElement>(null);
   const activeRef = useRef<ActiveView | null>(null);
+  const takeOverInFlight = useRef(false);
   const composingRef = useRef(false);
   const queueRef = useRef(Promise.resolve());
   const [status, setStatus] = useState<"connecting" | "live" | "error">("connecting");
@@ -33,10 +35,14 @@ export function LiveView({ agentId, agentName, modelName, astraMode }: { agentId
   const [busy, setBusy] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const [expanded, setExpanded] = useState(false);
-  const [phone, setPhone] = useState(false);
   const [connectedAt, setConnectedAt] = useState<number | null>(null);
+  // Takeover is an input-policy check (keyboard + mouse demonstrated in this session), not a
+  // viewport rule: touch-only devices stay view-only at any width.
+  const { eligible, hint, confirmPointer, confirmKeyboard } = useTakeoverEligibility();
+  const hintId = useId();
+  useEffect(() => initTakeoverEligibility(), []);
   const getTeachSession = useCallback(() => activeRef.current, []);
-  const teach = useTeachCapture(agentId, getTeachSession, takenOver && status === "live" && !phone);
+  const teach = useTeachCapture(agentId, getTeachSession, takenOver && status === "live" && eligible);
   const stopMicRef = useRef(teach.stopMic);
   useLayoutEffect(() => { stopMicRef.current = teach.stopMic; }, [teach.stopMic]);
   const pointerStart = useRef<{ x: number; y: number; at: number; id: number } | null>(null);
@@ -52,13 +58,6 @@ export function LiveView({ agentId, agentName, modelName, astraMode }: { agentId
     if (slot && screenRef.current.parentElement !== slot) slot.appendChild(screenRef.current);
   });
   useEffect(() => () => { screenRef.current?.remove(); }, []);
-  useEffect(() => {
-    const query = window.matchMedia("(max-width: 767px)");
-    const update = () => setPhone(query.matches);
-    update();
-    query.addEventListener("change", update);
-    return () => query.removeEventListener("change", update);
-  }, []);
   // Esc leaves the expanded view, except during a takeover: then Esc belongs to the desktop and only the buttons exit.
   useEffect(() => {
     if (!expanded) return;
@@ -87,6 +86,13 @@ export function LiveView({ agentId, agentName, modelName, astraMode }: { agentId
       if (!active.disposed) setTakenOver(false);
     });
   }, [agentId]);
+
+  // While in control, an eligibility loss (capability change, page resume without
+  // re-confirmation) stops recording/mic, blocks input and releases the lease immediately.
+  // A failed release keeps the Hand back button and error visible as the recovery path.
+  useEffect(() => {
+    if (takenOver && !eligible) void release().catch(() => {});
+  }, [takenOver, eligible, release]);
 
   useEffect(() => {
     const active = { generation: "", connectionId: crypto.randomUUID(), csrfToken: "", disposed: false, lease: null as Lease | null, pending: 0, inputBlocked: false };
@@ -120,6 +126,7 @@ export function LiveView({ agentId, agentName, modelName, astraMode }: { agentId
         viewer.addEventListener("disconnect", () => {
           if (active.disposed) return;
           void release(true, active).catch(() => {});
+          resetTakeoverEvidence();
           setTakenOver(false); setStatus("error"); setConnectedAt(null);
           setError("Desktop disconnected. Reconnect to check the current agent session.");
         });
@@ -145,7 +152,10 @@ export function LiveView({ agentId, agentName, modelName, astraMode }: { agentId
 
   const takeOver = async () => {
     const active = activeRef.current;
-    if (!active || active.disposed || status !== "live") return;
+    // The lease is granted only when the input check has passed; the fetch below is guarded
+    // by the existing session/CSRF/lease checks on the server.
+    if (!active || active.disposed || status !== "live" || busy || takeOverInFlight.current || !isTakeoverEligible()) return;
+    takeOverInFlight.current = true;
     setBusy(true); setError(null);
     try {
       const response = await fetch(`/api/desktop/${agentId}/takeover`, { method: "POST", credentials: "same-origin", signal: AbortSignal.timeout(6000), headers: { "Content-Type": "application/json", "x-csrf-token": active.csrfToken }, body: JSON.stringify({ generation: active.generation, connectionId: active.connectionId }) });
@@ -157,7 +167,7 @@ export function LiveView({ agentId, agentName, modelName, astraMode }: { agentId
       if (active.disposed) { void release(true, active).catch(() => {}); return; }
       setTakenOver(true);
     } catch (failure) { if (!active.disposed) setError((failure as Error).message); }
-    finally { if (!active.disposed) setBusy(false); }
+    finally { takeOverInFlight.current = false; if (!active.disposed) setBusy(false); }
   };
 
   const handBack = async () => {
@@ -168,10 +178,14 @@ export function LiveView({ agentId, agentName, modelName, astraMode }: { agentId
 
   const sendInput = useCallback((payload: Record<string, unknown>) => {
     const active = activeRef.current; const lease = active?.lease;
+    // Input policy: a demonstrated keyboard+mouse session is required, including for work
+    // already queued inside the promise chain.
+    if (!isTakeoverEligible()) return;
     if (!active || active.disposed || !lease || active.inputBlocked) return;
     if (active.pending >= 32) { setError("Desktop input is busy. Wait for the current input to finish."); return; }
     active.pending++;
     queueRef.current = queueRef.current.then(async () => {
+      if (!isTakeoverEligible()) return;
       if (active.disposed || active.lease !== lease || active.inputBlocked) return;
       const response = await fetch(`/api/desktop/${agentId}/input`, { method: "POST", credentials: "same-origin", signal: AbortSignal.timeout(6000), headers: { "Content-Type": "application/json", "x-csrf-token": active.csrfToken }, body: JSON.stringify({ ...lease, ...payload }) });
       if (!response.ok) throw new Error("Desktop input was denied. Check the current takeover and try again.");
@@ -220,16 +234,21 @@ export function LiveView({ agentId, agentName, modelName, astraMode }: { agentId
   };
 
   // Takeover input layer and the connecting/offline cover. Rendered in whichever view is showing the stream.
-  const inputBlocked = phone; // phones are always view-only
+  // Only real mouse pointers drive the remote desktop: touch/pen pointers and their
+  // compatibility mouse events are ignored (app controls stay touch-usable).
+  const inputBlocked = !eligible;
+  const pointerTypeRef = useRef<string>("");
   const overlay = (
     <>
       {takenOver && !inputBlocked && <div className="absolute inset-0 cursor-crosshair" onPointerDown={(event) => {
-        if (event.button !== 0) return;
+        pointerTypeRef.current = event.pointerType;
+        if (event.pointerType !== "mouse" || event.button !== 0) return;
         const point = desktopPoint(event.clientX, event.clientY);
         if (!point) return;
         event.preventDefault(); textRef.current?.focus(); event.currentTarget.setPointerCapture(event.pointerId);
         pointerStart.current = { ...point, at: performance.now(), id: event.pointerId };
       }} onPointerUp={(event) => {
+        if (event.pointerType !== "mouse") { pointerStart.current = null; return; }
         const start = pointerStart.current; pointerStart.current = null;
         if (!start || start.id !== event.pointerId) return;
         const end = desktopPoint(event.clientX, event.clientY);
@@ -238,7 +257,11 @@ export function LiveView({ agentId, agentName, modelName, astraMode }: { agentId
         event.preventDefault();
         if (Math.hypot(end.x - start.x, end.y - start.y) >= 4) sendInput({ operation: "input.drag", x: start.x, y: start.y, toX: end.x, toY: end.y });
         else sendInput({ operation: "input.click", button: "left", x: end.x, y: end.y });
-      }} onPointerCancel={() => { pointerStart.current = null; }} onLostPointerCapture={() => { pointerStart.current = null; }} onContextMenu={(event) => click(event, "right")} onWheel={(event) => { sendInput({ operation: "input.scroll", direction: event.deltaY < 0 ? "up" : "down", count: 1 }); }}>
+      }} onPointerCancel={() => { pointerStart.current = null; }} onLostPointerCapture={() => { pointerStart.current = null; }} onContextMenu={(event) => {
+        // Touch long-press menus never reach the desktop.
+        if (pointerTypeRef.current !== "mouse") return;
+        click(event, "right");
+      }} onWheel={(event) => { sendInput({ operation: "input.scroll", direction: event.deltaY < 0 ? "up" : "down", count: 1 }); }}>
         <textarea ref={textRef} className="sr-only" aria-label="Type into agent desktop" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} onCompositionStart={() => { composingRef.current = true; }} onCompositionEnd={(event) => { composingRef.current = false; sendText(event.currentTarget.value); event.currentTarget.value = ""; }} onChange={(event) => { if (!composingRef.current) { sendText(event.currentTarget.value); event.currentTarget.value = ""; } }} onPaste={(event) => { event.preventDefault(); sendText(event.clipboardData.getData("text/plain")); }} />
       </div>}
       {status !== "live" && <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-background p-6 text-center">
@@ -250,7 +273,21 @@ export function LiveView({ agentId, agentName, modelName, astraMode }: { agentId
   );
 
   const teachControls = <TeachControls capture={teach.capture} saved={teach.saved} busy={teach.busy} error={teach.error} narrationAllowed={teach.narrationAllowed}
-    canRecord={takenOver && status === "live" && !phone} onAction={teach.act} onRetryTranscription={teach.retryTranscription} />;
+    canRecord={takenOver && status === "live" && eligible} onAction={teach.act} onRetryTranscription={teach.retryTranscription} />;
+
+  // Shared takeover input check for the inline and expanded controls: collect trusted mouse
+  // and keyboard evidence on the control itself, then act only when both exist.
+  const canTakeOver = hint;
+  const takeoverCheck = {
+    available: canTakeOver,
+    eligible,
+    onPointerDown: (event: React.PointerEvent) => confirmPointer({ isTrusted: event.nativeEvent.isTrusted, pointerType: event.pointerType, button: event.button }),
+    onKeyDown: (event: React.KeyboardEvent) => {
+      confirmKeyboard({ isTrusted: event.nativeEvent.isTrusted, isComposing: event.nativeEvent.isComposing, key: event.key });
+      if (event.key === "Enter" && isTakeoverEligible()) { event.preventDefault(); void takeOver(); }
+    },
+    onRequest: () => { if (isTakeoverEligible()) void takeOver(); },
+  };
 
   return (
     <div ref={frameRef} aria-label={agentName ? `Live view of ${agentName}` : "Live desktop view"} className={`flex flex-col overflow-hidden rounded-xl border bg-background ${takenOver ? "border-corona" : "border-border"}`}>
@@ -262,7 +299,21 @@ export function LiveView({ agentId, agentName, modelName, astraMode }: { agentId
           <span className="text-muted-foreground" role="status">{status === "live" ? "Live" : status === "connecting" ? "Connecting…" : "Offline"}</span>
         </div>
         <div className="flex items-center gap-2">
-          {status === "live" && !phone && <Button size="sm" variant={takenOver ? "primary" : "secondary"} disabled={busy} onClick={takenOver ? handBack : takeOver}>{busy && <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />}{takenOver ? "Hand back" : "Take over"}</Button>}
+          {status === "live" && (takenOver ? (
+            <Button size="sm" variant="primary" disabled={busy} onClick={handBack}>
+              {busy && <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />}Hand back
+            </Button>
+          ) : canTakeOver ? (
+            <Button size="sm" variant="secondary" disabled={busy}
+              aria-describedby={hintId}
+              onPointerDown={takeoverCheck.onPointerDown}
+              onKeyDown={takeoverCheck.onKeyDown}
+              onClick={takeoverCheck.onRequest}>
+              {busy && <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />}Take over
+            </Button>
+          ) : (
+            <span id={hintId} className="max-w-44 text-right text-xs text-muted-foreground">Connect a keyboard and mouse to take over</span>
+          ))}
           <Button ref={fullScreenButtonRef} size="sm" variant="ghost" title="Full screen" aria-label="Full screen" aria-haspopup="dialog" aria-expanded={expanded} onClick={() => setExpanded(true)}><Maximize2 aria-hidden="true" className="h-4 w-4" /></Button>
         </div>
       </div>
@@ -280,10 +331,15 @@ export function LiveView({ agentId, agentName, modelName, astraMode }: { agentId
         )}
       </div>
       {error && status === "live" && <p role="alert" className="border-t border-border px-3 py-2 text-xs text-danger">{error}</p>}
+      {status === "live" && !takenOver && hint && !eligible && (
+        <p id={hintId} className="border-t border-border px-3 py-2 text-xs text-muted-foreground">
+          Input check: click Take over with your mouse, then press Enter to confirm your keyboard. This check never sends anything to the desktop and is not proof of attached hardware.
+        </p>
+      )}
       {expanded && (
-        <ExpandedView agentName={agentName ?? "Agent desktop"} astraMode={astraMode === true} status={status} takenOver={takenOver} busy={busy} phone={phone} modelName={modelName}
+        <ExpandedView agentName={agentName ?? "Agent desktop"} astraMode={astraMode === true} status={status} takenOver={takenOver} busy={busy} takeover={takeoverCheck} modelName={modelName}
           teachControls={(takenOver || teach.capture || teach.saved.length > 0) ? teachControls : null} connectedAt={connectedAt} error={error} slotRef={setExpandedSlot} overlay={overlay} onScreenKeyDown={handleKeyDown}
-          onTakeOver={takeOver} onHandBack={handBack} onExit={() => setExpanded(false)} />
+          onHandBack={handBack} onExit={() => setExpanded(false)} />
       )}
     </div>
   );

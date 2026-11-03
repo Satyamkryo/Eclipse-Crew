@@ -17,10 +17,14 @@ export interface RunSummary {
   stepCount: number;
   label: string;
   tone: RunTone;
+  // The signed seal status, or "running" before a seal. Used by Continue and the helper tree.
+  status: string;
   // true when the run finished and every recorded desktop step passed its check
   verified: boolean;
   // TASK-043: from the signed header. null for an original run.
   branch: { runId: string; step: number } | null;
+  // TASK-076: from the signed header. null unless this run was started by a helper spawn.
+  parent: { runId: string; step: number } | null;
 }
 
 export interface SamBoxView { x1: number; y1: number; x2: number; y2: number; width: number; height: number }
@@ -51,8 +55,19 @@ export interface StepView {
   checkpoint: "saved" | "partial" | "missing";
   checkpointReason: string | null;
 }
+export interface CompactStep {
+  idx: number;
+  action: string;
+  target: string | null;
+  result: string;
+  tone: RunTone;
+  model: string;
+  costMicroUsd: number | null;
+}
 export interface RunDetail {
   run: RunSummary; agentId: string; keyId: string; chain: ChainState; steps: StepView[]; branches: RunSummary[];
+  // TASK-076. Screenless helpers started by this run, shown as a tree. A helper's own detail lists none.
+  helpers: RunSummary[];
   // TASK-043: the baseline checkpoint (idx 0, "before step 1"), which has no step row of its own.
   baselineCheckpoint: "saved" | "partial" | "missing";
 }
@@ -87,19 +102,36 @@ export function actionLabel(action: Record<string, unknown>): { text: string; ta
     case "scroll": return { text: `Scroll ${text(action.direction)}`, target: null };
     case "wait": return { text: "Wait", target: null };
     case "read_document": return { text: "Read document", target: text(action.name) || null };
+    case "search_document": return { text: "Searched document", target: text(action.name) || null };
     case "deliver_file": return { text: "Send file", target: text(action.name) || null };
-    case "remember": return { text: "Ask to remember", target: text(action.scope) || null };
+    case "extract": return { text: "Saved text", target: text(action.name) || null };
+    case "navigate": return { text: "Opened page", target: text(action.host) || null };
+    case "select": return { text: "Chose option", target: text(action.target) || null };
+    case "remember": return { text: action.op === "replace" ? "Updated memory" : action.op === "forget" ? "Forgot memory" : "Saved memory", target: text(action.scope) || null };
+    case "search_history": return { text: "Searched chat history", target: null };
     case "tool_call": return { text: "External action", target: `${text(action.server)}.${text(action.tool)}` || null };
     case "shell": return { text: "Shell command", target: text(action.program) || null };
+    case "start_desktop": return { text: "Start desktop", target: text(action.graphics) && text(action.browser) ? `${text(action.graphics)} / ${text(action.browser)}` : null };
+    case "start_browser": return { text: "Start browser", target: text(action.graphics) && text(action.browser) ? `${text(action.graphics)} / ${text(action.browser)}` : null };
+    case "hear_audio": return { text: "Heard audio", target: `${typeof action.seconds === "number" ? action.seconds : 0}s` };
+    case "handoff": return { text: "Handed off", target: text(action.agent) || null };
+    case "spawn_subagent": return { text: "Started helper", target: `${typeof action.tools === "number" ? action.tools : 0} tools` };
     default: return { text: "Step", target: null };
   }
 }
 
 export function methodLabel(methods: readonly { phase: string; method: string; status: string }[], sam: string, kind: string): string {
-  if (kind === "read_document" || kind === "deliver_file") return "File action, no screen check";
-  if (kind === "remember") return "Memory request, no screen check";
+  if (kind === "read_document" || kind === "search_document" || kind === "deliver_file") return "File action, no screen check";
+  if (kind === "extract") return "Page text check, no screen action";
+  if (kind === "navigate") return "Page navigation, no screen check";
+  if (kind === "remember") return "Memory change, no screen check";
+  if (kind === "search_history") return "Chat history, no screen check";
   if (kind === "tool_call") return "Tool call, no screen check";
   if (kind === "shell") return "Shell command, no screen check";
+  if (kind === "start_desktop" || kind === "start_browser") return "Lifecycle action, no screen check";
+  if (kind === "hear_audio") return "Audio capture, no screen check";
+  if (kind === "handoff") return "Handed to a teammate, no screen check";
+  if (kind === "spawn_subagent") return "Background helper, no screen check";
   const passed = [...new Set(methods.filter((item) => item.status === "pass").map((item) => METHOD_NAME[item.method] ?? "Check"))];
   const base = passed.length ? passed.join(" + ") : "No check passed";
   return passed.includes("SAM 3.1") ? base : `${base} (${SAM_NOTE[sam] ?? "SAM off"})`;
@@ -118,6 +150,10 @@ const samBoxSchema = z.object({
 
 // A malformed stored receipt becomes a plain placeholder row instead of breaking the whole timeline.
 export interface CheckpointRowView { status: "complete" | "partial"; reason: string | null }
+export function compactStep(view: StepView): CompactStep {
+  return { idx: view.idx, action: view.action, target: view.target, result: view.result, tone: view.tone, model: view.model, costMicroUsd: view.costMicroUsd };
+}
+
 export function viewStep(receiptText: string, receiptHash: string, prevHash: string, idx: number, evidence: EvidenceRowView | null, checkpoint: CheckpointRowView | null = null): StepView {
   const saved = { checkpoint: (checkpoint ? (checkpoint.status === "complete" ? "saved" : "partial") : "missing") as StepView["checkpoint"],
     checkpointReason: checkpoint?.reason && /^[a-z_]{1,64}$/.test(checkpoint.reason) ? checkpoint.reason : null };
@@ -155,6 +191,9 @@ const RUN_LABEL: Record<string, { label: string; tone: RunTone }> = {
   security_stop: { label: "Security stop", tone: "danger" },
   scope_blocked: { label: "Blocked: outside task", tone: "warning" },
   paused_by_owner: { label: "Paused", tone: "warning" },
+  interrupted: { label: "Interrupted", tone: "warning" },
+  handed_off: { label: "Handed off", tone: "neutral" },
+  aborted: { label: "Canceled", tone: "neutral" },
 };
 const RUNNING_WINDOW_MS = 15 * 60_000;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -164,12 +203,17 @@ export function summarizeRun(input: {
 }): RunSummary {
   let task = "";
   let branch: RunSummary["branch"] = null;
+  let parent: RunSummary["parent"] = null;
   try {
-    const header = JSON.parse(input.headerText) as { task?: unknown; branch_of?: unknown; branch_at?: unknown };
+    const header = JSON.parse(input.headerText) as { task?: unknown; branch_of?: unknown; branch_at?: unknown; parent_run?: unknown; parent_step?: unknown };
     task = typeof header.task === "string" ? header.task.slice(0, 2000) : "";
     if (typeof header.branch_of === "string" && UUID_PATTERN.test(header.branch_of) &&
         Number.isSafeInteger(header.branch_at) && (header.branch_at as number) >= 0) {
       branch = { runId: header.branch_of, step: header.branch_at as number };
+    }
+    if (typeof header.parent_run === "string" && UUID_PATTERN.test(header.parent_run) &&
+        Number.isSafeInteger(header.parent_step) && (header.parent_step as number) >= 0) {
+      parent = { runId: header.parent_run, step: header.parent_step as number };
     }
   } catch { task = ""; }
   const now = input.now ?? new Date();
@@ -182,7 +226,8 @@ export function summarizeRun(input: {
   return {
     runId: input.runId, task, startedAt: input.startedAt.toISOString(), endedAt: input.endedAt?.toISOString() ?? null,
     durationMs: input.endedAt ? Math.max(0, input.endedAt.getTime() - input.startedAt.getTime()) : null,
-    stepCount: input.stepResults.length, label: verified ? "Verified" : entry.label, tone: verified ? "success" : entry.tone, verified, branch,
+    stepCount: input.stepResults.length, label: verified ? "Verified" : entry.label, tone: verified ? "success" : entry.tone,
+    status: input.sealed ? input.status : "running", verified, branch, parent,
   };
 }
 

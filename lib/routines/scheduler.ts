@@ -3,7 +3,10 @@ import "server-only";
 import { and, asc, eq, lte } from "drizzle-orm";
 
 import type { getDatabase } from "../../db/client";
-import { owner, routines } from "../../db/schema";
+import { agents, owner, routines } from "../../db/schema";
+import { enqueueMemoryTidy, startMemoryWorkers } from "../memory/queue";
+import { startGithubDeviceWorkers } from "../connections/device-queue";
+import { docKeyFor } from "../memory/schema";
 import { getDatabase as connectDatabase } from "../../db/client";
 import {
   routineCatchUpSchema,
@@ -14,6 +17,8 @@ import {
 import { scheduledRoutineJobs } from "./execution-plan";
 import { enqueueRoutineJob, getRoutineQueue, ROUTINE_QUEUE, routineJobSchema, type PgBossTransaction, type RoutineJob } from "./queue";
 import { runRoutineExecution } from "./run";
+import { CREW_REPORT_QUEUE, crewReportJobSchema, enqueueCrewReport, ensureCrewReportQueue } from "../crew/queue";
+import { deliverCrewReport, tickCrewReports } from "../crew/report";
 
 type Database = Awaited<ReturnType<typeof getDatabase>>;
 const TICK_MS = 60_000;
@@ -94,6 +99,34 @@ export async function tickRoutines(
   return { routines: processedRoutines, jobs: queuedJobs };
 }
 
+// TASK-086. At 03:00 in the owner's timezone, queue one tidy per document. The job id is fixed per local day, so a
+// repeated tick never duplicates it; the worker also enforces at most one tidy per 6 hours per document.
+export async function tickMemoryTidy(database: Database, now = new Date(), enqueue: typeof enqueueMemoryTidy = enqueueMemoryTidy): Promise<number> {
+  const owners = await database.select({ id: owner.id, timezone: owner.timezone, crewStoppedAt: owner.crewStoppedAt }).from(owner).limit(2);
+  let queued = 0;
+  for (const current of owners) {
+    if (current.crewStoppedAt) continue;
+    let parts: Intl.DateTimeFormatPart[];
+    try {
+      parts = new Intl.DateTimeFormat("en-CA", { timeZone: current.timezone, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit" }).formatToParts(now);
+    } catch { continue; }
+    if (parts.find((part) => part.type === "hour")?.value !== "03") continue;
+    const day = parts.filter((part) => ["year", "month", "day"].includes(part.type)).map((part) => part.value).join("-");
+    const agentRows = await database.select({ id: agents.id }).from(agents).where(eq(agents.ownerId, current.id));
+    try {
+      for (const agent of agentRows) {
+        for (const doc of ["memory", "private"] as const) {
+          if (await enqueue({ ownerId: current.id, agentId: agent.id, doc, docKey: docKeyFor(doc, agent.id) },
+            { id: `memory-tidy:${agent.id}:${doc}:${day}` })) queued += 1;
+        }
+      }
+      if (agentRows[0] && await enqueue({ ownerId: current.id, agentId: agentRows[0].id, doc: "user", docKey: "user" },
+        { id: `memory-tidy:${current.id}:user:${day}` })) queued += 1;
+    } catch { console.error("Memory tidy tick skipped one owner."); }
+  }
+  return queued;
+}
+
 async function readRoutine(database: Database, job: RoutineJob): Promise<RoutineRecord | null> {
   const [row] = await database.select().from(routines).where(and(
     eq(routines.ownerId, job.ownerId),
@@ -142,11 +175,42 @@ export async function startRoutineScheduler(): Promise<SchedulerHandle> {
       if (result.retry) throw new Error("routine_retry");
     });
 
+    await startMemoryWorkers(boss, database);
+    await startGithubDeviceWorkers(boss, database);
+
+    // TASK-058. The morning report is deterministic and local: the worker rechecks settings, writes one card and never
+    // calls a model or the network. The delivery row and the message commit in one transaction.
+    await ensureCrewReportQueue(boss);
+    await boss.work(CREW_REPORT_QUEUE, { batchSize: 1, localConcurrency: 1, pollingIntervalSeconds: 2 }, async ([job]) => {
+      const parsed = crewReportJobSchema.safeParse(job.data);
+      if (!parsed.success) return;
+      await deliverCrewReport(database, parsed.data.ownerId, {
+        scheduledAt: new Date(parsed.data.scheduledAt), timezone: parsed.data.timezone,
+      });
+    });
+
     let currentTick: Promise<unknown> | undefined;
     const runTick = () => {
       if (currentTick) return currentTick;
       currentTick = tickRoutines(database, enqueueRoutineJob)
         .catch(() => console.error("Routine scheduler tick failed."))
+        .then(() => tickMemoryTidy(database))
+        .catch(() => console.error("Memory tidy tick failed."))
+        .then(() => tickCrewReports(database, (ownerId, scheduledAt, timezone) => enqueueCrewReport(database, { ownerId, scheduledAt, timezone })))
+        .catch(() => console.error("Crew report tick failed."))
+        .then(async () => {
+          const { expireStaleFlows, refreshDueConnections } = await import("../connections/github-device");
+          await expireStaleFlows(database);
+          await refreshDueConnections(database);
+        })
+        .catch(() => console.error("GitHub device tick failed."))
+        .then(async () => {
+          if (process.env.RUN_SWEEPER_ENABLED === "false") return;
+          const { loadReceiptSigner } = await import("../receipts/signer");
+          const { sweepStalledRuns } = await import("../runs/sweeper");
+          await sweepStalledRuns(database, loadReceiptSigner());
+        })
+        .catch(() => console.error("Run sweeper tick failed."))
         .finally(() => { currentTick = undefined; });
       return currentTick;
     };

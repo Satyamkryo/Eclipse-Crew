@@ -5,48 +5,35 @@ import { CheckCircle2, CircleAlert, LoaderCircle } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { useRemote } from "@/components/history/use-remote";
+import { setupNeedsRemote, setupRows } from "@/lib/agents/setup";
 
 type ConnectionRow = { id: string; preset: "github" | "custom"; bindings: { host: string }[] };
 type ServerRow = { id: string; key: string; status: "pinned" | "changed" | "disabled" };
 
-// TASK-074. A checklist that reflects stored state, never a claim: each row is read from the same routes the dialogs use.
+// TASK-074/058. A checklist that reflects stored state, never a claim: each row is read from the same routes the dialogs
+// use. Roles that are not on GitHub get only the generic rows their real policy can satisfy; no mail or calendar tool
+// name is invented here.
 export function AgentSetup({ agentId, actions, tools, domains }: {
   agentId: string; actions: string[]; tools: string[]; domains: string[];
 }) {
-  const usesTools = actions.includes("tool_call") && tools.includes("github");
-  const usesShell = actions.includes("shell");
   const connections = useRemote<{ connections: ConnectionRow[] }>(`/api/connections?agentId=${agentId}`, () => null);
   const servers = useRemote<{ servers: ServerRow[] }>(`/api/mcp-servers?agentId=${agentId}`, () => null);
-  if (!usesTools && !usesShell) return null;
-
-  const rows: { label: string; done: boolean; detail: string }[] = [
-    {
-      label: "GitHub connection saved",
-      done: Boolean(connections.data?.connections.some((connection) => connection.preset === "github" || connection.bindings.some((binding) => binding.host === "github.com"))),
-      detail: "Settings → Connections → Add connection",
-    },
-    {
-      label: "GitHub MCP server pinned",
-      done: Boolean(servers.data?.servers.some((server) => server.key === "github" && server.status === "pinned")),
-      detail: servers.data?.servers.some((server) => server.key === "github" && server.status === "changed")
-        ? "The tool list changed — review and re-pin it in Settings → Connections"
-        : "Settings → Connections → MCP servers → Add MCP server",
-    },
-    ...(usesShell ? [{
-      label: "github.com in Domains",
-      done: domains.some((domain) => domain.toLowerCase() === "github.com"),
-      detail: "Agent settings → Domains",
-    }] : []),
-  ];
-
-  const loading = connections.loading || servers.loading;
-  const failed = connections.error || servers.error;
+  const rows = setupRows(actions, tools, domains, {
+    connections: connections.data?.connections ?? [],
+    servers: servers.data?.servers ?? [],
+  });
+  if (rows.length === 0) return null;
+  const needsRemote = setupNeedsRemote(actions, tools);
+  const loading = needsRemote && (connections.loading || servers.loading);
+  const failed = needsRemote && (connections.error || servers.error);
 
   return (
     <section className="rounded-lg border border-border bg-card p-4" aria-labelledby="agent-setup-heading">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 id="agent-setup-heading" className="text-sm font-semibold">Setup</h3>
-        <Link href="/settings/connections" className="text-sm underline underline-offset-4">Open Connections</Link>
+        {needsRemote && (
+          <Link href="/settings/connections" className="text-sm underline underline-offset-4">Open Connections</Link>
+        )}
       </div>
       {loading ? (
         <p className="mt-3 flex items-center gap-2 text-sm text-muted-foreground">
