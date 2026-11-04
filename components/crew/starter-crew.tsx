@@ -6,13 +6,16 @@ import { CheckCircle2, CircleAlert, LoaderCircle, UsersRound } from "lucide-reac
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { AGENT_TEMPLATES } from "@/lib/agents/templates";
+import { AGENT_TEMPLATES, STARTER_TEMPLATE_IDS } from "@/lib/agents/templates";
 import type { StarterCrewView } from "@/lib/crew/schema";
 
 type Draft = { schedule: string; goal: string };
 
+// The starter preview is the six original roles; the gallery offers the full list.
+const STARTER_TEMPLATES = STARTER_TEMPLATE_IDS.map((id) => AGENT_TEMPLATES.find((template) => template.id === id)!);
+
 const INITIAL_DRAFTS: Record<string, Draft> = Object.fromEntries(
-  AGENT_TEMPLATES.map((template) => [template.id, { ...(template.routineExamples[0] ?? { schedule: "", goal: "" }) }]),
+  STARTER_TEMPLATES.map((template) => [template.id, { ...(template.routineExamples[0] ?? { schedule: "", goal: "" }) }]),
 );
 
 export function StarterCrew({ initial, csrfToken }: { initial: StarterCrewView; csrfToken: string }) {
@@ -155,7 +158,7 @@ export function StarterCrew({ initial, csrfToken }: { initial: StarterCrewView; 
         </div>
       ) : (
         <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {AGENT_TEMPLATES.map((template) => {
+          {STARTER_TEMPLATES.map((template) => {
             const draft = drafts[template.id] ?? { schedule: "", goal: "" };
             return (
               <article key={template.id} className="flex min-w-0 flex-col gap-2 rounded-md border border-border p-3">

@@ -6,14 +6,16 @@ import { and, eq, inArray, lt, or } from "drizzle-orm";
 import type { getDatabase } from "../../db/client";
 import { agents, starterCrewMembers, starterCrewSetups } from "../../db/schema";
 import type { AgentTemplate, AgentTemplateId } from "../agents/templates";
-import { AGENT_TEMPLATES } from "../agents/templates";
+import { AGENT_TEMPLATES, STARTER_TEMPLATE_IDS } from "../agents/templates";
 import type { AgentCreateInput } from "../agents/schema";
 import { createAgentIdentity, provisionAgentForOwner, type DesktopOperations } from "../agents/service";
 import type { StarterCrewView, StarterMemberView } from "./schema";
 
 type Database = Awaited<ReturnType<typeof getDatabase>>;
 const STALE_CLAIM_MS = 30_000;
-const TEMPLATE_ORDER = new Map(AGENT_TEMPLATES.map((template, index) => [template.id, index]));
+// The starter crew is the six original roles; the gallery offers the full template list.
+const STARTER_TEMPLATES = STARTER_TEMPLATE_IDS.map((id) => AGENT_TEMPLATES.find((template) => template.id === id)!);
+const TEMPLATE_ORDER = new Map(STARTER_TEMPLATES.map((template, index) => [template.id, index]));
 
 function cents(usd: string): number {
   const [whole, fraction = ""] = usd.split(".");
@@ -54,7 +56,7 @@ async function ensureSetup(database: Database, ownerId: string) {
     const members = await transaction.select({ id: starterCrewMembers.id }).from(starterCrewMembers)
       .where(and(eq(starterCrewMembers.ownerId, ownerId), eq(starterCrewMembers.setupId, setup.id))).limit(1);
     if (!members[0]) {
-      await transaction.insert(starterCrewMembers).values(AGENT_TEMPLATES.map((template) => ({
+      await transaction.insert(starterCrewMembers).values(STARTER_TEMPLATES.map((template) => ({
         id: randomUUID(),
         ownerId,
         setupId: setup.id,
@@ -147,7 +149,7 @@ export async function createOrResumeStarterCrew(
   database: Database, ownerId: string, desktop?: DesktopOperations,
 ): Promise<StarterCrewView> {
   const setup = await ensureSetup(database, ownerId);
-  for (const template of AGENT_TEMPLATES) {
+  for (const template of STARTER_TEMPLATES) {
     const member = await claimMember(database, ownerId, setup.id, template.id);
     if (!member) continue;
     try {

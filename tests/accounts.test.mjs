@@ -61,7 +61,7 @@ test("TASK-092: three accounts are created; duplicate logins are refused", { ski
   await handle.adminPool.query("REVOKE TEMPORARY ON DATABASE postgres FROM PUBLIC");
   await handle.adminPool.query("GRANT SELECT ON step_evidence, checkpoints, memory_versions TO eclipse_app");
   await handle.adminPool.query("GRANT SELECT, INSERT ON memory_entries TO eclipse_app");
-  await handle.adminPool.query("GRANT SELECT, INSERT, UPDATE ON check_ins TO eclipse_app");
+  await handle.adminPool.query("GRANT SELECT, INSERT, UPDATE, DELETE ON check_ins TO eclipse_app");
   process.env.TASK092_OWNERS = JSON.stringify({ A: A.id, B: B.id, C: C.id });
 });
 
@@ -256,7 +256,8 @@ test("TASK-092: migration 0039 drops the singleton; check-ins has an explicit ru
   const journal = JSON.parse(readFileSync("drizzle/meta/_journal.json", "utf8"));
   assert.ok(journal.entries.some((entry) => entry.tag === "0039_multi_account"), "0039 is journaled");
   const migrate = readFileSync("scripts/db-migrate.mjs", "utf8");
-  assert.match(migrate, /GRANT SELECT, INSERT, UPDATE ON public\.check_ins TO eclipse_app/);
+  assert.match(migrate, /GRANT SELECT, INSERT, UPDATE, DELETE ON public\.check_ins TO eclipse_app/);
   const provision = readFileSync("db/provision.sql", "utf8");
+  assert.match(provision, /GRANT SELECT, INSERT, UPDATE, DELETE ON public\.check_ins TO eclipse_app/);
   assert.match(provision, /migration_count >= 3 AND migration_count <= 39/);
 });

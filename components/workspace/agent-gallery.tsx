@@ -40,15 +40,18 @@ export function AgentGallery({ agents }: { agents: GalleryAgent[] }) {
   const [templates] = useState<AgentTemplate[]>(() => shuffled(AGENT_TEMPLATES).slice(0, 5));
   const [createAvatar] = useState(() => randomAvatarVariant());
 
+  // No own scroll container: AppShell already scrolls this page, so a second
+  // overflow-y-auto here caused a permanent stray scrollbar. The single outer
+  // scroller appears only when the agent list outgrows the viewport.
   return (
-    <div className="h-full min-h-0 overflow-y-auto">
-      <div className="mx-auto flex w-full max-w-6xl flex-col gap-10 px-4 py-8 sm:px-6">
+    <div className="w-full">
+      <div className="mx-auto flex w-full max-w-6xl flex-col gap-8 px-4 py-6 sm:px-6">
         <div>
           <h1 className="text-3xl font-semibold tracking-tight">Agents</h1>
           <p className="mt-1 text-sm text-muted-foreground">Start from a template, pick up where you left off, or create someone new.</p>
         </div>
         <section aria-labelledby="gallery-templates">
-          <h2 id="gallery-templates" className="mb-4 text-base font-semibold tracking-tight">Start from a template</h2>
+          <h2 id="gallery-templates" className="mb-3 text-base font-semibold tracking-tight">Start from a template</h2>
           <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
             {templates.map((template) => (
               <li key={template.id} className="min-w-0">
@@ -81,7 +84,7 @@ export function AgentGallery({ agents }: { agents: GalleryAgent[] }) {
         </section>
         {agents.length > 0 && (
           <section aria-labelledby="gallery-mine">
-            <h2 id="gallery-mine" className="mb-4 text-base font-semibold tracking-tight">Your agents</h2>
+            <h2 id="gallery-mine" className="mb-3 text-base font-semibold tracking-tight">Your agents</h2>
             <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
               {agents.map((agent) => (
                 <li key={agent.id} className="min-w-0">

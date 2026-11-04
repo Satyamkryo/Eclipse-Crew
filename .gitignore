@@ -16,6 +16,9 @@
 /.tmp/
 /.tmp-*.log
 
+# Host-specific deployment files (Oracle VPS rollout in progress; not part of the public build)
+/deploy/
+
 # Installed dependencies
 node_modules/
 

@@ -53,6 +53,7 @@ Rules for AI agents:
 | 035 | Owner-created crews with crew-scoped handoff | Accepted (handoff scope amended by ADR-036) |
 | 036 | Simple agent creation: public-web default, instructions vs persona, crew-only handoff | Accepted |
 | 037 | Owner-created accounts, one workspace each | Accepted |
+| 038 | Desktop-only AppArmor profile for bootstrap bind mounts | Accepted |
 
 ---
 
@@ -262,3 +263,9 @@ Status: Accepted · 2026-11-04 · Owner approved with TASK-092 · Amends ADR-014
 Decision: The owner creates extra sign-in accounts from the host CLI only (`account:create`; never HTTP). Every account is a full, separate workspace: its own agents, crews, chats, runs, memory, skills, receipts, routines, connections, model keys and budgets. No signup, no invites, no admin role. Migration 0039 drops the one-row `owner_singleton_idx`; the login stays unique.
 Reason: Judges need isolated workspaces without weakening the no-signup, localhost, server-side-session model. Isolation is enforced by the existing `owner_id` scoping and desktop `owner_mismatch` checks, not by the prompt.
 Rejected: web signup, admin UI or roles, copying model keys between accounts, per-account desktop containers.
+
+## ADR-038: Desktop-only AppArmor profile for bootstrap bind mounts
+Status: Accepted · 2026-11-05 · Owner approved (Oracle rollout) · Extends ADR-026
+Decision: Only the trusted `desktop` service runs under `apparmor=eclipse-desktop` (`docker/desktop/apparmor/eclipse-desktop`), an enforced copy of Docker's `docker-default` that replaces its blanket `deny mount` with four exact rules: bind `/workspace/.system/downloads` → `/downloads`, bind `/run/eclipse/*` → `/etc/*`, and their protective remounts (`nosuid,nodev,noexec`; `/etc/*` read-only). All other mounts stay denied; `userns` is allowed for Chromium and per-agent namespaces under `kernel.apparmor_restrict_unprivileged_userns=1`. Every other service keeps `docker-default`. On AppArmor hosts the profile must be loaded before `docker compose up`; hosts without AppArmor (Docker Desktop) ignore the option.
+Reason: On Ubuntu 24.04 `docker-default` refuses bootstrap's bind mount (EACCES), so the desktop can't start; `apparmor=unconfined` breaks user namespaces and removes all mediation.
+Rejected: `apparmor=unconfined`, `--privileged`, dropping the protective bind mounts.

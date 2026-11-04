@@ -7,13 +7,16 @@ import { setupRows } from "../lib/agents/setup.ts";
 import { AGENT_TEMPLATES, getTemplate } from "../lib/agents/templates.ts";
 
 const browserActions = new Set(["click", "type", "key", "scroll", "wait"]);
-const githubIds = new Set(["pr-reviewer", "dev-agent"]);
-const toolRoleIds = new Set(["daily-briefer", "inbox-triage"]);
-const browsingIds = new Set(["research-analyst", "travel-assistant"]);
+const githubIds = new Set(["pr-reviewer", "dev-agent", "release-notes", "issue-triage"]);
+const toolRoleIds = new Set(["daily-briefer", "inbox-triage", "calendar-cleanup", "followup-nudger"]);
+const browsingIds = new Set(["research-analyst", "travel-assistant",
+  "meeting-notes", "expense-tracker", "job-hunt", "paper-summarizer", "price-watcher", "news-briefer", "link-checker"]);
+const fileOnlyIds = new Set(["docs-writer", "file-organizer", "study-coach"]);
 const browsingPolicy = ["start_desktop", "start_browser", "click", "type", "key", "scroll", "wait", "read_document", "deliver_file"];
+const filePolicy = ["read_document", "deliver_file"];
 
 test("every template is a valid create input with a short persona and least-privilege actions", () => {
-  assert.equal(AGENT_TEMPLATES.length, 6);
+  assert.equal(AGENT_TEMPLATES.length, 20);
   for (const template of AGENT_TEMPLATES) {
     const parsed = agentCreateSchema.safeParse({
       name: "Test agent",
@@ -42,7 +45,7 @@ test("every template is a valid create input with a short persona and least-priv
   assert.equal(getTemplate("missing"), undefined);
 });
 
-test("the two GitHub templates keep their existing policies", () => {
+test("the GitHub templates keep their existing policies", () => {
   for (const id of githubIds) {
     const template = getTemplate(id);
     assert.ok(template, id);
@@ -58,8 +61,8 @@ test("the two GitHub templates keep their existing policies", () => {
   assert.deepEqual(getTemplate("dev-agent")?.routineExamples.map((example) => example.schedule), ["On request"]);
 });
 
-test("the four starter roles start without tools, domains or extra permissions", () => {
-  for (const id of [...toolRoleIds, ...browsingIds]) {
+test("the non-GitHub roles start without tools, domains or extra permissions", () => {
+  for (const id of [...toolRoleIds, ...browsingIds, ...fileOnlyIds]) {
     const template = getTemplate(id);
     assert.ok(template, id);
     assert.deepEqual(template.tools, [], id);
@@ -76,10 +79,20 @@ test("the four starter roles start without tools, domains or extra permissions",
     assert.deepEqual(getTemplate(id)?.actions, browsingPolicy, id);
     assert.equal(getTemplate(id)?.actions.includes("tool_call"), false, id);
   }
+  for (const id of fileOnlyIds) {
+    assert.deepEqual(getTemplate(id)?.actions, filePolicy, id);
+    assert.equal(getTemplate(id)?.actions.includes("tool_call"), false, id);
+  }
   assert.deepEqual(getTemplate("daily-briefer")?.routineExamples.map((example) => example.schedule), ["Every weekday at 09:00"]);
   assert.deepEqual(getTemplate("inbox-triage")?.routineExamples.map((example) => example.schedule), ["Every weekday at 09:15"]);
   assert.deepEqual(getTemplate("research-analyst")?.routineExamples.map((example) => example.schedule), ["On request"]);
   assert.deepEqual(getTemplate("travel-assistant")?.routineExamples.map((example) => example.schedule), ["On request"]);
+  assert.deepEqual(getTemplate("job-hunt")?.routineExamples.map((example) => example.schedule), ["Every Monday at 09:00"]);
+  assert.deepEqual(getTemplate("price-watcher")?.routineExamples.map((example) => example.schedule), ["Every weekday at 10:00"]);
+  assert.deepEqual(getTemplate("news-briefer")?.routineExamples.map((example) => example.schedule), ["Every weekday at 08:00"]);
+  assert.deepEqual(getTemplate("calendar-cleanup")?.routineExamples.map((example) => example.schedule), ["Every Sunday at 18:00"]);
+  assert.deepEqual(getTemplate("followup-nudger")?.routineExamples.map((example) => example.schedule), ["Every weekday at 09:30"]);
+  assert.deepEqual(getTemplate("issue-triage")?.routineExamples.map((example) => example.schedule), ["Every weekday at 09:00"]);
 });
 
 test("routine examples are drafts, never saved routines", () => {
@@ -119,6 +132,10 @@ test("the setup checklist is role-aware and never invents a mail or calendar slu
     assert.equal(rows.some((row) => /github/i.test(row.label + row.detail)), false);
     const filled = setupRows(template.actions, template.tools, ["example.com"], empty);
     assert.equal(filled[0].done, true);
+  }
+  for (const id of fileOnlyIds) {
+    const template = getTemplate(id);
+    assert.deepEqual(setupRows(template.actions, template.tools, [], empty), [], id);
   }
   assert.deepEqual(setupRows(["read_page"], [], [], empty), []);
   for (const row of [...github, ...briefer]) assert.doesNotMatch(row.label + row.detail, /gmail|google calendar|outlook/i);
