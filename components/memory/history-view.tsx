@@ -15,7 +15,7 @@ type Version = {
 };
 
 const OP_LABEL: Record<string, string> = {
-  add: "Added", edit: "Edited", remove: "Removed", pin: "Pinned", unpin: "Unpinned", soul_edit: "SOUL.md edited", undo: "Undone",
+  add: "Added", edit: "Edited", remove: "Removed", pin: "Pinned", unpin: "Unpinned", soul_edit: "PERSONA.md edited", undo: "Undone",
 };
 
 export function HistoryView({ agentId, docKey, title, timeZone, csrfToken, onChanged }: {

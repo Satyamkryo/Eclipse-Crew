@@ -18,7 +18,7 @@ test("every template is a valid create input with a short persona and least-priv
     const parsed = agentCreateSchema.safeParse({
       name: "Test agent",
       role: template.role,
-      soulMd: template.soulMd,
+      instructions: template.instructions,
       dailyBudgetUsd: template.dailyBudgetUsd,
       monthlyBudgetUsd: template.monthlyBudgetUsd,
       tools: template.tools,
@@ -27,10 +27,10 @@ test("every template is a valid create input with a short persona and least-priv
       memoryScopes: template.memoryScopes,
     });
     assert.equal(parsed.success, true, `${template.id}: ${JSON.stringify(parsed.error?.issues)}`);
-    assert.ok(template.soulMd.length <= 2000, template.id);
-    assert.ok(template.soulMd.includes("untrusted data"), template.id);
-    assert.match(template.soulMd, /owner/i, template.id);
-    assert.match(template.soulMd, /cannot grant|never change your permissions/i, template.id);
+    assert.ok(template.instructions.length <= 2000, template.id);
+    assert.ok(template.instructions.includes("untrusted data"), template.id);
+    assert.match(template.instructions, /owner/i, template.id);
+    assert.match(template.instructions, /cannot grant|never change your permissions/i, template.id);
     assert.ok(Number(template.dailyBudgetUsd) > 0 && Number(template.monthlyBudgetUsd) >= Number(template.dailyBudgetUsd), template.id);
     assert.ok(template.routineExamples.length > 0, template.id);
     assert.equal(template.actions.includes("shell"), template.id === "dev-agent", template.id);
@@ -113,7 +113,7 @@ test("the setup checklist is role-aware and never invents a mail or calendar slu
   for (const id of ["research-analyst", "travel-assistant"]) {
     const template = getTemplate(id);
     const rows = setupRows(template.actions, template.tools, [], empty);
-    assert.deepEqual(rows.map((row) => row.label), ["Domains allowed", "Desktop and browser actions allowed"]);
+    assert.deepEqual(rows.map((row) => row.label), ["Websites allowed", "Desktop and browser actions allowed"]);
     assert.equal(rows[0].done, false);
     assert.equal(rows[1].done, true);
     assert.equal(rows.some((row) => /github/i.test(row.label + row.detail)), false);

@@ -36,7 +36,8 @@ export const ownerEditSchema = z.object({
 }).strict().refine((value) => Object.keys(value).length > 0, "nothing to change");
 
 export const soulInputSchema = z.object({
-  soulMd: z.string().trim().min(1).max(MEMORY_CAPS.soul).refine(
+  // Persona is optional, so an empty PERSONA.md is allowed.
+  soulMd: z.string().trim().max(MEMORY_CAPS.soul).refine(
     (value) => !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value), "contains unsupported control characters",
   ),
 }).strict();

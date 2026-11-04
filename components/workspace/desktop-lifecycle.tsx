@@ -69,14 +69,17 @@ export function DesktopLifecycle({ agentId, csrfToken, initial }: { agentId: str
     return body;
   }, [agentId, router]);
 
+  // While the desktop runs, the owner can close the browser from inside it, so check often enough that Start browser
+  // appears almost at once. A stopped desktop changes only through these buttons, so it is checked less often.
+  const desktopRunning = status.graphics === "running";
   useEffect(() => {
     const timer = setInterval(() => {
       if (document.hidden || inFlight.current) return;
       inFlight.current = true;
       void refresh().catch(() => undefined).finally(() => { inFlight.current = false; });
-    }, 5000);
+    }, desktopRunning ? 2000 : 5000);
     return () => clearInterval(timer);
-  }, [refresh]);
+  }, [refresh, desktopRunning]);
 
   // Polls until the desktop reports the state the action asked for, or tells the owner it never confirmed.
   async function settle(action: Action) {

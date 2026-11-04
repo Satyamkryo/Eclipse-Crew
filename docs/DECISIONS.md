@@ -29,7 +29,7 @@ Rules for AI agents:
 | 011 | Egress proxy injects all credentials | Accepted |
 | 012 | Hash-chained, Ed25519-signed proof receipts | Accepted |
 | 013 | Content-addressed per-step checkpoints | Accepted |
-| 014 | Single-owner auth bound to `127.0.0.1` | Accepted |
+| 014 | Single-owner auth bound to `127.0.0.1` | Amended by ADR-037 |
 | 015 | Docker volumes for data, not host bind mounts | Accepted |
 | 016 | Postgres is the memory source of truth; Markdown is a mirror | Accepted |
 | 017 | Clock block after the cached prompt prefix | Accepted |
@@ -50,7 +50,9 @@ Rules for AI agents:
 | 032 | Origin-gated memory auto-save | Accepted |
 | 033 | GitHub App device sign-in for connections | Accepted |
 | 034 | Handoff between agents | Accepted |
-| 035 | Owner-created crews with crew-scoped handoff | Accepted |
+| 035 | Owner-created crews with crew-scoped handoff | Accepted (handoff scope amended by ADR-036) |
+| 036 | Simple agent creation: public-web default, instructions vs persona, crew-only handoff | Accepted |
+| 037 | Owner-created accounts, one workspace each | Accepted |
 
 ---
 
@@ -126,7 +128,7 @@ Decision: After every step, store context/task state and changed home files by h
 Reason: Cheap incremental storage and rewind without re-running earlier steps.
 
 ## ADR-014: Single-owner auth
-Status: Accepted · 2026-10-28
+Status: Accepted · 2026-10-28 · Amended by ADR-037 (many accounts, one workspace each)
 Decision: One owner per install, no signup. Email + password (argon2id), server-side sessions, CSRF, rate limits. App bound to `127.0.0.1:3000`; remote access via Tailscale (recommended) or Caddy HTTPS. Reset via host CLI.
 Reason: Self-hosted installs have no mail server; binding to localhost avoids accidental exposure.
 Rejected: Multi-user in v1, email verification, binding to `0.0.0.0`.
@@ -248,3 +250,15 @@ Status: Accepted · 2026-11-04 · Owner approved (custom crews request)
 Decision: The owner may create named crews of up to 6 agents with only names and roles required; persona, budgets, tools and actions fill from safe defaults (role-based persona, $5/$50 budgets, read/deliver files plus the default-deny screen/memory actions including `handoff`, never tool_call/shell/subagents). An agent-initiated handoff is allowed only when sender and receiver share a crew (`different_crew` refusal otherwise, and the model only sees crewmates); a sender in no crew keeps the legacy open behaviour so individual and starter-crew agents are untouched. Owner-typed `@Name` routing stays open to every teammate. Extends ADR-034, which keeps every other guard.
 Reason: Owner wants one-click topic crews (e.g. Milly + Lilly) that delegate among themselves without leaking requests to unrelated agents, without a heavyweight create form.
 Rejected: global handoff for all agents, crew-wide shared permissions or transcripts, auto-granting tool_call/shell to crew members.
+
+## ADR-036: Simple agent creation, public-web default, instructions vs persona, crew-only handoff
+Status: Accepted · 2026-11-04 · Owner approved (agent-creation redesign request) · Amends ADR-034/035 handoff scope and the domain part of the default-deny rule
+Decision: (1) Creating an agent or crew member needs only a name and a role. Instructions and Persona are optional; budgets ($5/$50), tools (none), websites, actions (the standard set) and memory scopes (`global`, `agent`) default when left blank and sit under Advanced. (2) Websites: a new agent's `agent_policies.any_public_web` is true, so the egress proxy allows any public hostname for it; `isBlockedAddress` still refuses loopback, RFC 1918, link-local and cloud-metadata targets on every connection, IP-literal hosts are still rejected, and plain HTTP is still only redirected to HTTPS. The owner can switch an agent to "Only these sites" (`any_public_web = false` + `domains`). Existing agents and starter-crew templates keep their allowlists (`false`). Task scope (TASK-049), approvals, the confidence gate, the canary tripwire, budgets and Astra rules are unchanged. (3) The old single "persona" field is split: `agents.instructions` (what the agent is expert in; blank saves the role-based expert default) and `agents.soul_md` (Persona: identity, backstory, voice; may be empty; shown as PERSONA.md). Migration 0037 moves the existing text into `instructions` and starts Persona empty. Both go into the stable prompt after the safety rules, labelled as never changing permissions. (4) Agent-initiated handoff exists only inside a crew (the starter crew or an owner-created crew): a standard agent is never offered handoff and is refused with `not_in_crew`; owner `@Name` routing stays open to every agent. The crew handoff switch is shown only on crew agents, turns `handoff` on or off for that crew's members, and replaces the global "Allow handoff for all agents" button.
+Reason: The owner wants an agent that can do any task out of the box, with a two-field create form; default-deny domains made a new agent unable to browse. Crew delegation should not leak to unrelated agents.
+Rejected: allowing private or internal addresses, widening task scope to "any host", auto-granting tool_call/shell, keeping a single persona field, letting standard agents hand off on their own.
+
+## ADR-037: Owner-created accounts, one workspace each
+Status: Accepted · 2026-11-04 · Owner approved with TASK-092 · Amends ADR-014
+Decision: The owner creates extra sign-in accounts from the host CLI only (`account:create`; never HTTP). Every account is a full, separate workspace: its own agents, crews, chats, runs, memory, skills, receipts, routines, connections, model keys and budgets. No signup, no invites, no admin role. Migration 0039 drops the one-row `owner_singleton_idx`; the login stays unique.
+Reason: Judges need isolated workspaces without weakening the no-signup, localhost, server-side-session model. Isolation is enforced by the existing `owner_id` scoping and desktop `owner_mismatch` checks, not by the prompt.
+Rejected: web signup, admin UI or roles, copying model keys between accounts, per-account desktop containers.

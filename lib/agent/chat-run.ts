@@ -1,4 +1,5 @@
 import "server-only";
+import { defaultInstructions } from "../agents/schema";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { getDatabase } from "../../db/client";
@@ -312,7 +313,7 @@ export function createChatRunPorts(database: Database): ChatRunPorts {
             ...(baseTools.close ? { close: baseTools.close.bind(baseTools) } : {}),
           };
           return {
-            agent: { id: agent.id, name: agent.name, role: agent.role, soulMd: agent.soulMd, actions: childActions, tools: agent.tools, ...(memory ? { memory } : {}) },
+            agent: { id: agent.id, name: agent.name, role: agent.role, soulMd: agent.soulMd, instructions: agent.instructions.trim() || defaultInstructions(agent.name, agent.role), actions: childActions, tools: agent.tools, ...(memory ? { memory } : {}) },
             task: child.task, provider: childProvider, model: main.model!,
             claimed: () => undefined,
             ...(main.routing === "auto" && main.hardModel ? { hardModel: main.hardModel } : {}),
@@ -332,11 +333,13 @@ export function createChatRunPorts(database: Database): ChatRunPorts {
       }) : undefined;
 
       // TASK-085. A teammate list is shown only to an agent that may hand off. Nothing else is copied.
-      const canHandoff = agent.actions.some((action) => action.toLowerCase() === "handoff");
-      const teammates = canHandoff
+      // ADR-036. Only crewmates are loaded; a standard agent (no crew) has none, so handoff is never offered to it.
+      const crewTeammates = agent.actions.some((action) => action.toLowerCase() === "handoff")
         ? (await loadTeammates(database, ownerId, agentId).catch(() => []))
           .map((mate) => ({ ...mate, status: mate.status === "active" ? "active" as const : "paused" as const }))
-        : undefined;
+        : [];
+      const canHandoff = crewTeammates.length > 0;
+      const teammates = canHandoff ? crewTeammates : undefined;
       const handoff = canHandoff ? async (input: { agent: string; note: string }) => {
         const result = await performHandoff({
           database, ownerId, senderAgentId: agentId, senderAgentName: agent.name, senderRunId: runId,
@@ -354,7 +357,7 @@ export function createChatRunPorts(database: Database): ChatRunPorts {
         ...(handoff ? { handoff } : {}), ...(teammates ? { teammates } : {}), ...(options?.handoffNote ? { handoffNote: options.handoffNote } : {}),
         ...(options?.messageId ? { sourceMessageId: options.messageId } : {}),
         ...(helperTools.length ? { helperTools } : {}), ...(subagents ? { subagents } : {}),
-        persona: { id: agent.id, name: agent.name, role: agent.role, soulMd: agent.soulMd, actions: agent.actions, tools: agent.tools, ...(memory ? { memory } : {}) },
+        persona: { id: agent.id, name: agent.name, role: agent.role, soulMd: agent.soulMd, instructions: agent.instructions.trim() || defaultInstructions(agent.name, agent.role), actions: agent.actions, tools: agent.tools, ...(memory ? { memory } : {}) },
         tools: createToolPort({ database, ownerId, agentId }),
         shell: createShellPort({ agentId, ownerId, ensure: sandboxGeneration }),
         audio: (costs) => createAudioPort({ database, ownerId, agentId, desktop, ...(costs ? { costs } : {}) }),

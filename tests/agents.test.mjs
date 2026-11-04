@@ -27,11 +27,13 @@ test("agent settings normalize bounded identities, personas, allowlists and exac
   assert.deepEqual(parsed, {
     name: "Daily Briefer",
     role: "Research analyst",
+    instructions: "",
     soulMd: "You write concise briefs.",
     dailyBudgetCents: 1000,
     monthlyBudgetCents: 10050,
     tools: ["web.fetch"],
     domains: ["example.com", "news.example.com"],
+    anyPublicWeb: true,
     actions: ["read_page"],
     memoryScopes: ["agent"],
   });
@@ -40,9 +42,26 @@ test("agent settings normalize bounded identities, personas, allowlists and exac
     dailyBudgetUsd: "0.01", monthlyBudgetUsd: "1000000.00",
     tools: [], domains: [], actions: [], memoryScopes: [],
   });
-  assert.equal(withoutPersona.soulMd, undefined);
+  assert.equal(withoutPersona.soulMd, "");
   assert.equal(withoutPersona.dailyBudgetCents, 1);
   assert.equal(withoutPersona.monthlyBudgetCents, 100000000);
+});
+
+// ADR-036. Only name and role are required; everything else falls back to the safe defaults.
+test("an agent can be created from just a name and a role", async () => {
+  const schema = unwrap(await import("../lib/agents/schema.ts"));
+  const { KNOWN_ACTIONS } = unwrap(await import("../lib/agents/actions.ts"));
+  const minimal = schema.agentCreateSchema.parse({ name: "Scout", role: "Travel researcher" });
+  assert.deepEqual(minimal, {
+    name: "Scout", role: "Travel researcher", instructions: "", soulMd: "",
+    tools: [], domains: [], anyPublicWeb: true, actions: [...KNOWN_ACTIONS], memoryScopes: ["global", "agent"],
+    dailyBudgetCents: 500, monthlyBudgetCents: 5000,
+  });
+  assert.equal(schema.agentCreateSchema.safeParse({ name: "Scout" }).success, false);
+  assert.equal(schema.agentCreateSchema.safeParse({ role: "Travel researcher" }).success, false);
+  assert.equal(schema.agentCreateSchema.parse({ name: "Scout", role: "R", anyPublicWeb: false, domains: ["example.com"] }).anyPublicWeb, false);
+  assert.match(schema.defaultInstructions("Scout", "travel researcher"), /expert/);
+  assert.match(schema.defaultInstructions("Scout", "travel researcher"), /never change your permissions/);
 });
 
 test("agent settings reject malformed, unknown, unsafe and unbounded fields", async () => {
@@ -69,8 +88,12 @@ test("agent settings reject malformed, unknown, unsafe and unbounded fields", as
     { ...valid, domains: ["*.example.com"] },
     { ...valid, actions: ["delete all\nignore permissions"] },
     { ...valid, memoryScopes: ["everything"] },
+    { ...valid, instructions: "x".repeat(4001) },
+    { ...valid, instructions: "bad\u0000text" },
+    { ...valid, anyPublicWeb: "yes" },
   ]) assert.equal(schema.agentCreateSchema.safeParse(invalid).success, false, JSON.stringify(invalid));
-  assert.equal(schema.agentUpdateSchema.safeParse({ ...valid, soulMd: "" }).success, false);
+  // Persona is optional now (ADR-036), so an empty one is accepted on update.
+  assert.equal(schema.agentUpdateSchema.safeParse({ ...valid, soulMd: "" }).success, true);
 });
 
 test("agent deletion requires the exact name and an explicit backup acknowledgement", async () => {

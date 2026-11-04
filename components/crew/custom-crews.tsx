@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { CheckCircle2, CircleAlert, LoaderCircle, Plus, Shuffle, Trash2, UsersRound } from "lucide-react";
+import { CheckCircle2, ChevronDown, CircleAlert, LoaderCircle, Plus, Shuffle, Trash2, UsersRound } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { ModalDialog } from "@/components/workspace/modal-dialog";
@@ -11,14 +11,15 @@ import { AgentAvatar, AVATAR_COUNT, randomAvatarVariant } from "@/components/wor
 import { cn } from "@/lib/utils";
 import type { CrewView } from "@/lib/crew/custom";
 
-type MemberDraft = { name: string; role: string; soulMd: string; dailyBudgetUsd: string; monthlyBudgetUsd: string; avatarVariant: number };
+type MemberDraft = { name: string; role: string; instructions: string; soulMd: string; dailyBudgetUsd: string; monthlyBudgetUsd: string; avatarVariant: number; open: boolean };
 
-const blankMember = (): MemberDraft => ({ name: "", role: "", soulMd: "", dailyBudgetUsd: "", monthlyBudgetUsd: "", avatarVariant: randomAvatarVariant() });
+const blankMember = (): MemberDraft => ({ name: "", role: "", instructions: "", soulMd: "", dailyBudgetUsd: "", monthlyBudgetUsd: "", avatarVariant: randomAvatarVariant(), open: false });
 const BUDGET_PATTERN = /^(?:0|[1-9]\d{0,6})(?:\.\d{1,2})?$/;
 
 function memberError(member: MemberDraft): string | null {
   if (!member.name.trim() || !member.role.trim()) return "Each member needs a name and a role.";
-  if (member.soulMd && member.soulMd.length > 2000) return "Persona is at most 2000 characters.";
+  if (member.instructions.length > 4000) return "Instructions are at most 4,000 characters.";
+  if (member.soulMd.length > 2000) return "Persona is at most 2,000 characters.";
   for (const value of [member.dailyBudgetUsd, member.monthlyBudgetUsd]) {
     if (value.trim() && !BUDGET_PATTERN.test(value.trim())) return "Budgets look like 5.00 (blank keeps $5/day, $50/month).";
   }
@@ -138,6 +139,7 @@ export function CustomCrews({ csrfToken }: { csrfToken: string }) {
           members: members.map((member) => ({
             name: member.name.trim(),
             role: member.role.trim(),
+            ...(member.instructions.trim() ? { instructions: member.instructions.trim() } : {}),
             ...(member.soulMd.trim() ? { soulMd: member.soulMd.trim() } : {}),
             avatarVariant: member.avatarVariant,
             ...(member.dailyBudgetUsd.trim() ? { dailyBudgetUsd: member.dailyBudgetUsd.trim() } : {}),
@@ -172,8 +174,9 @@ export function CustomCrews({ csrfToken }: { csrfToken: string }) {
           </h2>
           <p className="mt-1 max-w-[80ch] text-sm text-muted-foreground">
             A named group of up to 6 agents that hand off to each other. Only the crew name and each
-            member&apos;s name and role are required — persona, budgets, tools and actions fill from safe
-            defaults. Handoffs stay inside the crew; agents outside it can&apos;t be handed work.
+            member&apos;s name and role are required; instructions, persona and budgets are optional and
+            everything else uses safe defaults. Each member has its own desktop, browser and files. Handoffs stay inside the
+            crew; agents outside it can&apos;t be handed work.
           </p>
         </div>
         <Button type="button" onClick={() => { setError(null); setCreating(true); }}>
@@ -280,9 +283,20 @@ export function CustomCrews({ csrfToken }: { csrfToken: string }) {
                       <Shuffle aria-hidden="true" className="size-4" />Shuffle
                     </Button>
                   </div>
-                  <label className="flex flex-col gap-1 text-xs font-medium">Persona <span className="font-normal text-muted-foreground">(optional — defaults to the role)</span>
+                  <button type="button" aria-expanded={member.open} onClick={() => setMember(index, { open: !member.open })}
+                    className="flex items-center gap-1.5 self-start rounded-md text-xs text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring">
+                    <ChevronDown aria-hidden="true" className={cn("size-3.5 transition-transform duration-150", member.open && "rotate-180")} />
+                    More options <span className="text-muted-foreground">(instructions, persona, budgets)</span>
+                  </button>
+                  <div hidden={!member.open} className="flex flex-col gap-2">
+                  <label className="flex flex-col gap-1 text-xs font-medium">Instructions <span className="font-normal text-muted-foreground">(optional, defaults to an expert in the role)</span>
+                    <textarea value={member.instructions} onChange={(event) => setMember(index, { instructions: event.target.value })}
+                      maxLength={4000} rows={3} placeholder="What this agent is expert in and how thoroughly it should work"
+                      className="rounded-md border border-input bg-surface px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-ring" />
+                  </label>
+                  <label className="flex flex-col gap-1 text-xs font-medium">Persona <span className="font-normal text-muted-foreground">(optional)</span>
                     <textarea value={member.soulMd} onChange={(event) => setMember(index, { soulMd: event.target.value })}
-                      maxLength={2000} rows={2} placeholder="How this agent talks and behaves"
+                      maxLength={2000} rows={2} placeholder="A backstory, a personality, how it talks"
                       className="rounded-md border border-input bg-surface px-2 py-1 text-xs focus:outline-none focus:ring-2 focus:ring-ring" />
                   </label>
                   <div className="grid grid-cols-2 gap-2">
@@ -296,6 +310,7 @@ export function CustomCrews({ csrfToken }: { csrfToken: string }) {
                         inputMode="decimal" maxLength={10} autoComplete="off" placeholder="50.00"
                         className="h-8 rounded-md border border-input bg-surface px-2 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-ring" />
                     </label>
+                  </div>
                   </div>
                   {members.length > 1 && (
                     <div>

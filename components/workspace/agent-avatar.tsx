@@ -41,6 +41,21 @@ export function randomAvatarVariant(except?: number): number {
   return next;
 }
 
+// Avatars are styled with classes only. The CSP has no 'unsafe-inline' for styles, so inline style attributes are
+// dropped from server-rendered HTML: avatars then lost their box and fill until React re-rendered them on the client.
+// Sizes are a fixed table so Tailwind sees every class.
+const SIZE_CLASS: Record<number, string> = {
+  24: "size-6 text-xs",
+  32: "size-8 text-base",
+  36: "size-9 text-lg",
+  40: "size-10 text-xl",
+  44: "size-11 text-[22px]",
+  48: "size-12 text-2xl",
+  56: "size-14 text-[28px]",
+};
+const sizeClass = (size: number) => SIZE_CLASS[size] ?? SIZE_CLASS[32];
+const AVATAR_BOX = "inline-flex shrink-0 select-none items-center justify-center overflow-hidden rounded-md border border-border";
+
 export function AgentAvatar({ seed, variant, size = 32, label }: {
   seed: string; variant?: number; size?: number; animated?: boolean; label?: string;
 }) {
@@ -48,45 +63,25 @@ export function AgentAvatar({ seed, variant, size = 32, label }: {
     ? variant
     : avatarVariant(seed);
   const file = VOXEL_FILES[index];
-  // The voxel art has transparent margins; bleed it ~12% past the circle so
-  // no gap shows at the top. The circle mask + border stay crisp.
-  const bleed = Math.ceil(size * 1.14);
   return (
-    <span
-      role={label ? "img" : undefined}
-      aria-label={label}
-      aria-hidden={label ? undefined : true}
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        justifyContent: "center",
-        width: size,
-        height: size,
-        borderRadius: 9999,
-        overflow: "hidden",
-        flexShrink: 0,
-        background: "#141414",
-        border: "1px solid #242424",
-      }}
-    >
+    <span role={label ? "img" : undefined} aria-label={label} aria-hidden={label ? undefined : true}
+      className={`${AVATAR_BOX} bg-surface-hover ${sizeClass(size)}`}>
       {/* eslint-disable-next-line @next/next/no-img-element -- owner-only avatars; the files are hashed SVGs */}
-      <img src={`/avatars/voxel/${file}`} alt="" width={bleed} height={bleed}
-        draggable={false} style={{ display: "block", width: bleed, height: bleed, maxWidth: "none" }} />
+      <img src={`/avatars/voxel/${file}`} alt="" width={size} height={size} draggable={false}
+        className="block size-full max-w-none object-cover" />
     </span>
   );
 }
-
-const DARK = "#0A0A0A";
 
 // Owner avatar in the DiceBear "Initials" style (CC0 1.0, owner-supplied reference): a flat colour fill with the owner's
 // real initials in soft dark letters. The letters are computed here, never taken from the reference files. Colours are
 // the owner-avatar palette in docs/DESIGN.md; local only, no network fetch.
 const BOLD_POP = [
-  "#43AA8B", // green
-  "#4D96FF", // blue
-  "#B57BFF", // purple
-  "#FF5D8F", // pink
-  "#FFB703", // amber
+  "bg-[#43AA8B]", // green
+  "bg-[#4D96FF]", // blue
+  "bg-[#B57BFF]", // purple
+  "bg-[#FF5D8F]", // pink
+  "bg-[#FFB703]", // amber
 ] as const;
 
 function boldPopInitials(seed: string): string {
@@ -102,29 +97,10 @@ export function BoldPopAvatar({ seed, size = 32, label }: {
   const background = BOLD_POP[hashSeed(seed) % BOLD_POP.length];
   const text = boldPopInitials(seed);
   return (
-    <span
-      role={label ? "img" : undefined}
-      aria-label={label}
-      aria-hidden={label ? undefined : true}
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        justifyContent: "center",
-        width: size,
-        height: size,
-        borderRadius: 9999,
-        overflow: "hidden",
-        flexShrink: 0,
-        background,
-        border: "1px solid #242424",
-        fontWeight: 400,
-        fontSize: Math.round(size * 0.5),
-        lineHeight: 1,
-        userSelect: "none",
-      }}
-    >
+    <span role={label ? "img" : undefined} aria-label={label} aria-hidden={label ? undefined : true}
+      className={`${AVATAR_BOX} font-normal leading-none ${background} ${sizeClass(size)}`}>
       {/* DiceBear Initials draws the letters dark at half strength over the fill, so they read as a deeper shade. */}
-      <span style={{ color: DARK, opacity: 0.6 }}>{text}</span>
+      <span className="text-[#0A0A0A] opacity-60">{text}</span>
     </span>
   );
 }

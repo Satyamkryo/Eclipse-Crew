@@ -8,7 +8,7 @@ import type { getDatabase } from "../../db/client";
 import { agents, crewMembers, crews } from "../../db/schema";
 import type { DesktopOperations } from "../agents/service";
 import { FILE_ACTIONS, KNOWN_ACTIONS } from "../agents/actions";
-import { budgetUsdSchema, defaultSoul, soulMdSchema, type AgentCreateInput } from "../agents/schema";
+import { budgetUsdSchema, defaultInstructions, instructionsSchema, soulMdSchema, type AgentCreateInput } from "../agents/schema";
 import { createAgentIdentity, provisionAgentForOwner } from "../agents/service";
 
 type Database = Awaited<ReturnType<typeof getDatabase>>;
@@ -27,6 +27,7 @@ const memberInputSchema = z.object({
     (value) => !/[\x00-\x1f\x7f]/.test(value), "must be a single line without control characters"),
   role: z.string().trim().min(1).max(80).refine(
     (value) => !/[\x00-\x1f\x7f]/.test(value), "must be a single line without control characters"),
+  instructions: instructionsSchema.optional(),
   soulMd: soulMdSchema.optional(),
   avatarVariant: z.number().int().min(0).max(11).optional(),
   dailyBudgetUsd: budgetUsdSchema.optional(),
@@ -75,12 +76,15 @@ export function crewMemberCreateInput(member: CrewMemberDraft): AgentCreateInput
   return {
     name: member.name,
     role: member.role,
-    soulMd: member.soulMd ?? defaultSoul(member.name, member.role),
+    instructions: member.instructions?.trim() || defaultInstructions(member.name, member.role),
+    soulMd: member.soulMd ?? "",
     avatarVariant: member.avatarVariant ?? randomInt(12),
     dailyBudgetCents: member.dailyBudgetUsd ?? DEFAULT_DAILY_CENTS,
     monthlyBudgetCents: member.monthlyBudgetUsd ?? DEFAULT_MONTHLY_CENTS,
     tools: [...FILE_ACTIONS],
     domains: [],
+    // ADR-036. Crew members get the same any-public-website default as standalone agents.
+    anyPublicWeb: true,
     actions: [...KNOWN_ACTIONS],
     memoryScopes: ["global", "agent"],
   };
@@ -228,13 +232,14 @@ export async function crewIdsForAgent(database: Database, ownerId: string, agent
   return rows.map((row) => row.crewId);
 }
 
-// Two agents may hand off only when they share at least one crew. Agents in
-// no crew keep the legacy open behaviour, so the starter crew is untouched.
+// Two agents may hand off only when they share at least one custom crew (the runtime check in lib/agent/handoff.ts
+// also counts the starter crew, via lib/crew/groups.ts).
 export async function shareCrew(database: Database, ownerId: string, senderAgentId: string, receiverAgentId: string): Promise<boolean> {
   const [sender, receiver] = await Promise.all([
     crewIdsForAgent(database, ownerId, senderAgentId),
     crewIdsForAgent(database, ownerId, receiverAgentId),
   ]);
-  if (sender.length === 0) return true;
+  // ADR-036. A sender in no crew never hands off on its own.
+  if (sender.length === 0) return false;
   return receiver.some((crewId) => sender.includes(crewId));
 }

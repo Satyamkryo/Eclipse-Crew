@@ -4,7 +4,7 @@ import type { ProviderUsage } from "../providers/types";
 
 export type Verdict = "pass" | "fail" | "unknown";
 export type SamState = "off" | "on" | "unavailable";
-export interface Evidence { method: "page_structure" | "sam" | "model"; status: Verdict; code: string }
+export interface Evidence { method: "page_structure" | "sam" | "computer_use" | "model"; status: Verdict; code: string }
 // `samBox` is set only when SAM found exactly one confident mask for the expected object: its box in the "after" screenshot
 // (TASK-031 draws it as the highlight). It is display data, never a verdict.
 export interface SamBox { x1: number; y1: number; x2: number; y2: number; width: number; height: number }
@@ -20,6 +20,8 @@ export interface VisualObservation { status: Verdict; name: string; role: string
 export interface VisualVerifier {
   observe(shot: Screenshot, action: string): Promise<VisualObservation>;
   verify(before: Screenshot, after: Screenshot, expect: string): Promise<Verdict>;
+  // Visual grounding: does this pixel sit on the one visible control the target describes? Optional for injected fakes.
+  confirmPoint?(shot: Screenshot, target: string, point: { x: number; y: number }): Promise<Verdict>;
 }
 export interface SamVerifier { masks(shot: Screenshot, concept: string): Promise<import("./sam-parser.mjs").SamMask[]> }
 export interface VerificationServices { visual: VisualVerifier; samState: SamState; sam?: SamVerifier }

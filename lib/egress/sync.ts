@@ -20,6 +20,8 @@ type Database = Awaited<ReturnType<typeof getDatabase>>;
 export interface AgentEgressPolicy {
   agentId: string;
   domains: string[];
+  // ADR-036. Any public website; the proxy still refuses internal, LAN and metadata addresses.
+  anyPublic?: boolean;
   blocked: boolean;
   canaryHashes?: string[];
   trip?: boolean;
@@ -56,6 +58,7 @@ async function pushAgentPolicyDetailed(policy: AgentEgressPolicy, dependencies: 
       body: JSON.stringify({
         agentId: policy.agentId,
         domains: policy.domains,
+        ...(policy.anyPublic ? { anyPublic: true } : {}),
         blocked: policy.blocked,
         ...(policy.canaryHashes ? { canaryHashes: policy.canaryHashes } : {}),
         ...(policy.trip ? { trip: true } : {}),
@@ -81,7 +84,7 @@ export async function syncAgentEgress(database: Database, ownerId: string, agent
   const agent = await getAgentRecord(database, ownerId, agentId);
   const canaryHashes = await listCanaryHashes(database, ownerId, agentId).catch(() => []);
   if (!agent) return pushAgentPolicy({ agentId, domains: [], blocked: true, canaryHashes });
-  const result = await pushAgentPolicyDetailed({ agentId, domains: agent.domains, blocked: agent.status !== "active", canaryHashes });
+  const result = await pushAgentPolicyDetailed({ agentId, domains: agent.domains, anyPublic: agent.anyPublicWeb, blocked: agent.status !== "active", canaryHashes });
   // TASK-070. The proxy remembers a version hash; only a different one needs a credential push. A paused agent never
   // gets credentials pushed, and its entries were already dropped by the proxy when it was blocked.
   if (result.ok && agent.status === "active") {
@@ -104,7 +107,7 @@ export async function tripAgent(database: Database, ownerId: string, agentId: st
 export async function clearAgentTrip(database: Database, ownerId: string, agentId: string): Promise<boolean> {
   const agent = await getAgentRecord(database, ownerId, agentId);
   const canaryHashes = await listCanaryHashes(database, ownerId, agentId).catch(() => []);
-  return pushAgentPolicy({ agentId, domains: agent?.domains ?? [], blocked: agent ? agent.status !== "active" : true, canaryHashes, clearTrip: true });
+  return pushAgentPolicy({ agentId, domains: agent?.domains ?? [], anyPublic: agent?.anyPublicWeb === true, blocked: agent ? agent.status !== "active" : true, canaryHashes, clearTrip: true });
 }
 
 // TASK-073c. Blocked-push controls are app-only and use the same proxy secret as policy pushes.

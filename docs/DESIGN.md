@@ -81,7 +81,7 @@ All text pairings meet WCAG 2.2 AA on their intended background.
 
 **Owner avatar palette** (owner-approved 2026-11-04)
 
-The owner's initials avatar (header chip, owner chat rows) follows the DiceBear "Initials" style (CC0 1.0): a flat circular fill picked by hashing the login, with the owner's real initials in `#0A0A0A` at 60% opacity, Geist regular at half the avatar size, and a 1 px `border`. These fills are used **only** for this avatar, never for status, buttons or text.
+The owner's initials avatar (header chip, owner chat rows) follows the DiceBear "Initials" style (CC0 1.0): a flat square fill (`rounded-md`) picked by hashing the login, with the owner's real initials in `#0A0A0A` at 60% opacity, Geist regular at half the avatar size, and a 1 px `border`. These fills are used **only** for this avatar, never for status, buttons or text.
 
 | Fill | Hex |
 |---|---|
@@ -91,7 +91,7 @@ The owner's initials avatar (header chip, owner chat rows) follows the DiceBear 
 | Pink | `#FF5D8F` |
 | Amber | `#FFB703` |
 
-Agent avatars are the 12 voxel bot SVGs in `public/avatars/voxel/` on a `surface-hover` circle with a `border` ring.
+Agent avatars are the 12 voxel bot SVGs in `public/avatars/voxel/` on a `surface-hover` square (`rounded-md`) with a 1 px `border` (owner decision 2026-11-04: all avatars are square).
 
 ## Spacing and layout
 
@@ -127,7 +127,8 @@ Test at 375, 768, 1280 and 1440 px. On phones, approvals, skill diffs and the Jo
 | Buttons, inputs, badges, chips | 6 px (`rounded-md`) |
 | Cards, chat cards, table containers | 8 px (`rounded-lg`) |
 | Modals, sheets, live desktop frame | 12 px (`rounded-xl`) |
-| Status dots, avatars | Full |
+| Status dots | Full |
+| Avatars (agent and owner) | 6 px (`rounded-md`) |
 
 - Borders are always 1 px.
 - Never nest a card inside a card. Group inside a card with spacing and dividers.

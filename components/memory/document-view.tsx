@@ -11,7 +11,7 @@ const DOC_COPY = {
   user: { title: "USER.md", body: "Shared by the whole crew. Entries are readable by an agent whose memory scopes include global." },
   memory: { title: "MEMORY.md", body: "Facts this agent should always know. Only this agent can read them." },
   private: { title: "Private notes", body: "Visible to this agent, and to any agent you add to its list. The owner always sees them." },
-  soul: { title: "SOUL.md", body: "This agent's persona. It is the same text as the persona in Agent settings." },
+  soul: { title: "PERSONA.md", body: "Who this agent is: its identity, backstory and how it talks. It is the same text as Persona in Agent settings, and it never changes what the agent may do. Instructions for its role are edited in Settings." },
 } as const;
 
 export function DocumentView({ agentId, doc, data, csrfToken, onEdit, onChanged }: {
@@ -33,8 +33,8 @@ export function DocumentView({ agentId, doc, data, csrfToken, onEdit, onChanged 
         method: "PUT", headers: { "Content-Type": "application/json", "x-csrf-token": csrfToken },
         body: JSON.stringify({ soulMd: soul }),
       });
-      if (!response.ok) { setMessage({ tone: "error", text: "Couldn't save SOUL.md. Check the length and try again." }); return; }
-      setMessage({ tone: "ok", text: "SOUL.md saved." });
+      if (!response.ok) { setMessage({ tone: "error", text: "Couldn't save PERSONA.md. Check the length and try again." }); return; }
+      setMessage({ tone: "ok", text: "PERSONA.md saved." });
       onChanged();
     } catch {
       setMessage({ tone: "error", text: "Unable to connect. Try again." });
@@ -92,8 +92,8 @@ export function DocumentView({ agentId, doc, data, csrfToken, onEdit, onChanged 
           className="w-full rounded-md border border-input bg-surface px-3 py-2 text-base leading-6 focus:outline-none focus:ring-2 focus:ring-ring" />
         <div className="flex flex-wrap items-center justify-between gap-2">
           <span className="text-xs tabular-nums text-muted-foreground">{soul.length} / 2,000 characters</span>
-          <Button type="button" disabled={savingSoul || soul.trim().length === 0} onClick={() => void saveSoul()}>
-            {savingSoul ? <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" /> : null}Save SOUL.md
+          <Button type="button" disabled={savingSoul} onClick={() => void saveSoul()}>
+            {savingSoul ? <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" /> : null}Save PERSONA.md
           </Button>
         </div>
         {message ? <p role={message.tone === "error" ? "alert" : "status"} className={cn("text-sm", message.tone === "error" ? "text-danger" : "text-muted-foreground")}>{message.text}</p> : null}

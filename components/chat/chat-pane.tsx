@@ -14,7 +14,7 @@ import {
   outboxRefreshResponseSchema,
   type ChatMessage,
 } from "@/lib/chat/schema";
-import { formatBytes, precheckFile, uploadErrorMessage, uploadFile, UploadError } from "@/lib/chat/upload";
+import { ATTACHMENT_ACCEPT, formatBytes, precheckFile, uploadErrorMessage, uploadFile, UploadError } from "@/lib/chat/upload";
 
 type Upload = { key: string; file: File; loaded: number; state: "queued" | "uploading" | "error"; error?: string };
 const MAX_FILES_AT_ONCE = 10;
@@ -184,14 +184,18 @@ export function ChatPane({ agent, csrfToken, maxUploadBytes, ownerEmail }: { age
     if (files.length === 0 && skippedFolders === 0) return;
     if (!agent || !active) { setSendError("Resume this agent to attach files."); return; }
     setSendError(null);
-    setNotice(skippedFolders > 0 ? "Folders can't be attached. Add them as a zip file instead." : null);
-    const added: Upload[] = files.slice(0, MAX_FILES_AT_ONCE).map((file) => {
+    setNotice(skippedFolders > 0 ? "Folders can't be attached. Attach the files inside instead." : null);
+    const added: Upload[] = [];
+    const rejected: string[] = [];
+    for (const file of files.slice(0, MAX_FILES_AT_ONCE)) {
       const problem = precheckFile(file, maxUploadBytes);
-      return { key: crypto.randomUUID(), file, loaded: 0, state: problem ? "error" : "queued",
-        ...(problem ? { error: uploadErrorMessage(problem.code, maxUploadBytes) } : {}) } as Upload;
-    });
+      if (problem) rejected.push(`${file.name}: ${uploadErrorMessage(problem.code, maxUploadBytes)}`);
+      else added.push({ key: crypto.randomUUID(), file, loaded: 0, state: "queued" });
+    }
+    // Oversized or unsupported files never start uploading; the owner gets one clear warning instead.
+    if (rejected.length > 0) setSendError(rejected.length === 1 ? `Not attached. ${rejected[0]}` : `${rejected.length} files not attached. ${rejected.join(" ")}`);
     if (files.length > MAX_FILES_AT_ONCE) setNotice(`Only the first ${MAX_FILES_AT_ONCE} files were added.`);
-    setUploads((current) => [...current, ...added]);
+    if (added.length > 0) setUploads((current) => [...current, ...added]);
   }
 
   function cancelUpload(key: string) {
@@ -306,7 +310,7 @@ export function ChatPane({ agent, csrfToken, maxUploadBytes, ownerEmail }: { age
         </div>
       ) : (
         <div ref={timeline} className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-6" aria-live="polite">
-          <div className="flex flex-col gap-3">
+          <div className="flex flex-col gap-6">
             {hasMore && (
               <Button type="button" variant="secondary" size="sm" className="self-center" onClick={loadEarlier}>
                 Load earlier messages
@@ -337,17 +341,18 @@ export function ChatPane({ agent, csrfToken, maxUploadBytes, ownerEmail }: { age
                 {uploads.map((upload) => <UploadRow key={upload.key} upload={upload} onCancel={() => cancelUpload(upload.key)} />)}
               </ul>
             )}
-            <input ref={fileInput} id="chat-attachments" type="file" multiple hidden aria-label="Attach files"
+            <input ref={fileInput} id="chat-attachments" type="file" multiple hidden aria-label="Attach files" accept={ATTACHMENT_ACCEPT}
               onChange={(event) => { addFiles(event.target.files); event.target.value = ""; }} />
             <div className="flex items-end gap-1 rounded-xl border border-border bg-surface px-1.5 py-1.5">
-              <Button type="button" variant="ghost" aria-label="Attach files" title="Attach files" disabled={!active}
+              <Button type="button" variant="ghost" aria-label="Attach files" disabled={!active}
+                title={`Attach documents, images, audio, video or text${maxUploadBytes ? ` (up to ${formatBytes(maxUploadBytes)} each)` : ""}`}
                 className="shrink-0" onClick={() => fileInput.current?.click()}>
                 <Paperclip aria-hidden="true" className="size-4" />
               </Button>
               <label htmlFor="chat-message" className="sr-only">Message</label>
               <textarea id="chat-message" value={text} disabled={!active || sending} rows={1}
                 maxLength={20_000} placeholder={active ? `Message ${agent.name}…` : undefined}
-                aria-describedby="chat-message-hint"
+                aria-describedby={!active || sendError || notice ? "chat-message-hint" : undefined}
                 onChange={(event) => { setText(event.target.value); if (sendError) setSendError(null); }}
                 onPaste={(event) => {
                   if ((event.clipboardData?.files.length ?? 0) > 0) { event.preventDefault(); addFiles(event.clipboardData.files); }
@@ -365,7 +370,6 @@ export function ChatPane({ agent, csrfToken, maxUploadBytes, ownerEmail }: { age
               </Button>
             </div>
             {!active && <p id="chat-message-hint" className="text-xs text-muted-foreground">Resume this agent to send a message.</p>}
-            {active && !notice && !sendError && <p id="chat-message-hint" className="text-xs text-muted-foreground">Press Enter to send, Shift+Enter for a new line. Attach files with the paperclip, drag them in or paste{maxUploadBytes ? `, up to ${formatBytes(maxUploadBytes)} each` : ""}.</p>}
             {sendError && <p ref={errorRef} id="chat-message-hint" role="alert" tabIndex={-1} className="text-sm text-danger">{sendError}</p>}
             {notice && <p id="chat-message-hint" role="status" className="text-xs text-muted-foreground">{notice}</p>}
           </div>
@@ -385,30 +389,30 @@ function MessageRow({ message, agentName, agentId, agentAvatarVariant, ownerEmai
   if (isOwner) {
     return (
       <div className="motion-safe:animate-in motion-safe:fade-in motion-safe:duration-200">
-        <div className="flex justify-end gap-3">
+        <div className="flex justify-end gap-2">
           <div className="min-w-0 max-w-[75ch] text-right">
-            <p className="flex flex-wrap items-baseline justify-end gap-2">
-              <span className="text-sm font-semibold">{name}</span>
+            <p className="flex min-h-8 flex-wrap items-center justify-end gap-x-2">
               <time dateTime={message.createdAt} className="text-xs text-text-subtle">{formatTime(message.createdAt)}</time>
+              <span className="text-sm font-semibold">{name}</span>
             </p>
-            <div className="mt-1">{children}</div>
+            <div>{children}</div>
           </div>
-          <span className="mt-0.5 shrink-0"><BoldPopAvatar seed={ownerEmail ?? "owner"} size={32} label="You" /></span>
+          <span className="shrink-0"><BoldPopAvatar seed={ownerEmail ?? "owner"} size={32} label="You" /></span>
         </div>
       </div>
     );
   }
   return (
     <div className="motion-safe:animate-in motion-safe:fade-in motion-safe:duration-200">
-      <div className="flex gap-3">
-        <span className="mt-0.5 shrink-0"><AgentAvatar seed={agentId ?? agentName} variant={agentAvatarVariant} size={32} /></span>
+      <div className="flex gap-2">
+        <span className="shrink-0"><AgentAvatar seed={agentId ?? agentName} variant={agentAvatarVariant} size={32} /></span>
         <div className="min-w-0 max-w-[75ch] flex-1">
-          <p className="flex flex-wrap items-baseline gap-2">
+          <p className="flex min-h-8 flex-wrap items-center gap-x-2">
             <span className="text-sm font-semibold">{name}</span>
             <time dateTime={message.createdAt} className="text-xs text-text-subtle">{formatTime(message.createdAt)}</time>
             {message.runId && <span className="text-xs text-muted-foreground">Background result</span>}
           </p>
-          <div className="mt-1">{children}</div>
+          <div>{children}</div>
         </div>
       </div>
     </div>

@@ -6,6 +6,7 @@ import { validateSession } from "@/lib/auth/session";
 import { loadShellContext } from "@/lib/shell/context";
 import { AppShell } from "@/components/workspace/app-shell";
 import { PageHeader } from "@/components/ui/page-header";
+import { BoldPopAvatar } from "@/components/workspace/agent-avatar";
 import { AccountSettings } from "@/app/settings/account/account-settings";
 
 export const dynamic = "force-dynamic";
@@ -38,7 +39,7 @@ export default async function ProfilePage() {
   return (
     <AppShell owner={{ email: context.ownerEmail, timezone: context.ownerTimeZone }} agents={contextAgents} csrfToken={session.csrfToken} pageTitle="Profile">
       <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-6 py-10">
-        <PageHeader icon={UserRound} title="Profile" subtitle={`Signed in as ${overview.login}. Times use ${overview.timezone}.`} />
+        <PageHeader icon={UserRound} avatar={<BoldPopAvatar seed={context.ownerEmail} size={44} />} title="Profile" subtitle={`Signed in as ${overview.login}. Times use ${overview.timezone}.`} />
         <AccountSettings login={overview.login} timezone={overview.timezone} sessions={sessions} csrfToken={session.csrfToken} />
       </div>
     </AppShell>

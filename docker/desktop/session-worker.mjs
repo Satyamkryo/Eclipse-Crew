@@ -739,8 +739,11 @@ export async function dispatchOperation(session, operation, params = {}, trusted
     throw operationError("invalid_operation");
   const parsed = OperationSchema.safeParse({ ...params, operation });
   if (!parsed.success) throw operationError("invalid_operation");
-  // Visual operations need the managed browser; shell and file tools only need the sandbox.
-  if ((operation.startsWith("input.") || ["capture.screenshot", "browser.pages", "page.snapshot", "page.verify", "page.find_text", "browser.navigate", "browser.locator", "file.open", "audio.capture"].includes(operation)) && !session.context)
+  // Visual operations need the managed browser; shell and file tools only need the sandbox. The owner's takeover input
+  // is plain X11 (xdotool) on the agent's display, so it works with the browser stopped (desktop folders, terminal).
+  // Agent input and input.select still require the browser.
+  const ownerX11Input = trustedOwnerInput && operation.startsWith("input.") && operation !== "input.select";
+  if (((operation.startsWith("input.") && !ownerX11Input) ||["capture.screenshot", "browser.pages", "page.snapshot", "page.verify", "page.find_text", "browser.navigate", "browser.locator", "file.open", "audio.capture"].includes(operation)) && !session.context)
     throw operationError("visual_unavailable");
   if (operation === "shell.run") {
     // A long command must not mark the session uncertain, so it skips the 4 s operation bound and enforces its own timeout.

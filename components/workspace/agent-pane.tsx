@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Bot, Gauge, Plus, ShieldAlert, ShieldQuestion, X } from "lucide-react";
+import { Bot, Gauge, Plus, ShieldAlert, ShieldQuestion, UsersRound, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AgentForm } from "@/components/workspace/agent-form";
 import { AgentAvatar } from "@/components/workspace/agent-avatar";
@@ -11,7 +11,8 @@ import { AstraBadge } from "@/components/ui/astra-badge";
 import { cn } from "@/lib/utils";
 
 export type AgentAttention = "budget_warning" | "budget_paused" | "teach_paused" | "security_stop" | "approval_pending";
-export type AgentSummary = { id: string; name: string; role: string; status: "active" | "paused"; astraMode: boolean; avatarVariant: number; attention?: AgentAttention | null };
+// `crew` is the name of the crew the agent belongs to (starter or owner-created); absent for a standard agent.
+export type AgentSummary = { id: string; name: string; role: string; status: "active" | "paused"; astraMode: boolean; avatarVariant: number; attention?: AgentAttention | null; crew?: string | null };
 
 type Props = { agents: AgentSummary[]; selectedAgentId?: string; error?: string; csrfToken: string; variant?: "pane" | "sidebar" };
 type Toast = { agentId: string; title: string; text: string; persistent: boolean; security?: boolean; approval?: boolean; actionLabel?: string; actionHref?: string };
@@ -118,8 +119,17 @@ export function AgentPane({ agents, selectedAgentId, error, csrfToken, variant =
             <Button type="button" size="sm" onClick={() => setCreating(true)}>Create agent</Button>
           </div>
         ) : (
-          <ul aria-label="Agents" className="flex flex-col gap-1">
-            {agents.map((agent) => {
+          <div className="flex flex-col gap-4">
+            {groupAgents(agents).map((group) => (
+          <section key={group.label ?? "all"} aria-label={group.label ?? "Agents"}>
+            {group.label && (
+              <h3 className="mb-1 flex items-center gap-1.5 px-2 text-xs font-medium text-muted-foreground">
+                {group.crew ? <UsersRound aria-hidden="true" className="size-3.5" /> : <Bot aria-hidden="true" className="size-3.5" />}
+                <span className="min-w-0 truncate">{group.label}</span>
+              </h3>
+            )}
+          <ul className="flex flex-col gap-1">
+            {group.agents.map((agent) => {
               const selected = agent.id === selectedAgentId;
               const needsYou = attention[agent.id];
               return (
@@ -127,7 +137,7 @@ export function AgentPane({ agents, selectedAgentId, error, csrfToken, variant =
                   <Link href={`/?agent=${agent.id}`} aria-current={selected ? "page" : undefined}
                     className={cn("flex min-w-0 items-center gap-3 rounded-md border border-transparent px-2 py-2 transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring",
                       selected ? "border-border-strong bg-surface-hover" : "hover:bg-surface-hover")}>
-                    <span className={cn("shrink-0 rounded-full", needsYou && "ring-1 ring-corona")}>
+                    <span className={cn("shrink-0 rounded-md", needsYou && "ring-1 ring-corona")}>
                       <AgentAvatar seed={agent.id} variant={agent.avatarVariant} size={36} label={`${agent.name} avatar`} />
                     </span>
                     <span className="min-w-0 flex-1">
@@ -144,12 +154,15 @@ export function AgentPane({ agents, selectedAgentId, error, csrfToken, variant =
               );
             })}
           </ul>
+          </section>
+            ))}
+          </div>
         )}
       </div>
       {toast && (
         <div role={toast.persistent ? "alert" : "status"} aria-live={toast.persistent ? "assertive" : "polite"}
           className={cn("fixed bottom-3 left-3 right-3 z-50 flex items-start gap-3 rounded-lg border bg-surface-raised p-3 text-sm shadow-[0_8px_30px_rgba(0,0,0,0.5)] sm:left-auto sm:right-4 sm:w-80",
-            toast.security ? "border-danger" : "border-corona")}>
+            toast.security ? "border-danger" : "border-border")}>
           {toast.security
             ? <ShieldAlert aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-danger" />
             : toast.approval
@@ -185,4 +198,20 @@ export function AgentPane({ agents, selectedAgentId, error, csrfToken, variant =
       )}
     </div>
   );
+}
+
+// Crew agents are listed under their crew's name; agents in no crew under "Standard agents". With no crews at all the
+// list stays one plain list.
+function groupAgents(agents: AgentSummary[]): { label: string | null; crew: boolean; agents: AgentSummary[] }[] {
+  const crews = new Map<string, AgentSummary[]>();
+  const standard: AgentSummary[] = [];
+  for (const agent of agents) {
+    if (agent.crew) crews.set(agent.crew, [...(crews.get(agent.crew) ?? []), agent]);
+    else standard.push(agent);
+  }
+  if (crews.size === 0) return [{ label: null, crew: false, agents: standard }];
+  return [
+    ...[...crews.entries()].map(([label, members]) => ({ label, crew: true, agents: members })),
+    ...(standard.length ? [{ label: "Standard agents", crew: false, agents: standard }] : []),
+  ];
 }

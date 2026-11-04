@@ -52,7 +52,7 @@ test("auth rate limit reserves attempts synchronously without double-counting fa
     Date.now = originalNow;
   }
 });
-test("single-owner lockout cannot be bypassed by changing claimed IP headers", async () => {
+test("login lockout is per login and cannot be bypassed by changing claimed IP headers", async () => {
   const { POST } = unwrap(await import("../app/api/auth/login/route.ts"));
   const origin = process.env.APP_ORIGIN;
   process.env.APP_ORIGIN = "http://127.0.0.1:3000";
@@ -88,8 +88,9 @@ test("actual Drizzle auth guards enforce expiry/revocation/CSRF and reject owner
   pg.Pool.prototype.query = async function (query, params) {
     const sql = typeof query === "string" ? query : query.text;
     if (sql.includes("current_user AS current_user")) return { rows: [{ current_user: "eclipse_app", session_user: "eclipse_app" }] };
-    if (sql.includes('"agent_policies"')) return { rows: [[[], ["example.com"], [], ["agent"]]] };
-    if (sql.includes('"agents"')) return { rows: [[ownerId, "Test agent", "Test role", "Test persona", "active", 100, 1000, new Date(), new Date()]] };
+    // Positional rows: keep in the order of policyFields / agentFields in lib/agents/data.ts.
+    if (sql.includes('"agent_policies"')) return { rows: [[[], ["example.com"], false, [], ["agent"]]] };
+    if (sql.includes('"agents"')) return { rows: [[ownerId, "Test agent", "Test role", "Test persona", "Test instructions", "active", false, 0, 100, 1000, new Date(), new Date()]] };
     assert.match(sql, /inner join "owner"/);
     assert.match(sql, /"expires_at" > \$2/);
     sessionQueries++;

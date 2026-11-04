@@ -15,7 +15,7 @@ type ActiveView = { generation: string; connectionId: string; csrfToken: string;
 type Viewer = { background: string; viewOnly: boolean; scaleViewport: boolean; resizeSession: boolean; disconnect(): void; addEventListener(type: string, callback: EventListener): void };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export function LiveView({ agentId, agentName, modelName, astraMode, avatarVariant }: { agentId: string; agentName?: string; modelName?: string; astraMode?: boolean; avatarVariant?: number }) {
+export function LiveView({ agentId, agentName, modelName, astraMode, avatarVariant, controls }: { agentId: string; agentName?: string; modelName?: string; astraMode?: boolean; avatarVariant?: number; controls?: React.ReactNode }) {
   const frameRef = useRef<HTMLDivElement>(null);
   // The noVNC target. React never owns it: it is moved between the inline slot and the expanded slot, so opening or
   // closing the expanded view never reconnects the stream or drops a takeover.
@@ -38,7 +38,7 @@ export function LiveView({ agentId, agentName, modelName, astraMode, avatarVaria
   const [connectedAt, setConnectedAt] = useState<number | null>(null);
   // Takeover is an input-policy check (keyboard + mouse demonstrated in this session), not a
   // viewport rule: touch-only devices stay view-only at any width.
-  const { eligible, hint, confirmPointer, confirmKeyboard } = useTakeoverEligibility();
+  const { eligible, hint, pointerConfirmed, confirmPointer, confirmKeyboard } = useTakeoverEligibility();
   const hintId = useId();
   useEffect(() => initTakeoverEligibility(), []);
   const getTeachSession = useCallback(() => activeRef.current, []);
@@ -46,6 +46,7 @@ export function LiveView({ agentId, agentName, modelName, astraMode, avatarVaria
   const stopMicRef = useRef(teach.stopMic);
   useLayoutEffect(() => { stopMicRef.current = teach.stopMic; }, [teach.stopMic]);
   const pointerStart = useRef<{ x: number; y: number; at: number; id: number } | null>(null);
+  const lastClick = useRef<{ x: number; y: number; at: number } | null>(null);
 
   useLayoutEffect(() => {
     if (!screenRef.current) {
@@ -255,8 +256,14 @@ export function LiveView({ agentId, agentName, modelName, astraMode, avatarVaria
         if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
         if (!end) return;
         event.preventDefault();
-        if (Math.hypot(end.x - start.x, end.y - start.y) >= 4) sendInput({ operation: "input.drag", x: start.x, y: start.y, toX: end.x, toY: end.y });
-        else sendInput({ operation: "input.click", button: "left", x: end.x, y: end.y });
+        if (Math.hypot(end.x - start.x, end.y - start.y) >= 4) { lastClick.current = null; sendInput({ operation: "input.drag", x: start.x, y: start.y, toX: end.x, toY: end.y }); return; }
+        // Each click is a separate request, so two quick clicks reach the desktop too far apart to count as a
+        // double-click. A second click on the same spot is sent as one desktop double-click (opens folders and files).
+        const now = performance.now();
+        const previous = lastClick.current;
+        const isDouble = previous !== null && now - previous.at <= 500 && Math.hypot(end.x - previous.x, end.y - previous.y) < 6;
+        lastClick.current = isDouble ? null : { x: end.x, y: end.y, at: now };
+        sendInput({ operation: "input.click", button: isDouble ? "double" : "left", x: end.x, y: end.y });
       }} onPointerCancel={() => { pointerStart.current = null; }} onLostPointerCapture={() => { pointerStart.current = null; }} onContextMenu={(event) => {
         // Touch long-press menus never reach the desktop.
         if (pointerTypeRef.current !== "mouse") return;
@@ -281,7 +288,14 @@ export function LiveView({ agentId, agentName, modelName, astraMode, avatarVaria
   const takeoverCheck = {
     available: canTakeOver,
     eligible,
-    onPointerDown: (event: React.PointerEvent) => confirmPointer({ isTrusted: event.nativeEvent.isTrusted, pointerType: event.pointerType, button: event.button }),
+    // Mouse half of the check is done; the button now asks for Enter to finish it.
+    awaitingKey: pointerConfirmed && !eligible,
+    onPointerDown: (event: React.PointerEvent) => {
+      confirmPointer({ isTrusted: event.nativeEvent.isTrusted, pointerType: event.pointerType, button: event.button });
+      // Some browsers don't focus a button on click; Enter must land on this control.
+      const button = event.currentTarget as HTMLButtonElement;
+      requestAnimationFrame(() => button.focus());
+    },
     onKeyDown: (event: React.KeyboardEvent) => {
       confirmKeyboard({ isTrusted: event.nativeEvent.isTrusted, isComposing: event.nativeEvent.isComposing, key: event.key });
       if (event.key === "Enter" && isTakeoverEligible()) { event.preventDefault(); void takeOver(); }
@@ -309,7 +323,7 @@ export function LiveView({ agentId, agentName, modelName, astraMode, avatarVaria
               onPointerDown={takeoverCheck.onPointerDown}
               onKeyDown={takeoverCheck.onKeyDown}
               onClick={takeoverCheck.onRequest}>
-              {busy && <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />}Take over
+              {busy && <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin" />}{pointerConfirmed && !eligible ? "Press Enter to confirm" : "Take over"}
             </Button>
           ) : (
             <span id={hintId} className="max-w-44 text-right text-xs text-muted-foreground">Connect a keyboard and mouse to take over</span>
@@ -332,13 +346,13 @@ export function LiveView({ agentId, agentName, modelName, astraMode, avatarVaria
       </div>
       {error && status === "live" && <p role="alert" className="border-t border-border px-3 py-2 text-xs text-danger">{error}</p>}
       {status === "live" && !takenOver && hint && !eligible && (
-        <p id={hintId} className="border-t border-border px-3 py-2 text-xs text-muted-foreground">
-          Input check: click Take over with your mouse, then press Enter to confirm your keyboard. This check never sends anything to the desktop and is not proof of attached hardware.
+        <p id={hintId} className="sr-only">
+          Click Take over with your mouse, then press Enter to confirm your keyboard.
         </p>
       )}
       {expanded && (
         <ExpandedView agentName={agentName ?? "Agent desktop"} astraMode={astraMode === true} avatarVariant={avatarVariant} status={status} takenOver={takenOver} busy={busy} takeover={takeoverCheck} modelName={modelName}
-          teachControls={(takenOver || teach.capture || teach.saved.length > 0) ? teachControls : null} connectedAt={connectedAt} error={error} slotRef={setExpandedSlot} overlay={overlay} onScreenKeyDown={handleKeyDown}
+          teachControls={(takenOver || teach.capture || teach.saved.length > 0) ? teachControls : null} connectedAt={connectedAt} error={error} slotRef={setExpandedSlot} overlay={overlay} controls={controls} onScreenKeyDown={handleKeyDown}
           onHandBack={handBack} onExit={() => setExpanded(false)} />
       )}
     </div>

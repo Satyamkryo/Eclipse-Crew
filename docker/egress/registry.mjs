@@ -184,14 +184,14 @@ export function createRegistry({ ttlMs = POLICY_TTL_MS, now = Date.now, maxPerAg
       const nextHashes = canonicalHashes(options.canaryHashes ?? []);
       const existing = prune(agentId);
       if (!existing) {
-        const created = { agentId, domains: nextDomains, blocked, canaryHashes: nextHashes, tripped: Boolean(options.trip),
+        const created = { agentId, domains: nextDomains, anyPublic: options.anyPublic === true, blocked, canaryHashes: nextHashes, tripped: Boolean(options.trip),
           expiresAt: now() + ttlMs, tunnels: new Set() };
         agents.set(agentId, created);
         installHashes(agentId, nextHashes);
         if (blocked) { clearAgentRecords(agentId); removed(agentId); }
         return { changed: true, tripped: created.tripped };
       }
-      const changed = existing.blocked !== blocked ||
+      const changed = existing.blocked !== blocked || existing.anyPublic !== (options.anyPublic === true) ||
         existing.domains.length !== nextDomains.length ||
         existing.domains.some((domain, index) => domain !== nextDomains[index]);
       const hashesChanged = existing.canaryHashes.length !== nextHashes.length ||
@@ -206,6 +206,7 @@ export function createRegistry({ ttlMs = POLICY_TTL_MS, now = Date.now, maxPerAg
         existing.canaryHashes = nextHashes;
       }
       existing.domains = nextDomains;
+      existing.anyPublic = options.anyPublic === true;
       existing.blocked = blocked;
       if (options.clearTrip) existing.tripped = false;
       if (options.trip) existing.tripped = true;
@@ -237,12 +238,14 @@ export function createRegistry({ ttlMs = POLICY_TTL_MS, now = Date.now, maxPerAg
     },
     get(agentId) {
       const entry = prune(agentId);
-      return entry ? { domains: [...entry.domains], blocked: entry.blocked, tripped: entry.tripped,
+      return entry ? { domains: [...entry.domains], anyPublic: entry.anyPublic === true, blocked: entry.blocked, tripped: entry.tripped,
         canaryHashes: [...entry.canaryHashes], expiresAt: entry.expiresAt } : null;
     },
     allows(agentId, host) {
       const entry = prune(agentId);
       if (!entry || entry.blocked || entry.tripped) return false;
+      // ADR-036. Any public host: callers still resolve and refuse internal, LAN and metadata addresses.
+      if (entry.anyPublic) return true;
       return entry.domains.some((domain) => host === domain || host.endsWith(`.${domain}`));
     },
     addTunnel(agentId, socket) {

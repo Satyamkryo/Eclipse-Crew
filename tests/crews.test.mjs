@@ -59,8 +59,11 @@ test("crew members fill persona, budgets, tools and actions from safe defaults",
   const minimal = crewMemberCreateInput({ name: "Milly", role: "Competitive researcher" });
   assert.equal(minimal.name, "Milly");
   assert.equal(minimal.role, "Competitive researcher");
-  assert.match(minimal.soulMd ?? "", /Milly/);
-  assert.match(minimal.soulMd ?? "", /Competitive researcher/);
+  // ADR-036. A blank member gets role-based expert instructions and an empty persona.
+  assert.match(minimal.instructions, /Milly/);
+  assert.match(minimal.instructions, /Competitive researcher/);
+  assert.equal(minimal.soulMd, "");
+  assert.equal(minimal.anyPublicWeb, true);
   assert.equal(minimal.dailyBudgetCents, 500);
   assert.equal(minimal.monthlyBudgetCents, 5000);
   assert.deepEqual(minimal.tools, ["read_document", "deliver_file"]);
@@ -78,20 +81,42 @@ test("crew members fill persona, budgets, tools and actions from safe defaults",
   assert.equal(explicit.monthlyBudgetCents, 2000);
 });
 
-test("handoff stays inside a shared crew and is open otherwise", async () => {
+test("handoff stays inside a shared crew and is refused for a standard agent", async () => {
   const { shareCrew } = unwrap(await import("../lib/crew/custom.ts"));
   const database = (senderCrews, receiverCrews) => {
     let calls = 0;
     const lists = [senderCrews, receiverCrews];
     return { select: () => ({ from: () => ({ where: () => lists[calls++].map((crewId) => ({ crewId })) }) }) };
   };
-  // Sender in no crew: legacy open behaviour, even if the receiver has one.
-  assert.equal(await shareCrew(database([], ["a"]), "owner", "s", "r"), true);
+  // ADR-036. Sender in no crew (a standard agent): never hands off on its own.
+  assert.equal(await shareCrew(database([], ["a"]), "owner", "s", "r"), false);
+  assert.equal(await shareCrew(database([], []), "owner", "s", "r"), false);
   // Shared crew: allowed.
   assert.equal(await shareCrew(database(["a", "b"], ["b"]), "owner", "s", "r"), true);
   // Different crews: refused.
   assert.equal(await shareCrew(database(["a"], ["b"]), "owner", "s", "r"), false);
   assert.equal(await shareCrew(database(["a"], []), "owner", "s", "r"), false);
+});
+
+// ADR-036. The starter crew and custom crews are both crews; an agent in neither has no crewmates.
+test("crew groups count the starter crew and custom crews; standard agents have no crewmates", async () => {
+  const { listCrewGroups, crewmateIds } = unwrap(await import("../lib/crew/groups.ts"));
+  const starterRows = [{ agentId: "s1" }, { agentId: "s2" }];
+  const customRows = [{ crewId: "c1", name: "Market watch", agentId: "m1" }, { crewId: "c1", name: "Market watch", agentId: "m2" }];
+  const database = {
+    select: () => ({
+      from: () => ({
+        where: async () => starterRows,
+        innerJoin: () => ({ where: () => ({ orderBy: async () => customRows }) }),
+      }),
+    }),
+  };
+  const groups = await listCrewGroups(database, "owner");
+  assert.deepEqual(groups.map((group) => [group.key, group.name, group.agentIds]),
+    [["starter", "Starter crew", ["s1", "s2"]], ["c1", "Market watch", ["m1", "m2"]]]);
+  assert.deepEqual([...await crewmateIds(database, "owner", "s1")], ["s2"]);
+  assert.deepEqual([...await crewmateIds(database, "owner", "m2")], ["m1"]);
+  assert.equal((await crewmateIds(database, "owner", "standalone")).size, 0);
 });
 
 test("a custom crew creates ready agents with defaults on a real database", { timeout: 120000 }, async () => {
@@ -126,13 +151,14 @@ test("a custom crew creates ready agents with defaults on a real database", { ti
   assert.equal(await shareCrew(handle.app, owner, milly.agentId, lilly.agentId), true);
   const outsider = randomUUID();
   assert.equal(await shareCrew(handle.app, owner, milly.agentId, outsider), false);
-  assert.equal(await shareCrew(handle.app, owner, outsider, lilly.agentId), true);
+  // ADR-036. An agent in no crew never hands off on its own.
+  assert.equal(await shareCrew(handle.app, owner, outsider, lilly.agentId), false);
 });
 
 test("a failed or abandoned member is retried with the same agent; a live setup is never taken over", { timeout: 120000 }, async () => {
   if (handle.skip) return;
   const { createCrew, getCrew, retryCrew, STALE_CLAIM_MS } = unwrap(await import("../lib/crew/custom.ts"));
-  // The owner table is a singleton: reuse the owner an earlier test created, or create it.
+  // TASK-092. Reuse the owner an earlier test created, or create it.
   const existing = await handle.adminPool.query("SELECT id FROM owner LIMIT 1");
   const owner = existing.rows[0]?.id ?? await insertOwner(handle.adminPool);
   const started = [];

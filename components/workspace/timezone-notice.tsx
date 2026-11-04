@@ -73,15 +73,15 @@ export function TimezoneNotice({ savedZone, csrfToken }: { savedZone: string; cs
   return (
     <section aria-label="Timezone" className="shrink-0 border-b border-border bg-corona/12 px-4 py-2 sm:px-6">
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
-        <p className="flex min-w-0 flex-1 items-start gap-2 text-sm">
-          <Globe aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-corona" strokeWidth={1.5} />
+        <p className="flex min-w-0 flex-1 items-center gap-2 text-xs text-muted-foreground">
+          <Globe aria-hidden="true" className="size-3.5 shrink-0" strokeWidth={1.5} />
           <span>
-            This device is in <strong className="font-medium">{detected}</strong>. Schedules and budgets use{" "}
-            <strong className="font-medium">{savedZone}</strong>.
+            This device is in <span className="font-medium">{detected}</span>. Schedules and budgets use{" "}
+            <span className="font-medium">{savedZone}</span>.
           </span>
         </p>
         <div className="flex shrink-0 flex-wrap gap-2">
-          <Button type="button" size="sm" disabled={saving} onClick={() => void applyDetected()}>
+          <Button type="button" variant="secondary" size="sm" disabled={saving} onClick={() => void applyDetected()}>
             {saving && <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" />}
             Use {detected}
           </Button>

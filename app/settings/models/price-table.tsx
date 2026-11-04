@@ -44,8 +44,8 @@ export function PriceTable({ initial, csrfToken }: { initial: PriceRowView[]; cs
       {providers.map((provider) => (
         <div key={provider} className="border-b border-border pb-4 last:border-b-0 last:pb-0">
           <p className="mb-2 font-mono text-xs text-muted-foreground">{provider}</p>
-          <div className="mb-1 hidden grid-cols-[minmax(0,1.2fr)_repeat(5,minmax(0,0.9fr))_minmax(150px,auto)] items-center gap-2 px-1 text-xs text-muted-foreground md:grid">
-            <span>Model</span><span>Input / 1M</span><span>Cached / 1M</span><span>Output / 1M</span><span>Images / 1K</span><span>Audio / hour</span><span className="text-right">Status</span>
+          <div className="mb-1 hidden grid-cols-[minmax(0,1.2fr)_repeat(4,minmax(0,0.9fr))_minmax(150px,auto)] items-center gap-2 px-1 text-xs text-muted-foreground md:grid">
+            <span>Model</span><span>Input / 1M</span><span>Cached / 1M</span><span>Output / 1M</span><span>Images / 1K</span><span className="text-right">Status</span>
           </div>
           <div className="divide-y divide-border">
             {initial.filter((row) => row.providerLabel === provider).map((row) => (
@@ -54,9 +54,11 @@ export function PriceTable({ initial, csrfToken }: { initial: PriceRowView[]; cs
           </div>
         </div>
       ))}
-      <p className="text-xs text-muted-foreground">
-        Rates are USD. A hosted model without a price cannot start a run. Local endpoints cost $0. Price changes apply to later calls only.
-      </p>
+      <ul className="flex flex-col gap-1 text-xs text-muted-foreground">
+        <li>All rates are in US dollars, per million tokens or per thousand images.</li>
+        <li>Agents can&apos;t start a run on a hosted model until it has a price. Local models are always free.</li>
+        <li>A new price only affects future calls; past costs stay as they were.</li>
+      </ul>
     </div>
   );
 }
@@ -86,7 +88,6 @@ function PriceEditorRow({ row, csrfToken }: { row: PriceRowView; csrfToken: stri
           cachedPerMillion: form.get("cachedPerMillion"),
           outputPerMillion: form.get("outputPerMillion"),
           imagePerThousand: form.get("imagePerThousand"),
-          audioPerHour: form.get("audioPerHour"),
         }),
       });
       if (response.status === 401) { router.push("/login"); router.refresh(); return; }
@@ -105,7 +106,7 @@ function PriceEditorRow({ row, csrfToken }: { row: PriceRowView; csrfToken: stri
 
   return (
     <form onSubmit={save} className="px-1 py-2" aria-label={`Prices for ${row.model}`}>
-      <div className="grid grid-cols-2 gap-2 md:grid-cols-[minmax(0,1.2fr)_repeat(5,minmax(0,0.9fr))_minmax(150px,auto)] md:items-center">
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-[minmax(0,1.2fr)_repeat(4,minmax(0,0.9fr))_minmax(150px,auto)] md:items-center">
         <div className="col-span-2 min-w-0 md:col-span-1">
           <p className="truncate font-mono text-xs" title={row.model}>{row.model}</p>
           {row.role && <p className="text-xs capitalize text-muted-foreground">{row.role}</p>}
@@ -115,7 +116,6 @@ function PriceEditorRow({ row, csrfToken }: { row: PriceRowView; csrfToken: stri
           ["cachedPerMillion", "cachedMicroUsdPerMillion", "Cached per 1M"],
           ["outputPerMillion", "outputMicroUsdPerMillion", "Output per 1M"],
           ["imagePerThousand", "imageMicroUsdPerThousand", "Images per 1K"],
-          ["audioPerHour", "audioMicroUsdPerHour", "Audio per hour"],
         ] as const).map(([name, priceKey, label]) => (
           <label key={name} className="flex flex-col gap-1 text-xs text-muted-foreground md:block">
             <span className="md:hidden">{label}</span>

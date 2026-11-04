@@ -117,9 +117,11 @@
     "test:budget-ui": "node --import tsx --test tests/budget-ui.test.mjs",
     "test:models": "node --conditions=react-server --import tsx --test tests/models.test.mjs tests/model-routes.test.mjs",
     "reset-password": "node --conditions=react-server --import tsx scripts/reset-password.mjs",
+    "account:create": "node scripts/account.mjs create",
+    "account:list": "node scripts/account.mjs list",
     "test:auth-desktop-e2e": "node --test tests/auth-desktop-e2e.test.mjs",
     "test:agent-verification": "node --conditions=react-server --import tsx --test tests/agent-verification.test.mjs",
-    "test:agent-confidence-gate": "node --conditions=react-server --import tsx --test tests/agent-confidence-gate.test.mjs",
+    "test:agent-confidence-gate": "node --conditions=react-server --import tsx --test tests/agent-confidence-gate.test.mjs tests/agent-visual-grounding.test.mjs",
     "test:agent-verification-desktop": "node --test tests/agent-verification-desktop.test.mjs",
     "test:routines": "node --conditions=react-server --import tsx --test tests/routines-schedule.test.mjs tests/routines-data.test.mjs tests/routine-routes.test.mjs",
     "test:scheduler": "node --conditions=react-server --import tsx --test tests/routine-execution-plan.test.mjs tests/routine-queue.test.mjs tests/routine-run.test.mjs tests/routine-execution-view.test.mjs tests/routine-run-routes.test.mjs && node --import tsx --test tests/routine-run-ui.test.mjs",
@@ -147,6 +149,8 @@
     "test:crews": "node --conditions=react-server --import tsx --test tests/crews.test.mjs",
     "test:timezone-notice": "node --import tsx --test tests/timezone-notice.test.mjs && node --conditions=react-server --import tsx --test tests/timezone-route.test.mjs",
     "test:subagents": "node --conditions=react-server --import tsx --test tests/subagents.test.mjs",
+    "test:check-ins": "node --import tsx --test tests/check-ins.test.mjs tests/check-ins-ui.test.mjs",
+    "test:accounts": "node --conditions=react-server --import tsx --test tests/accounts.test.mjs",
     "test:memory-background": "node --conditions=react-server --import tsx --test tests/memory-background.test.mjs"
   },
   "dependencies": {

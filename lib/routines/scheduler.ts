@@ -58,12 +58,14 @@ export async function tickRoutines(
   enqueue: (db: PgBossTransaction, job: RoutineJob) => Promise<boolean>,
   now = new Date(),
 ): Promise<{ routines: number; jobs: number }> {
-  const owners = await database.select({ id: owner.id, crewStoppedAt: owner.crewStoppedAt }).from(owner).limit(2);
+  const owners = await database.select({ id: owner.id, crewStoppedAt: owner.crewStoppedAt }).from(owner);
   let processedRoutines = 0;
   let queuedJobs = 0;
   let remaining = MAX_JOBS_PER_TICK;
 
   for (const current of owners) {
+    // TASK-092. One owner never stops the others: a failing owner is skipped, the tick continues.
+    try {
     // TASK-052. A stopped crew schedules nothing; next_run_at stays as it was, so the catch-up policy applies on resume.
     if (current.crewStoppedAt) continue;
     const due = await database.select({ id: routines.id }).from(routines).where(and(
@@ -111,9 +113,12 @@ export async function tickRoutines(
         if (count > 0) processedRoutines += 1;
         queuedJobs += count;
         remaining -= count;
-      } catch {
-        console.error("Routine tick skipped one routine.");
+        } catch {
+          console.error("Routine tick skipped one routine.");
+        }
       }
+    } catch {
+      console.error("Routine tick skipped one owner.");
     }
   }
   return { routines: processedRoutines, jobs: queuedJobs };
@@ -122,7 +127,7 @@ export async function tickRoutines(
 // TASK-086. At 03:00 in the owner's timezone, queue one tidy per document. The job id is fixed per local day, so a
 // repeated tick never duplicates it; the worker also enforces at most one tidy per 6 hours per document.
 export async function tickMemoryTidy(database: Database, now = new Date(), enqueue: typeof enqueueMemoryTidy = enqueueMemoryTidy): Promise<number> {
-  const owners = await database.select({ id: owner.id, timezone: owner.timezone, crewStoppedAt: owner.crewStoppedAt }).from(owner).limit(2);
+  const owners = await database.select({ id: owner.id, timezone: owner.timezone, crewStoppedAt: owner.crewStoppedAt }).from(owner);
   let queued = 0;
   for (const current of owners) {
     if (current.crewStoppedAt) continue;
@@ -205,6 +210,12 @@ export async function startRoutineScheduler(): Promise<SchedulerHandle> {
         .catch(() => console.error("Routine scheduler tick failed."))
         .then(() => tickMemoryTidy(database))
         .catch(() => console.error("Memory tidy tick failed."))
+        .then(async () => {
+          // Sundance / Moondance runs beside the tick (one pass at a time) so a slow probe never delays routines.
+          const { startCheckInTick } = await import("../check-ins/runner");
+          startCheckInTick(database);
+        })
+        .catch(() => console.error("Check-in tick failed."))
         .then(async () => {
           const { expireStaleFlows, refreshDueConnections } = await import("../connections/github-device");
           await expireStaleFlows(database);

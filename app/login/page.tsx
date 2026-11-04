@@ -29,7 +29,7 @@ export default async function LoginPage() {
         </div>
       </div>
       <p className="flex items-center justify-center gap-2 text-xs text-muted-foreground">
-        <ShieldCheck aria-hidden="true" className="size-3.5" />Owner-only access · Local installation
+        <ShieldCheck aria-hidden="true" className="size-3.5" />Private access · Self-hosted
       </p>
     </main>
   );

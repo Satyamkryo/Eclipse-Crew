@@ -16,7 +16,7 @@ function fail(message) { throw new Error(message); }
 
 // Select only this Compose project's app image and its private database network.
 // Passwords are inherited by Docker through named environment variables, never argv.
-export function runDatabaseHelper(script, variables, { input, typed = false } = {}) {
+export function runDatabaseHelper(script, variables, { input, typed = false } = {}, extraArgs = []) {
   const run = (args) => {
     const result = spawnSync("docker", args, { encoding: "utf8", env: process.env, timeout: 30000 });
     if (result.status !== 0) fail("Docker helper setup failed. Check that the Compose services are running.");
@@ -44,7 +44,7 @@ export function runDatabaseHelper(script, variables, { input, typed = false } = 
     "--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=16777216,mode=1777",
     "--cap-drop=ALL", "--security-opt=no-new-privileges", "--user", "node",
     ...variables.flatMap((name) => ["--env", name]), "--entrypoint", "node", appInfo.Image,
-    "--conditions=react-server", ...(typed ? ["--import", "tsx"] : []), script, "--inside"],
+    "--conditions=react-server", ...(typed ? ["--import", "tsx"] : []), script, "--inside", ...extraArgs],
   { env: process.env, input, stdio: ["pipe", "inherit", "inherit"], timeout: 120000 });
   if (result.status !== 0) fail("Database maintenance helper failed.");
 }
@@ -97,6 +97,8 @@ if (process.argv.includes("--inside")) {
     await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.replay_script_proposals TO eclipse_app`);
     // TASK-038: owner confirmation inserts and updates routine schedules; the scheduler reads them later.
     await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.routines TO eclipse_app`);
+    // TASK-090: Sundance/Moondance check-ins are owner-managed; the minute tick reads, claims and reschedules them.
+    await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.check_ins TO eclipse_app`);
     // TASK-039: pg-boss schemas are migrated in advance; runtime gets queue DML only, never DDL or ownership.
     await database.execute(sql`GRANT USAGE ON SCHEMA pgboss TO eclipse_app`);
     await database.execute(sql`GRANT USAGE ON TYPE pgboss.job_state TO eclipse_app`);

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ChevronLeft, FileText, Hand, Loader2, Minimize2, Monitor, ShieldCheck, Timer, Cuboid } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,7 @@ import { AstraBadge } from "@/components/ui/astra-badge";
 type TakeoverCheck = {
   available: boolean;
   eligible: boolean;
+  awaitingKey: boolean;
   onPointerDown: (event: React.PointerEvent) => void;
   onKeyDown: (event: React.KeyboardEvent) => void;
   onRequest: () => void;
@@ -33,11 +34,21 @@ type Props = {
   // Takeover input layer and connecting/offline overlay, built by LiveView so the inline and expanded views behave the same.
   overlay: ReactNode;
   teachControls?: ReactNode;
+  // Start/stop desktop and browser, so they stay reachable in full screen.
+  controls?: ReactNode;
   // Forwards keys to the desktop during a takeover (the same handler the inline view uses).
   onScreenKeyDown: (event: React.KeyboardEvent) => void;
   onHandBack: () => void;
   onExit: () => void;
 };
+
+const WIDE_QUERY = "(min-width: 1024px)";
+function subscribeWide(onChange: () => void) {
+  const query = window.matchMedia(WIDE_QUERY);
+  query.addEventListener("change", onChange);
+  return () => query.removeEventListener("change", onChange);
+}
+const readWide = () => window.matchMedia(WIDE_QUERY).matches;
 
 const FOCUSABLE = "button:not([disabled]), [href], input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex=\"-1\"])";
 const pad = (value: number) => String(value).padStart(2, "0");
@@ -49,8 +60,10 @@ function elapsedText(from: number | null, now: number) {
 }
 // The expanded desktop view (docs/DESIGN.md). It fills the app window, never uses the browser Fullscreen API, and holds
 // the same stream element as the inline view, so nothing reconnects and a takeover stays active.
-export function ExpandedView({ agentName, astraMode, avatarVariant, status, takenOver, busy, takeover, modelName, connectedAt, error, slotRef, overlay, teachControls, onScreenKeyDown, onHandBack, onExit }: Props) {
+export function ExpandedView({ agentName, astraMode, avatarVariant, status, takenOver, busy, takeover, modelName, connectedAt, error, slotRef, overlay, teachControls, controls, onScreenKeyDown, onHandBack, onExit }: Props) {
   const layer = useRef<HTMLDivElement>(null);
+  // The desktop/browser controls render once: in the side panel when it is shown (lg), otherwise under the screen.
+  const wide = useSyncExternalStore(subscribeWide, readWide, () => true);
   const exitButton = useRef<HTMLButtonElement>(null);
   const [now, setNow] = useState(() => Date.now());
   const statusLabel = status === "live" ? "Live" : status === "connecting" ? "Connecting…" : "Offline";
@@ -89,7 +102,7 @@ export function ExpandedView({ agentName, astraMode, avatarVariant, status, take
     <Button size="sm" variant="secondary" disabled={busy} aria-describedby="expanded-takeover-check"
       onPointerDown={takeover.onPointerDown} onKeyDown={takeover.onKeyDown} onClick={takeover.onRequest}>
       {busy ? <Loader2 aria-hidden="true" className="size-4 animate-spin" /> : <Hand aria-hidden="true" className="size-4" />}
-      Take over
+      {takeover.awaitingKey ? "Press Enter to confirm" : "Take over"}
     </Button>
   ) : (
     <span id="expanded-takeover-check" className="max-w-40 text-right text-xs text-muted-foreground">Connect a keyboard and mouse to take over</span>
@@ -123,7 +136,7 @@ export function ExpandedView({ agentName, astraMode, avatarVariant, status, take
         </div>
       </header>
 
-      <div className="grid min-h-0 flex-1 gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_360px]">
+      <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_360px] lg:grid-rows-1">
         <div className={`flex min-h-0 flex-col overflow-hidden rounded-xl border bg-black ${takenOver ? "border-corona" : "border-border"}`}>
           {takenOver && <p className="bg-corona/12 px-3 py-2 text-center text-xs text-corona">You&apos;re in control. The agent is paused. Hand back to resume.</p>}
           {teachControls}
@@ -134,13 +147,16 @@ export function ExpandedView({ agentName, astraMode, avatarVariant, status, take
           </div>
           {error && status === "live" && <p role="alert" className="border-t border-border bg-background px-3 py-2 text-xs text-danger">{error}</p>}
           {status === "live" && !takenOver && takeover.available && !takeover.eligible && (
-            <p id="expanded-takeover-check" className="border-t border-border bg-background px-3 py-2 text-xs text-muted-foreground">
-              Input check: click Take over with your mouse, then press Enter to confirm your keyboard. This check never sends anything to the desktop.
+            <p id="expanded-takeover-check" className="sr-only">
+              Click Take over with your mouse, then press Enter to confirm your keyboard.
             </p>
           )}
         </div>
 
+        {controls && !wide && <div className="shrink-0">{controls}</div>}
+
         <aside aria-label="Desktop status" className="hidden min-h-0 flex-col gap-4 overflow-y-auto lg:flex">
+          {controls && wide && controls}
           <section aria-labelledby="expanded-live-heading" className="rounded-lg border border-border bg-card p-4">
             <div className="flex items-start justify-between gap-2">
               <h2 id="expanded-live-heading" className="text-lg font-semibold tracking-tight">Live desktop</h2>
