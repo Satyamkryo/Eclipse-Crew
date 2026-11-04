@@ -1,5 +1,7 @@
 import "server-only";
 
+import { z } from "zod";
+
 import { owner } from "../../db/schema";
 import { getAgentRecord, listAgentRecords } from "../agents/data";
 import { requireEgressProxySecret } from "../config/server";
@@ -24,7 +26,7 @@ export interface AgentEgressPolicy {
   clearTrip?: boolean;
 }
 
-interface PushDependencies {
+export interface PushDependencies {
   fetchImpl?: typeof fetch;
   baseUrl?: string;
   secret?: string;
@@ -103,6 +105,101 @@ export async function clearAgentTrip(database: Database, ownerId: string, agentI
   const agent = await getAgentRecord(database, ownerId, agentId);
   const canaryHashes = await listCanaryHashes(database, ownerId, agentId).catch(() => []);
   return pushAgentPolicy({ agentId, domains: agent?.domains ?? [], blocked: agent ? agent.status !== "active" : true, canaryHashes, clearTrip: true });
+}
+
+// TASK-073c. Blocked-push controls are app-only and use the same proxy secret as policy pushes.
+// A failed control call is returned as a failure: the step loop stops instead of guessing that an
+// approval was issued or cleared.
+export type PushKind = "default_branch" | "delete" | "tag_update";
+export interface PushPending {
+  id: string;
+  site: string;
+  actionClass: "post" | "delete";
+  controlName: string;
+  ref: string;
+  kind: PushKind;
+  owner: string;
+  repo: string;
+  requestHash: string;
+  expiresAt: string;
+}
+
+const PENDING_SCHEMA = z.object({
+  id: z.string().uuid(),
+  site: z.string().min(1).max(300),
+  actionClass: z.enum(["post", "delete"]),
+  controlName: z.string().min(1).max(120),
+  ref: z.string().min(1).max(300),
+  kind: z.enum(["default_branch", "delete", "tag_update"]),
+  owner: z.string().min(1).max(100),
+  repo: z.string().min(1).max(100),
+  requestHash: z.string().regex(/^[0-9a-f]{64}$/),
+  expiresAt: z.string().min(1).max(40),
+}).strict();
+const PENDING_LIST = z.object({ pending: z.array(PENDING_SCHEMA).max(8) }).strict();
+const GRANT_RESULT = z.object({ grant: z.object({ id: z.string().uuid(), expiresAt: z.string().min(1).max(40) }).strict() }).strict();
+const AGENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SITE = /^github\.com\/[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/;
+const ACTION_CLASS = /^(post|delete)$/;
+
+async function approvalControl(
+  path: string, init: RequestInit, dependencies: PushDependencies,
+): Promise<Response | null> {
+  let secret: string;
+  try { secret = requireEgressProxySecret(dependencies.secret ?? process.env.EGRESS_PROXY_SECRET); } catch { return null; }
+  const send = dependencies.fetchImpl ?? fetch;
+  try {
+    const response = await send(`${dependencies.baseUrl ?? EGRESS_PROXY_URL}${path}`, {
+      ...init,
+      redirect: "error",
+      cache: "no-store",
+      signal: AbortSignal.timeout(dependencies.timeoutMs ?? 5_000),
+      headers: { Authorization: `Bearer ${secret}`, ...(init.headers ?? {}) },
+    });
+    if (!response.ok) {
+      try { await response.body?.cancel(); } catch { /* the body is not needed */ }
+      return null;
+    }
+    return response;
+  } catch { return null; }
+}
+
+export async function fetchPushPending(agentId: string, dependencies: PushDependencies = {}): Promise<PushPending[] | null> {
+  if (!AGENT_ID.test(agentId)) return null;
+  const response = await approvalControl(`/v1/pending?agentId=${encodeURIComponent(agentId)}`, { method: "GET" }, dependencies);
+  if (!response) return null;
+  try {
+    const parsed = PENDING_LIST.safeParse(await response.json());
+    return parsed.success ? parsed.data.pending : null;
+  } catch { return null; }
+}
+
+export async function grantPush(agentId: string, pendingId: string, dependencies: PushDependencies = {}): Promise<boolean> {
+  if (!AGENT_ID.test(agentId) || !AGENT_ID.test(pendingId)) return false;
+  const response = await approvalControl("/v1/grants", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ agentId, pendingId }),
+  }, dependencies);
+  if (!response) return false;
+  try { return GRANT_RESULT.safeParse(await response.json()).success; } catch { return false; }
+}
+
+export async function denyPush(agentId: string, pendingId: string, dependencies: PushDependencies = {}): Promise<boolean> {
+  if (!AGENT_ID.test(agentId) || !AGENT_ID.test(pendingId)) return false;
+  return Boolean(await approvalControl(`/v1/pending/${encodeURIComponent(pendingId)}?agentId=${encodeURIComponent(agentId)}`,
+    { method: "DELETE" }, dependencies));
+}
+
+export async function clearPushApprovals(agentId: string, dependencies: PushDependencies = {}): Promise<boolean> {
+  if (!AGENT_ID.test(agentId)) return false;
+  return Boolean(await approvalControl(`/v1/git-approvals?agentId=${encodeURIComponent(agentId)}`, { method: "DELETE" }, dependencies));
+}
+
+export async function revokePushGrants(
+  agentId: string, site: string, actionClass: string, dependencies: PushDependencies = {},
+): Promise<boolean> {
+  if (!AGENT_ID.test(agentId) || !SITE.test(site) || !ACTION_CLASS.test(actionClass)) return false;
+  const query = `agentId=${encodeURIComponent(agentId)}&site=${encodeURIComponent(site)}&actionClass=${encodeURIComponent(actionClass)}`;
+  return Boolean(await approvalControl(`/v1/grants?${query}`, { method: "DELETE" }, dependencies));
 }
 
 export async function syncAllAgents(database: Database): Promise<void> {

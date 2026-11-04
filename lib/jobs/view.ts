@@ -4,13 +4,13 @@ import type { RunTone } from "../receipts/history-view";
 // TASK-042. Pure helpers shared by the Jobs routes and their client components. Nothing here reads the database or any
 // secret: every string that came from the owner, a page or the model is untrusted display text.
 
-export const JOB_TRIGGERS = ["chat", "run_now", "schedule", "replay", "branch", "heal"] as const;
+export const JOB_TRIGGERS = ["chat", "run_now", "schedule", "replay", "branch", "heal", "handoff", "subagent"] as const;
 export type JobTrigger = (typeof JOB_TRIGGERS)[number];
 
-export const JOB_OUTCOMES = ["running", "verified", "finished", "needs_you", "paused", "asked_you", "canceled", "failed", "not_sealed"] as const;
+export const JOB_OUTCOMES = ["running", "verified", "finished", "needs_you", "paused", "asked_you", "canceled", "failed", "not_sealed", "interrupted"] as const;
 export type JobOutcome = (typeof JOB_OUTCOMES)[number];
 
-export const JOB_OUTCOME_FILTERS = ["all", "running", "verified", "finished", "needs_you", "failed", "canceled"] as const;
+export const JOB_OUTCOME_FILTERS = ["all", "running", "verified", "finished", "needs_you", "failed", "canceled", "interrupted"] as const;
 export type JobOutcomeFilter = (typeof JOB_OUTCOME_FILTERS)[number];
 
 export const JOB_RANGES = ["24h", "7d", "30d", "all"] as const;
@@ -31,6 +31,8 @@ export interface JobRow {
   endedAt: string | null;
   durationMs: number | null;
   stepCount: number;
+  // TASK-076. How many screenless helpers this run started.
+  helperCount: number;
   costMicroUsd: number;
   outcome: JobOutcome;
   outcomeLabel: string;
@@ -103,6 +105,8 @@ const OUTCOME_BY_STATUS: Record<string, JobOutcomeView> = {
   scope_blocked: { outcome: "needs_you", label: "Blocked: outside task", tone: "warning" },
   paused_by_owner: { outcome: "paused", label: "Paused", tone: "warning" },
   aborted: { outcome: "canceled", label: "Canceled", tone: "neutral" },
+  interrupted: { outcome: "interrupted", label: "Interrupted", tone: "warning" },
+  handed_off: { outcome: "finished", label: "Handed off", tone: "neutral" },
 };
 const VERIFIED: JobOutcomeView = { outcome: "verified", label: "Verified", tone: "success" };
 const RUNNING: JobOutcomeView = { outcome: "running", label: "Running", tone: "neutral" };
@@ -114,12 +118,14 @@ const FAILED: JobOutcomeView = { outcome: "failed", label: "Failed", tone: "dang
 // executed; a finished run that skipped a check is honest about it. Unsealed runs are only "Running" for 15 minutes.
 export function outcomeOf(input: {
   status: string; sealed: boolean; startedAt: Date; endedAt: Date | null; stepResults: readonly string[]; now?: Date;
-  waitingForApproval?: boolean;
+  waitingForApproval?: boolean; heartbeatAt?: Date | null;
 }): JobOutcomeView {
   const now = input.now ?? new Date();
   if (!input.sealed) {
     // An approval wait extends the run's deadline, so a live request can outlast the generic unsealed window.
     if (input.waitingForApproval) return WAITING_FOR_APPROVAL;
+    // TASK-085. A heartbeat younger than 90 s is live; old rows without a heartbeat keep the 15-minute rule.
+    if (input.heartbeatAt) return now.getTime() - input.heartbeatAt.getTime() < 90_000 ? RUNNING : NOT_SEALED;
     return now.getTime() - input.startedAt.getTime() < RUNNING_WINDOW_MS ? RUNNING : NOT_SEALED;
   }
   const status = OUTCOME_BY_STATUS[input.status] ?? FAILED;
@@ -155,6 +161,8 @@ const TRIGGER_LABEL: Record<JobTrigger, string> = {
   replay: "Replay",
   branch: "Branch",
   heal: "Self-heal",
+  handoff: "Handoff",
+  subagent: "Helper",
 };
 
 export function triggerLabel(trigger: JobTrigger): string {
@@ -189,6 +197,8 @@ export const END_NOTE: Record<string, string> = {
   desktop_error: "The run stopped because the desktop did not accept a command.",
   aborted: "The run was cancelled. Steps already sent to the desktop are not taken back.",
   receipt_error: "The run stopped because it could not record proof of a step.",
+  interrupted: "The run stopped because the app restarted during it. Proof up to the last step is sealed; continue from History.",
+  handed_off: "The run handed this request to a teammate and stopped.",
 };
 
 const headerSchema = z.object({

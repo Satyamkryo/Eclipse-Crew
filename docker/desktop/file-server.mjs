@@ -27,7 +27,8 @@ const STATUS = { file_too_large: 413, type_blocked: 415, name_invalid: 400, empt
   agent_unavailable: 404, invalid_upload: 400, auth_failed: 401, source_denied: 403, not_found: 404, method_not_allowed: 405, invalid_content_type: 415, upload_failed: 500,
   file_not_found: 404, file_changed: 409, scan_failed: 500, download_failed: 500, invalid_request: 400,
   unsupported_type: 415, no_text_layer: 422, document_unreadable: 422, invalid_offset: 400, deliver_failed: 500,
-  content_changed: 409, too_many_files: 422, scan_limit: 504, path_invalid: 400, target_blocked: 409, restore_failed: 500 };
+  content_changed: 409, too_many_files: 422, scan_limit: 504, path_invalid: 400, target_blocked: 409, restore_failed: 500,
+  no_match: 422, index_failed: 500 };
 const reply = (res, status, value) => {
   if (res.headersSent || res.destroyed) return;
   res.writeHead(status, { "Content-Type": "application/json", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", Connection: "close" });
@@ -46,6 +47,9 @@ const ToolRequests = {
   list: z.object({}).strict(),
   read: z.object({ name: plainName, offset: z.number().int().min(0).max(5_000_000).optional() }).strict(),
   deliver: z.object({ from: z.enum(["downloads", "work"]), name: plainName }).strict(),
+  // TASK-082. Indexing is launched by this server after an upload; only search is reachable over HTTP.
+  index: z.object({ name: plainName }).strict(),
+  search: z.object({ name: plainName, query: z.string().min(1).max(200).refine((value) => !/[\u0000-\u001f\u007f-\u009f]/.test(value)) }).strict(),
   // TASK-032: file manifest and file bytes for per-step checkpoints (the app stores the bytes by hash).
   "checkpoint/manifest": z.object({}).strict(),
   "checkpoint/blob": z.object({ area: z.enum(["inbox", "work", "downloads", "outbox"]), path: z.string().min(1).max(1024), sha256: z.string().regex(/^[0-9a-f]{64}$/) }).strict(),
@@ -75,10 +79,26 @@ function parseResult(code, text) {
 export function createFileServer(secret, { resolveApp = () => dns.lookup("app", { all: true }), inspect = inspectAgent, launch = launchAgent,
   writerArgs = ["/usr/bin/timeout", "--kill-after=2s", "900s", "node", WRITER], readerArgs = ["/usr/bin/timeout", "--kill-after=2s", "900s", "node", READER],
   toolArgs = ["/usr/bin/timeout", "--kill-after=2s", "60s", "node", "--max-old-space-size=768", TOOLS],
+  indexArgs = ["/usr/bin/timeout", "--kill-after=2s", "180s", "node", "--max-old-space-size=1024", TOOLS],
   checkpointArgs = ["/usr/bin/timeout", "--kill-after=2s", "30s", "node", "--max-old-space-size=512", CHECKPOINTS],
   restoreArgs = ["/usr/bin/timeout", "--kill-after=2s", "60s", "node", "--max-old-space-size=512", CHECKPOINT_RESTORE], idleMs = IDLE_MS } = {}) {
   const authenticate = createAuthenticator(secret, resolveApp);
   const active = new Set(); let reads = 0; let tools = 0;
+  // TASK-082. A best-effort warm-up index after an inbox upload: at most one per agent and two in total. Its failure
+  // never fails the upload; search builds the index itself when it is missing.
+  const indexing = new Set(); let indexingTotal = 0;
+  const startIndex = (record, name) => {
+    const agentId = record?.agentId;
+    if (!agentId || indexing.has(agentId) || indexingTotal >= 2) return;
+    indexing.add(agentId); indexingTotal += 1;
+    let settled = false;
+    const done = () => { if (settled) return; settled = true; indexing.delete(agentId); indexingTotal -= 1; };
+    try {
+      const child = launch(record, [...indexArgs, "index", JSON.stringify({ name })], { stdio: ["ignore", "ignore", "ignore"] });
+      child.once("close", done);
+      child.once("error", done);
+    } catch { done(); }
+  };
 
   async function upload(req, res, ownerId, agentId) {
     let agentKey = null;
@@ -112,7 +132,10 @@ export function createFileServer(secret, { resolveApp = () => dns.lookup("app", 
       try { child.stdin.end(); } catch { /* already closed */ }
       const code = await closed;
       const parsed = parseResult(code, output);
-      if (parsed.result) return reply(res, 200, { outcome: "ok", result: parsed.result });
+      if (parsed.result) {
+        if (parsed.result.kind === "text" || parsed.result.kind === "pdf" || parsed.result.kind === "document") startIndex(record, parsed.result.storedName);
+        return reply(res, 200, { outcome: "ok", result: parsed.result });
+      }
       return refuse(res, parsed.code);
     } finally { if (agentKey) active.delete(agentKey); }
   }
@@ -176,7 +199,8 @@ export function createFileServer(secret, { resolveApp = () => dns.lookup("app", 
       let record;
       try { record = await inspect(ownerId, agentId); } catch { return refuse(res, "agent_unavailable"); }
       const argv = action === "checkpoint/aside" ? [...restoreArgs, "aside"]
-        : action.startsWith("checkpoint/") ? [...checkpointArgs, action.slice("checkpoint/".length)] : [...toolArgs, action];
+        : action.startsWith("checkpoint/") ? [...checkpointArgs, action.slice("checkpoint/".length)]
+        : action === "search" ? [...indexArgs, action] : [...toolArgs, action];
       const child = launch(record, [...argv, JSON.stringify(parsed.data)], { stdio: ["ignore", "pipe", "ignore"] });
       const closed = new Promise((resolve) => { child.once("close", (code) => resolve(code)); child.once("error", () => resolve(-1)); });
       let output = ""; let over = false; child.stdout.setEncoding("utf8");
@@ -231,7 +255,7 @@ export function createFileServer(secret, { resolveApp = () => dns.lookup("app", 
       const denied = await authenticate(req);
       if (denied) return refuse(res, denied);
       if (req.method !== "POST") return refuse(res, "method_not_allowed");
-      const match = /^\/v1\/owners\/([^/]+)\/agents\/([^/]+)\/(inbox|outbox\/list|outbox\/read|files\/list|files\/read|files\/deliver|checkpoint\/manifest|checkpoint\/blob|checkpoint\/put|checkpoint\/aside)$/.exec(req.url ?? "");
+      const match = /^\/v1\/owners\/([^/]+)\/agents\/([^/]+)\/(inbox|outbox\/list|outbox\/read|files\/list|files\/read|files\/deliver|files\/search|checkpoint\/manifest|checkpoint\/blob|checkpoint\/put|checkpoint\/aside)$/.exec(req.url ?? "");
       if (!match || !UUID_PATTERN.test(match[1]) || !UUID_PATTERN.test(match[2])) return refuse(res, "not_found");
       if (match[3] === "inbox") return await upload(req, res, match[1], match[2]);
       if (match[3] === "checkpoint/put") return await checkpointPut(req, res, match[1], match[2]);

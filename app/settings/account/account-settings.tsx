@@ -3,11 +3,22 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { LoaderCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 
 type SessionSummary = { id: string; created: string; expires: string; current: boolean };
-type Props = { login: string; sessions: SessionSummary[]; csrfToken: string };
+type Props = { login: string; timezone: string; sessions: SessionSummary[]; csrfToken: string };
 const inputClass = "h-8 rounded-md border border-input bg-surface px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring";
+
+const TIMEZONES = [
+  "UTC",
+  "America/New_York", "America/Chicago", "America/Denver", "America/Los_Angeles", "America/Anchorage", "Pacific/Honolulu",
+  "America/Toronto", "America/Sao_Paulo",
+  "Europe/London", "Europe/Paris", "Europe/Berlin", "Europe/Moscow",
+  "Africa/Cairo",
+  "Asia/Dubai", "Asia/Karachi", "Asia/Kolkata", "Asia/Dhaka", "Asia/Bangkok", "Asia/Singapore", "Asia/Hong_Kong", "Asia/Shanghai", "Asia/Tokyo", "Asia/Seoul",
+  "Australia/Sydney", "Pacific/Auckland",
+];
 
 function errorMessage(data: { error?: string; retryAfter?: number }, fallback: string) {
   if (data.error === "current_password_incorrect") return "Current password is incorrect.";
@@ -15,8 +26,16 @@ function errorMessage(data: { error?: string; retryAfter?: number }, fallback: s
   return fallback;
 }
 
-export function AccountSettings({ login, sessions, csrfToken }: Props) {
+export function AccountSettings({ login, timezone, sessions, csrfToken }: Props) {
   const router = useRouter();
+  const [zone, setZone] = useState(timezone);
+  const [zoneDetected] = useState(() => {
+    try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return ""; }
+  });
+  const zoneOptions = [...new Set([...TIMEZONES, zoneDetected, timezone].filter(Boolean))];
+  const [zoneError, setZoneError] = useState<string | null>(null);
+  const [zoneStatus, setZoneStatus] = useState<string | null>(null);
+  const [zoneLoading, setZoneLoading] = useState(false);
   const [email, setEmail] = useState(login);
   const [emailError, setEmailError] = useState<string | null>(null);
   const [emailStatus, setEmailStatus] = useState<string | null>(null);
@@ -131,8 +150,60 @@ export function AccountSettings({ login, sessions, csrfToken }: Props) {
     }
   }
 
+  async function changeTimezone(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setZoneLoading(true);
+    setZoneError(null);
+    setZoneStatus(null);
+    try {
+      const response = await fetch("/api/auth/account/timezone", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-csrf-token": csrfToken },
+        body: JSON.stringify({ timezone: zone }),
+      });
+      if (response.status === 401) {
+        router.push("/login");
+        router.refresh();
+        return;
+      }
+      if (!response.ok) {
+        setZoneError("That timezone isn't supported. Pick one from the list.");
+        return;
+      }
+      setZoneStatus(`Timezone set to ${zone}. Schedules use it from their next run.`);
+      router.refresh();
+    } catch {
+      setZoneError("Unable to connect. Try again.");
+    } finally {
+      setZoneLoading(false);
+    }
+  }
+
   return (
     <div className="flex flex-col gap-6">
+      <section className="rounded-lg border border-border bg-card p-4">
+        <h2 className="text-lg font-semibold">Timezone</h2>
+        <p className="mt-1 text-sm text-muted-foreground">Agent clocks, schedules and history all use this zone. This device reports {zoneDetected || "an unknown zone"}.</p>
+        <form onSubmit={changeTimezone} className="mt-4 flex flex-col gap-4">
+          <div className="flex flex-col gap-2">
+            <label htmlFor="profile-timezone" className="text-sm font-medium">Timezone</label>
+            <Select label="Timezone" id="profile-timezone" value={zoneOptions.includes(zone) ? zone : "UTC"} onChange={setZone}
+              className="w-full [&>span]:w-full" selectClassName={cn(inputClass, "w-full")}>
+              {zoneOptions.map((item) => <option key={item} value={item}>{item}</option>)}
+            </Select>
+            <div>
+              <Button type="button" variant="ghost" size="sm" disabled={!zoneDetected || zoneDetected === zone}
+                onClick={() => setZone(zoneDetected)}>
+                Use this device&apos;s zone{zoneDetected ? ` (${zoneDetected})` : ""}
+              </Button>
+            </div>
+          </div>
+          {zoneError && <p role="alert" className="text-sm text-danger">{zoneError}</p>}
+          {zoneStatus && <p role="status" className="text-sm text-success">{zoneStatus}</p>}
+          <div><Button type="submit" disabled={zoneLoading}>{zoneLoading && <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" />}Save timezone</Button></div>
+        </form>
+      </section>
+
       <section className="rounded-lg border border-border bg-card p-4">
         <h2 className="text-lg font-semibold">Change email</h2>
         <p className="mt-1 text-sm text-muted-foreground">Your email is only your login identifier. No verification email is sent.</p>

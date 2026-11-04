@@ -11,11 +11,13 @@ const inputSchema = z.object({
   runId: z.string().uuid(),
   ownerId: z.string().uuid(),
   agentId: z.string().uuid(),
-  trigger: z.enum(["chat", "run_now", "schedule", "replay", "branch", "heal"]),
+  trigger: z.enum(["chat", "run_now", "schedule", "replay", "branch", "heal", "handoff", "subagent"]),
   routineId: z.string().uuid().optional(),
   executionId: z.string().uuid().optional(),
   replayScriptId: z.string().uuid().optional(),
   retryOf: z.string().uuid().optional(),
+  handoffOf: z.string().uuid().optional(),
+  parentRunId: z.string().uuid().optional(),
   label: z.string().max(500).optional(),
 }).strict();
 export type RunMetaInput = z.input<typeof inputSchema>;
@@ -41,6 +43,8 @@ export async function recordRunMeta(database: Database, input: RunMetaInput): Pr
       executionId: parsed.data.executionId ?? null,
       replayScriptId: parsed.data.replayScriptId ?? null,
       retryOf: parsed.data.retryOf ?? null,
+      handoffOf: parsed.data.handoffOf ?? null,
+      parentRunId: parsed.data.parentRunId ?? null,
       label: cleanLabel(parsed.data.label),
     }).onConflictDoNothing({ target: runMeta.runId });
   } catch { /* metadata never stops a run */ }

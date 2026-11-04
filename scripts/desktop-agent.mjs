@@ -25,7 +25,8 @@ export function validateWorkspace(value, project, name) {
       value.Labels?.["com.docker.compose.project"] !== project || value.Labels?.["com.docker.compose.volume"] !== "workspace") throw Error("workspace_security_refused");
 }
 export async function desktopAgent({ command, ownerId, agentId, argv = [], project = process.env.COMPOSE_PROJECT_NAME ?? path.basename(process.cwd()).toLowerCase(), dockerPath } = {}) {
-  if (!["create", "inspect", "exec", "session-start", "session-status", "session-stop", "session-fixture", "session-fixture-cookie"].includes(command) || command !== "exec" && argv.length || command === "exec" && !argv.length) throw Error("invalid_arguments");
+  if (!["create", "inspect", "exec", "session-start", "session-status", "session-stop", "session-sandbox", "session-desktop-start", "session-desktop-stop",
+    "session-browser-start", "session-browser-stop", "session-fixture", "session-fixture-cookie"].includes(command) || command !== "exec" && argv.length || command === "exec" && !argv.length) throw Error("invalid_arguments");
   validateIds(ownerId, agentId);
   if (!/^[a-z0-9][a-z0-9_-]{0,62}$/.test(project)) throw Error("invalid_project");
   if (!dockerPath) {
@@ -55,7 +56,7 @@ export async function desktopAgent({ command, ownerId, agentId, argv = [], proje
 async function main() {
   try {
     const { values, positionals } = parseArgs({ options: { owner: { type: "string" }, agent: { type: "string" }, project: { type: "string" }, help: { type: "boolean" } }, allowPositionals: true });
-    if (values.help) { console.log("Usage: npm run desktop:agent -- <create|inspect|exec|session-start|session-status|session-stop> --owner UUID --agent UUID [--project NAME] [-- COMMAND ARGS]"); return; }
+    if (values.help) { console.log("Usage: npm run desktop:agent -- <create|inspect|exec|session-start|session-status|session-stop|session-sandbox|session-desktop-start|session-desktop-stop|session-browser-start|session-browser-stop> --owner UUID --agent UUID [--project NAME] [-- COMMAND ARGS]"); return; }
     const [command, ...argv] = positionals;
     process.exitCode = await desktopAgent({ command, ownerId: values.owner, agentId: values.agent, project: values.project, argv });
   } catch { console.error('{"outcome":"refused","reason":"desktop_admin_refused"}'); process.exitCode = 1; }

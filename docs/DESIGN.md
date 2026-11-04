@@ -74,10 +74,24 @@ All text pairings meet WCAG 2.2 AA on their intended background.
 | `danger-solid` | `#CD2B31` (text `#FFFFFF`) | Destructive buttons, **ASTRA MODE** badge |
 
 - There is no separate warning colour: anything that needs the owner's attention uses `corona`.
-- "Running" and "live" are shown in white (`text`) with a slow pulse, not in colour.
+- "Running" and "live" are shown as a green `success` chip with a dot (per the reference images); "Needs you", budget and takeover states use `corona`. A takeover border remains `corona`.
 - Links are `text` with an underline (`underline-offset-4`); no coloured link text.
 - Status colour is never the only signal: always pair it with an icon or label (✓ Verified, ✕ Failed, "Needs you").
 - Tinted backgrounds (badges, banners) use the colour at 12% opacity with the full colour for text.
+
+**Owner avatar palette** (owner-approved 2026-11-04)
+
+The owner's initials avatar (header chip, owner chat rows) follows the DiceBear "Initials" style (CC0 1.0): a flat circular fill picked by hashing the login, with the owner's real initials in `#0A0A0A` at 60% opacity, Geist regular at half the avatar size, and a 1 px `border`. These fills are used **only** for this avatar, never for status, buttons or text.
+
+| Fill | Hex |
+|---|---|
+| Green | `#43AA8B` |
+| Blue | `#4D96FF` |
+| Purple | `#B57BFF` |
+| Pink | `#FF5D8F` |
+| Amber | `#FFB703` |
+
+Agent avatars are the 12 voxel bot SVGs in `public/avatars/voxel/` on a `surface-hover` circle with a `border` ring.
 
 ## Spacing and layout
 
@@ -85,25 +99,26 @@ All text pairings meet WCAG 2.2 AA on their intended background.
 - Padding: controls `px-3`, cards `p-4`, panels `p-6`.
 - Tight inside a group (`gap-2`), clear between groups (`gap-6` or more).
 
-**Workspace (three panes)**
+**App shell (per `designs/Eclipse_Crew_02/05/39`)**
 
-| Pane | Width |
+| Region | Width |
 |---|---|
-| Left: agent list | 260 px, collapsible to 56 px (avatars only) |
-| Center: chat | Flexible; message column max 720 px |
-| Right: Desktop / Settings / Tools / Routines / History / Memory | Resizable, 380 px to 50% |
+| Left sidebar | 260 px at ≥ 1280 px (full, image 39 — the earlier collapsed-rail-at-1280 idea is superseded by image 39). Contains the "Eclipse Crew" wordmark, app navigation, the agent list and the "Self-hosted · Secure workspace" footer. |
+| Top header | Global search (Ctrl K), New Agent, and the owner chip with timezone. |
+| Workspace center | Agent heading with avatar, name, role and status chip; below it the central tabs Chat / Settings / Tools / Routines / History / Memory; then the active tab's content (chat column max 720 px). |
+| Workspace right column | Live desktop stream with Take over / Full screen, then Current activity and Run summary cards. One stream is shared across tabs and the expanded view. |
 
-Panes are separated by 1 px `border` lines, not by cards or gaps.
+Panes and the sidebar are separated by 1 px `border` lines, not by cards or gaps.
 
 **Breakpoints**
 
 | Width | Layout |
 |---|---|
-| ≥ 1280 px | Three panes |
-| 768–1279 px | Agent list collapsed; right panel opens as a sheet over the chat |
-| < 768 px | One pane at a time with a bottom tab bar (Agents, Chat, Panel) |
+| ≥ 1280 px | Full sidebar + workspace center + right column |
+| 768–1279 px | 56 px rail (logo mark, agent initials, settings) with the agent list and panel opening as sheets; header shows the page title, search and owner chip |
+| < 768 px | Header with back navigation, search icon and owner chip; every page shows the same bottom dock (Agents, Chat, Panel, Menu burger) — the workspace switches views in place, other pages link back via `?view=`; the Menu burger opens a bottom sheet listing all app pages; other pages stack with the same header |
 
-Test at 375, 768, 1280 and 1440 px. On phones, approvals, skill diffs and the Jobs list must be fully usable; the live desktop may be view-only.
+Test at 375, 768, 1280 and 1440 px. On phones, approvals, skill diffs and the Jobs list must be fully usable; the live desktop is view-only unless the takeover input check passes (keyboard plus mouse/trackpad — see Takeover).
 
 ## Radius, borders and elevation
 
@@ -159,19 +174,27 @@ Test at 375, 768, 1280 and 1440 px. On phones, approvals, skill diffs and the Jo
 
 | Component | Rules |
 |---|---|
-| **Chat cards** | The card's own title says what it is ("Every weekday at 09:00", "Connect GitHub"); no type label above it. A Lucide icon sits left of the title. Action buttons are right-aligned at the bottom. |
+| **Chat rows and cards** | Ordinary owner and agent messages are **unboxed rows**: a circular avatar on the left, "Name · time" on one line, then the plain text (sheet 36: "rows, not nested cards"). Content that is an action stays carded: file cards, routine cards, clarification cards, approval cards, memory cards, live-run steps — each with the card's own title, a Lucide icon left of the title and right-aligned action buttons at the bottom. A finished run shows a compact summary chip row (steps · status, cost · duration). |
+| **Status chip** | Small rounded chip: green dot + label for Running/Verified/Connected/Approved; neutral for Idle/Paused/Offline; red for Failed/Blocked; `corona` for Needs you. Always textual, never colour alone (sheet 35). |
+| **Page header** | Circular icon tile, page title (`text-2xl`), one-line subtitle, one primary action on the right. Underlined tabs sit below it when the page has sections. |
 | **Agent list item** | Avatar or initials, name, one status. Idle: nothing. Running: white pulsing dot. Needs you: `corona` ring on the avatar plus "Needs you" in `text-xs`. Paused: name in `text-subtle`. Selected: `surface-hover` background and `border-strong` outline. |
 | **Model label** | Mono chip in `text-xs text-muted`, e.g. `muse-spark-1.3`, shown on every step. |
 | **ASTRA MODE badge** | `danger-solid` chip, uppercase `text-xs` semibold, next to the agent name everywhere. |
 | **Approval prompt** | Card with a 1 px `corona` border and a "Needs you" badge: what the agent wants to do, the site and the amount, then Allow once (primary), Always allow (secondary), Deny (destructive). |
 | **Receipt step** | Row with step number, action, before/after thumbnails, method, confidence, cost (mono) and a ✓ / ✕ status. Expands to full screenshots with the SAM highlight as a 2 px `corona` outline. |
 | **Diff view** | Memory and skill diffs in mono: added lines on a `success` tint, removed lines on a `danger` tint. |
-| **Live desktop frame** | `rounded-xl`, 1 px `border`, black letterbox. Top bar with the screen name, a white live dot, Take over / Hand back and Full screen. During takeover the frame border turns `corona` and a "You're in control" bar shows at the top. |
-| **Expanded desktop view** | Opened by Full screen on the live desktop frame (`designs/Eclipse_Crew_04_Live_Desktop.png`; the button and phone expand icon are in `designs/Eclipse_Crew_39_Workspace_1280.png` and `designs/Eclipse_Crew_44_Mobile_Desktop_View_Only.png`). It fills the app window below the app header and never uses the browser Fullscreen API. The same stream moves into it, so nothing reconnects and an active takeover stays active. The header shows the agent, a live dot, the time, Take over / Hand back and Exit full screen (same as Back to workspace); a side column holds status, current task and control-safety cards. Esc exits, except during a takeover, when Esc goes to the desktop and only the buttons exit. On phones it is view-only. |
+| **Live desktop frame** | `rounded-xl`, 1 px `border`, black letterbox. Top bar with the screen name, a green live dot, Take over / Hand back and Full screen. During takeover the frame border turns `corona` and a "You're in control" bar shows at the top. |
+| **Expanded desktop view** | Opened by Full screen on the live desktop frame (`designs/Eclipse_Crew_04_Live_Desktop.png`; the button and phone expand icon are in `designs/Eclipse_Crew_39_Workspace_1280.png` and `designs/Eclipse_Crew_44_Mobile_Desktop_View_Only.png`). It fills the app window below the app header and never uses the browser Fullscreen API. The same stream moves into it, so nothing reconnects and an active takeover stays active. The header shows the agent, a live dot, the time, Take over / Hand back and Exit full screen (same as Back to workspace); a side column holds status, current task and control-safety cards. Esc exits, except during a takeover, when Esc goes to the desktop and only the buttons exit. On phones it is view-only unless the keyboard-and-mouse input check passes (takeover eligibility — see the Live desktop and takeover docs; an actual keyboard/mouse-equipped phone or tablet can take over). |
 | **Tables** (Jobs, History) | 40 px rows, 1 px `border` between rows, sticky header in `text-xs text-muted`. |
 | **Inputs** | 32 px high, `surface` background, `border-input`, `rounded-md`. Focus: `text` ring. Error: `danger` border plus a message below. |
 | **Toasts** | Bottom-right, `surface-raised`, auto-dismiss after 5 s, except errors and approvals, which stay until dismissed. |
 | **Secrets** | Always masked in mono (`••••1a2b`). There is no reveal button. |
+
+**Composer**
+- Compact single-row composer: paperclip button, borderless input ("Message {agent}…"), send icon button (sheet 36). Attachments, hints, and errors render above it. Enter sends, Shift+Enter adds a line.
+
+**Takeover eligibility (input policy, not width)**
+- Takeover is offered only when the owner has demonstrated keyboard plus mouse/trackpad input in the current viewer session (trusted pointer + trusted non-composing keyboard event on the takeover control; `(any-pointer: fine)` is only a hint). Touch-only devices stay view-only at any width; keyboard+mouse devices can take over at any width. View-only by default; the check never forwards events to the desktop or stores key values. See `docs/UI_REFERENCE_MAP.md` for the full rule and `docs/SECURITY.md` for the server boundary.
 
 ## UX Requirements
 

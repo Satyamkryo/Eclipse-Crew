@@ -122,6 +122,15 @@
       "sha256": "1a23baace5f2688a47e28119aedae6993cd638e6279a7227dfc52d9a337a1c17"
     },
     {
+      "name": "file",
+      "version": "1:5.45-3build1",
+      "architecture": "amd64",
+      "filename": "file_1:5.45-3build1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/f/file/file_5.45-3build1_amd64.deb",
+      "bytes": 22042,
+      "sha256": "17dae1d6e803d0304e318f451c8abf62cbd5bb2a0068300cdeea77c62075b895"
+    },
+    {
       "name": "fontconfig",
       "version": "2.15.0-1.1ubuntu2",
       "architecture": "amd64",
@@ -185,6 +194,42 @@
       "sha256": "77f57651734edc24b5a9e7863bc261bf302060ac3c12bbb08a459966ea4d30a6"
     },
     {
+      "name": "glib-networking",
+      "version": "2.80.0-1build1",
+      "architecture": "amd64",
+      "filename": "glib-networking_2.80.0-1build1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/glib-networking/glib-networking_2.80.0-1build1_amd64.deb",
+      "bytes": 64136,
+      "sha256": "25b32675dd3f8bc258cd204e9010876ed03422ab627dd7e39a5a52226e2ada98"
+    },
+    {
+      "name": "glib-networking-common",
+      "version": "2.80.0-1build1",
+      "architecture": "all",
+      "filename": "glib-networking-common_2.80.0-1build1_all.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/glib-networking/glib-networking-common_2.80.0-1build1_all.deb",
+      "bytes": 6702,
+      "sha256": "c9bc3b5c3dc8a75e752efcf246e5ef2d3b9e80cd1301fd37fcb0c36562062931"
+    },
+    {
+      "name": "glib-networking-services",
+      "version": "2.80.0-1build1",
+      "architecture": "amd64",
+      "filename": "glib-networking-services_2.80.0-1build1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/glib-networking/glib-networking-services_2.80.0-1build1_amd64.deb",
+      "bytes": 12830,
+      "sha256": "a8387f789fa6de0aaae9e09f56f07896a5820188ef82ee267c132b01c8a4859e"
+    },
+    {
+      "name": "gsettings-desktop-schemas",
+      "version": "46.1-0ubuntu1",
+      "architecture": "all",
+      "filename": "gsettings-desktop-schemas_46.1-0ubuntu1_all.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/gsettings-desktop-schemas/gsettings-desktop-schemas_46.1-0ubuntu1_all.deb",
+      "bytes": 35644,
+      "sha256": "4d15441e9197f95b29c0d2845d8fcdbf63fa4ac0c68fb221820ccd24131e3436"
+    },
+    {
       "name": "gtk-update-icon-cache",
       "version": "3.24.41-4ubuntu1.3",
       "architecture": "amd64",
@@ -221,6 +266,24 @@
       "sha256": "9fcc11f433bf84c0eaea229aab126fa3c5cbbd8bafd423121fafc729faad1155"
     },
     {
+      "name": "iso-codes",
+      "version": "4.16.0-1",
+      "architecture": "all",
+      "filename": "iso-codes_4.16.0-1_all.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/i/iso-codes/iso-codes_4.16.0-1_all.deb",
+      "bytes": 3491500,
+      "sha256": "cafca0a3a1f07b44fbba53ab7a1f1d9755e6b80cc041173afe2b52e53bed97a7"
+    },
+    {
+      "name": "jq",
+      "version": "1.7.1-3ubuntu0.24.04.2",
+      "architecture": "amd64",
+      "filename": "jq_1.7.1-3ubuntu0.24.04.2_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/j/jq/jq_1.7.1-3ubuntu0.24.04.2_amd64.deb",
+      "bytes": 65694,
+      "sha256": "f59183392f84fe67b407b494d8ba6185e9b0e4a106ffcb369490bd20a83fd40e"
+    },
+    {
       "name": "libaom3",
       "version": "3.8.2-2ubuntu0.2",
       "architecture": "amd64",
@@ -246,6 +309,15 @@
       "url": "https://archive.ubuntu.com/ubuntu/pool/main/a/alsa-lib/libasound2-data_1.2.11-1ubuntu0.3_all.deb",
       "bytes": 21350,
       "sha256": "0c26896193480d9dbb055e85e8ddfb9c9f34cf19afee340987cd6311e2886fc1"
+    },
+    {
+      "name": "libasound2-plugins",
+      "version": "1.2.7.1-1ubuntu5",
+      "architecture": "amd64",
+      "filename": "libasound2-plugins_1.2.7.1-1ubuntu5_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/universe/a/alsa-plugins/libasound2-plugins_1.2.7.1-1ubuntu5_amd64.deb",
+      "bytes": 74850,
+      "sha256": "fa090561fa927de1b6ad134a1a1967167b5e325f2154d2d1eef67976baf726b6"
     },
     {
       "name": "libasound2t64",
@@ -455,6 +527,15 @@
       "sha256": "96950b306889ff6e4248bb937b0a3b56e72dacf643fe732214ce375f0f6bbb36"
     },
     {
+      "name": "libcap2-bin",
+      "version": "1:2.66-5ubuntu2.4",
+      "architecture": "amd64",
+      "filename": "libcap2-bin_1:2.66-5ubuntu2.4_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libc/libcap2/libcap2-bin_2.66-5ubuntu2.4_amd64.deb",
+      "bytes": 34134,
+      "sha256": "a8c875e1711a7a101e995814e6500c826cb658551660ef967ec15fbda79a3997"
+    },
+    {
       "name": "libcares2",
       "version": "1.27.0-1.0ubuntu1.1",
       "architecture": "amd64",
@@ -581,6 +662,15 @@
       "sha256": "5d630480f04b4b442300ce847a3fa705ea4d14d80ba6de91f99b51a4e4953b08"
     },
     {
+      "name": "libdbus-glib-1-2",
+      "version": "0.112-3build2",
+      "architecture": "amd64",
+      "filename": "libdbus-glib-1-2_0.112-3build2_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/d/dbus-glib/libdbus-glib-1-2_0.112-3build2_amd64.deb",
+      "bytes": 64236,
+      "sha256": "1fa4cbcfd7d01e4cbadd04e15631e02d41ce036e8eb7789cb7556deb104e077e"
+    },
+    {
       "name": "libdc1394-25",
       "version": "2.2.6-4build1",
       "architecture": "amd64",
@@ -653,6 +743,24 @@
       "sha256": "4d3e858dd57be617c49d87c5ddcdb35df744a4f0a559981256ae2ba174718584"
     },
     {
+      "name": "libduktape207",
+      "version": "2.7.0+tests-0ubuntu3",
+      "architecture": "amd64",
+      "filename": "libduktape207_2.7.0+tests-0ubuntu3_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/d/duktape/libduktape207_2.7.0+tests-0ubuntu3_amd64.deb",
+      "bytes": 143398,
+      "sha256": "6b7df26e298b890ebe6ca7b0d87fcfddb103b728b8fd731469ba5135d0bac183"
+    },
+    {
+      "name": "libdw1t64",
+      "version": "0.190-1.1ubuntu0.1",
+      "architecture": "amd64",
+      "filename": "libdw1t64_0.190-1.1ubuntu0.1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/e/elfutils/libdw1t64_0.190-1.1ubuntu0.1_amd64.deb",
+      "bytes": 261194,
+      "sha256": "edaa9ce4221d95f4bd72a9805100902e313092a2f31a7a51e7186be97734714d"
+    },
+    {
       "name": "libedit2",
       "version": "3.1-20230828-1build1",
       "architecture": "amd64",
@@ -689,6 +797,15 @@
       "sha256": "1907af6bf33dd8684447c09f216c675d2b8559fadd8ddace29fbf83c6fb2a636"
     },
     {
+      "name": "libexif12",
+      "version": "0.6.24-1ubuntu0.24.04.1",
+      "architecture": "amd64",
+      "filename": "libexif12_0.6.24-1ubuntu0.24.04.1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libe/libexif/libexif12_0.6.24-1ubuntu0.24.04.1_amd64.deb",
+      "bytes": 88336,
+      "sha256": "fd58a7c7e8841a51e6fc8c90bbf0dc9ec8159929e52f276a2176f14090ccf55a"
+    },
+    {
       "name": "libexpat1",
       "version": "2.6.1-2ubuntu0.6",
       "architecture": "amd64",
@@ -707,6 +824,15 @@
       "sha256": "ff9396076103b305efe741e9acff11d52a040c6d95527c0f2dbd11e82a11bab8"
     },
     {
+      "name": "libfftw3-single3",
+      "version": "3.3.10-1ubuntu3",
+      "architecture": "amd64",
+      "filename": "libfftw3-single3_3.3.10-1ubuntu3_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/f/fftw3/libfftw3-single3_3.3.10-1ubuntu3_amd64.deb",
+      "bytes": 867878,
+      "sha256": "07d67e30d98e41e00ce9edcfd885e0ba7f4fe99fcf390f84726a69144b17cf2b"
+    },
+    {
       "name": "libflac12t64",
       "version": "1.4.3+ds-2.1ubuntu2",
       "architecture": "amd64",
@@ -723,6 +849,51 @@
       "url": "https://archive.ubuntu.com/ubuntu/pool/universe/f/flite/libflite1_2.2-6build3_amd64.deb",
       "bytes": 13601102,
       "sha256": "367f1d0da5cd38759a0515eafc27aa133b2d7bf99308cac34831df0212e96b75"
+    },
+    {
+      "name": "libfm-data",
+      "version": "1.3.2-4.1build3",
+      "architecture": "all",
+      "filename": "libfm-data_1.3.2-4.1build3_all.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/universe/libf/libfm/libfm-data_1.3.2-4.1build3_all.deb",
+      "bytes": 266696,
+      "sha256": "4b3aa0054ce26ca64f075bf8d8a37f3026d5bdf18e78b620b43bfdb7a88911f8"
+    },
+    {
+      "name": "libfm-extra4t64",
+      "version": "1.3.2-4.1build3",
+      "architecture": "amd64",
+      "filename": "libfm-extra4t64_1.3.2-4.1build3_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/universe/libf/libfm/libfm-extra4t64_1.3.2-4.1build3_amd64.deb",
+      "bytes": 15712,
+      "sha256": "1040ba26048187cb5aca8671c41255cc78271976785bda2950fae80e02a98275"
+    },
+    {
+      "name": "libfm-gtk-data",
+      "version": "1.3.2-4.1build3",
+      "architecture": "all",
+      "filename": "libfm-gtk-data_1.3.2-4.1build3_all.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/universe/libf/libfm/libfm-gtk-data_1.3.2-4.1build3_all.deb",
+      "bytes": 16730,
+      "sha256": "5eb7b2a237eff270f1701d7b19a17111b69fc440bddbe0c478bd96f9664073d6"
+    },
+    {
+      "name": "libfm-gtk3-4t64",
+      "version": "1.3.2-4.1build3",
+      "architecture": "amd64",
+      "filename": "libfm-gtk3-4t64_1.3.2-4.1build3_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/universe/libf/libfm/libfm-gtk3-4t64_1.3.2-4.1build3_amd64.deb",
+      "bytes": 154698,
+      "sha256": "1d7dcea5285cc18490913079d8652fd82f3c5bb81eb1ecf8774e5140921f59fd"
+    },
+    {
+      "name": "libfm4t64",
+      "version": "1.3.2-4.1build3",
+      "architecture": "amd64",
+      "filename": "libfm4t64_1.3.2-4.1build3_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/universe/libf/libfm/libfm4t64_1.3.2-4.1build3_amd64.deb",
+      "bytes": 127106,
+      "sha256": "b2ac017e165a9a4b7373abbaa953880230e5b1759b0d0c227df4cf2f71a8c1bf"
     },
     {
       "name": "libfontconfig1",
@@ -950,6 +1121,24 @@
       "sha256": "0d4a0187bcdbbe3e6a10bfa574100087d12052d0d0ef28614fd6210021c587b2"
     },
     {
+      "name": "libgstreamer-plugins-base1.0-0",
+      "version": "1.24.2-1ubuntu0.5",
+      "architecture": "amd64",
+      "filename": "libgstreamer-plugins-base1.0-0_1.24.2-1ubuntu0.5_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/gst-plugins-base1.0/libgstreamer-plugins-base1.0-0_1.24.2-1ubuntu0.5_amd64.deb",
+      "bytes": 862170,
+      "sha256": "3c5826eee14cb5077c7e53707fbe86cc0882c787ffe79b330cad636c0009473d"
+    },
+    {
+      "name": "libgstreamer1.0-0",
+      "version": "1.24.2-1ubuntu0.1",
+      "architecture": "amd64",
+      "filename": "libgstreamer1.0-0_1.24.2-1ubuntu0.1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/g/gstreamer1.0/libgstreamer1.0-0_1.24.2-1ubuntu0.1_amd64.deb",
+      "bytes": 1165196,
+      "sha256": "306a6a5cff08630b79b8a68e5f888da7d8e209a452e9b5e24449cca95d8e71f5"
+    },
+    {
       "name": "libgtk-3-0t64",
       "version": "3.24.41-4ubuntu1.3",
       "architecture": "amd64",
@@ -1121,6 +1310,33 @@
       "sha256": "4d6ed682972bddf62af158a06d68a0dda497e421423b7ca92fb450b3d9ceaac9"
     },
     {
+      "name": "libjq1",
+      "version": "1.7.1-3ubuntu0.24.04.2",
+      "architecture": "amd64",
+      "filename": "libjq1_1.7.1-3ubuntu0.24.04.2_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/j/jq/libjq1_1.7.1-3ubuntu0.24.04.2_amd64.deb",
+      "bytes": 141902,
+      "sha256": "078fbf38b2e7c3f24cc5dc894d1bb03b617894b887a6e13d5943e13818e724f3"
+    },
+    {
+      "name": "libjson-glib-1.0-0",
+      "version": "1.8.0-2build2",
+      "architecture": "amd64",
+      "filename": "libjson-glib-1.0-0_1.8.0-2build2_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/j/json-glib/libjson-glib-1.0-0_1.8.0-2build2_amd64.deb",
+      "bytes": 68034,
+      "sha256": "4310fbbd91785adf38d3e0f0d6a94527430c077af8773eb83ec02a1fcbcba089"
+    },
+    {
+      "name": "libjson-glib-1.0-common",
+      "version": "1.8.0-2build2",
+      "architecture": "all",
+      "filename": "libjson-glib-1.0-common_1.8.0-2build2_all.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/j/json-glib/libjson-glib-1.0-common_1.8.0-2build2_all.deb",
+      "bytes": 4244,
+      "sha256": "04cd91689ac4903e260304627c0ae379f9df1c16061eed73e0cf9c91af5569ac"
+    },
+    {
       "name": "libjxl0.7",
       "version": "0.7.0-10.2ubuntu6.1",
       "architecture": "amd64",
@@ -1220,6 +1436,15 @@
       "sha256": "f018e71c72c7a4742fb1aff9dc98b45586f42e6ea464d4918af7e3772b7f0658"
     },
     {
+      "name": "libltdl7",
+      "version": "2.4.7-7build1",
+      "architecture": "amd64",
+      "filename": "libltdl7_2.4.7-7build1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libt/libtool/libltdl7_2.4.7-7build1_amd64.deb",
+      "bytes": 40258,
+      "sha256": "02d0d2d7e1bf73f838a92f8df7a9b07b698c837e82bd89aee6a581cf793cd966"
+    },
+    {
       "name": "liblzo2-2",
       "version": "2.10-2build4",
       "architecture": "amd64",
@@ -1229,6 +1454,24 @@
       "sha256": "e0d13be155013138b8db4cfe68212b866080af661c78302c2eab0d2f9d0d454e"
     },
     {
+      "name": "libmagic-mgc",
+      "version": "1:5.45-3build1",
+      "architecture": "amd64",
+      "filename": "libmagic-mgc_1:5.45-3build1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/f/file/libmagic-mgc_5.45-3build1_amd64.deb",
+      "bytes": 307366,
+      "sha256": "f0ed0e314a63ae1b7e5403d7e43a26c6e0c0ee69e9a305babcf9c6775607377a"
+    },
+    {
+      "name": "libmagic1t64",
+      "version": "1:5.45-3build1",
+      "architecture": "amd64",
+      "filename": "libmagic1t64_1:5.45-3build1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/f/file/libmagic1t64_5.45-3build1_amd64.deb",
+      "bytes": 87240,
+      "sha256": "fc2319f342c437e044ccf854e0c95bd472a7eb0b9363e1f76ad1524ab04df68e"
+    },
+    {
       "name": "libmbedcrypto7t64",
       "version": "2.28.8-1",
       "architecture": "amd64",
@@ -1236,6 +1479,24 @@
       "url": "https://archive.ubuntu.com/ubuntu/pool/universe/m/mbedtls/libmbedcrypto7t64_2.28.8-1_amd64.deb",
       "bytes": 209262,
       "sha256": "1f0b795a2274f68edddaf2567d738fcee43383c2c4ba802d54ba3b710bbb3228"
+    },
+    {
+      "name": "libmenu-cache-bin",
+      "version": "1.1.0-1.1build3",
+      "architecture": "amd64",
+      "filename": "libmenu-cache-bin_1.1.0-1.1build3_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/universe/m/menu-cache/libmenu-cache-bin_1.1.0-1.1build3_amd64.deb",
+      "bytes": 31124,
+      "sha256": "89b8cbd14a2ded748e1dfe9973938692c2e176fee0c0153d12eb75af0aa0bb42"
+    },
+    {
+      "name": "libmenu-cache3",
+      "version": "1.1.0-1.1build3",
+      "architecture": "amd64",
+      "filename": "libmenu-cache3_1.1.0-1.1build3_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/universe/m/menu-cache/libmenu-cache3_1.1.0-1.1build3_amd64.deb",
+      "bytes": 15516,
+      "sha256": "59613c709d79f8a5c18a250185608c712ef1ae95ee50c62651fb1ace6b33a390"
     },
     {
       "name": "libmp3lame0",
@@ -1346,6 +1607,15 @@
       "sha256": "fbdb2fedbafb02c3f07f2c2ddeb4018b5e94e13462f93fbececdcefc06fe2ac1"
     },
     {
+      "name": "libonig5",
+      "version": "6.9.9-1build1",
+      "architecture": "amd64",
+      "filename": "libonig5_6.9.9-1build1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libo/libonig/libonig5_6.9.9-1build1_amd64.deb",
+      "bytes": 172336,
+      "sha256": "605f42287d2bcb6c84f5a02377c7cd777090c5e857259a4030a571989f19dde2"
+    },
+    {
       "name": "libopenal-data",
       "version": "1:1.23.1-4build1",
       "architecture": "all",
@@ -1389,6 +1659,15 @@
       "url": "https://archive.ubuntu.com/ubuntu/pool/main/o/opus/libopus0_1.4-1build1_amd64.deb",
       "bytes": 208122,
       "sha256": "6d8da32a832e655c9603543b47a0bc90c6f60bdee0c00fe7499bd50acad566cf"
+    },
+    {
+      "name": "liborc-0.4-0t64",
+      "version": "1:0.4.38-1ubuntu0.1",
+      "architecture": "amd64",
+      "filename": "liborc-0.4-0t64_1:0.4.38-1ubuntu0.1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/o/orc/liborc-0.4-0t64_0.4.38-1ubuntu0.1_amd64.deb",
+      "bytes": 207380,
+      "sha256": "a546ca6e237748693596ba469e84a2e0581bc39113abc62b718931df00a4c682"
     },
     {
       "name": "libpango-1.0-0",
@@ -1506,6 +1785,15 @@
       "url": "https://archive.ubuntu.com/ubuntu/pool/universe/f/ffmpeg/libpostproc57_6.1.1-3ubuntu5_amd64.deb",
       "bytes": 49884,
       "sha256": "f0984bf6bff85dc29a44f650841b01a0594775f628b7a4bf5dd45d85d82cb2a7"
+    },
+    {
+      "name": "libproxy1v5",
+      "version": "0.5.4-4build1",
+      "architecture": "amd64",
+      "filename": "libproxy1v5_0.5.4-4build1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libp/libproxy/libproxy1v5_0.5.4-4build1_amd64.deb",
+      "bytes": 26508,
+      "sha256": "4fa847fdf40dfaf198d94b1534bbc616410647dd917bca95bd28aba79d3796ba"
     },
     {
       "name": "libpsl5t64",
@@ -1733,6 +2021,15 @@
       "sha256": "1d27ebc381b499075a28c504be4d7d424c63b6866354736ac7f8d25813860cdf"
     },
     {
+      "name": "libsnapd-glib-2-1",
+      "version": "1.64-0ubuntu5",
+      "architecture": "amd64",
+      "filename": "libsnapd-glib-2-1_1.64-0ubuntu5_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/s/snapd-glib/libsnapd-glib-2-1_1.64-0ubuntu5_amd64.deb",
+      "bytes": 107152,
+      "sha256": "3d5bd0109f47792ead9291531c5187d0c8cd6fcb54fdcc69097a9bf008f393c2"
+    },
+    {
       "name": "libsnappy1v5",
       "version": "1.1.10-1build1",
       "architecture": "amd64",
@@ -1778,6 +2075,24 @@
       "sha256": "a330fa014ee2eb48053395fb91fa39d95ca910e582d515254f50ef944240303c"
     },
     {
+      "name": "libsoup-3.0-0",
+      "version": "3.4.4-5ubuntu0.9",
+      "architecture": "amd64",
+      "filename": "libsoup-3.0-0_3.4.4-5ubuntu0.9_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libs/libsoup3/libsoup-3.0-0_3.4.4-5ubuntu0.9_amd64.deb",
+      "bytes": 290828,
+      "sha256": "cd6bab2b426b0c81b0f7856df11f3633df118df33517378049545ff440751fcc"
+    },
+    {
+      "name": "libsoup-3.0-common",
+      "version": "3.4.4-5ubuntu0.9",
+      "architecture": "all",
+      "filename": "libsoup-3.0-common_3.4.4-5ubuntu0.9_all.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libs/libsoup3/libsoup-3.0-common_3.4.4-5ubuntu0.9_all.deb",
+      "bytes": 12284,
+      "sha256": "950de96545c81a4bcf9c67600c6c6b84fcf5fd680f87d4301a1e3dc1238474f0"
+    },
+    {
       "name": "libsoxr0",
       "version": "0.1.3-4build3",
       "architecture": "amd64",
@@ -1803,6 +2118,15 @@
       "url": "https://archive.ubuntu.com/ubuntu/pool/main/s/speex/libspeex1_1.2.1-2ubuntu2.24.04.1_amd64.deb",
       "bytes": 59578,
       "sha256": "12d57caab1e3fa847cd385a21c1044f7d38209e97b0f87372fe41e346c2c17f7"
+    },
+    {
+      "name": "libspeexdsp1",
+      "version": "1.2.1-1ubuntu3",
+      "architecture": "amd64",
+      "filename": "libspeexdsp1_1.2.1-1ubuntu3_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/s/speexdsp/libspeexdsp1_1.2.1-1ubuntu3_amd64.deb",
+      "bytes": 43138,
+      "sha256": "c16ccd12c2964ca5f30bd25670651550cce2d611cce2952c4807de44244da5a1"
     },
     {
       "name": "libsphinxbase3t64",
@@ -1904,6 +2228,15 @@
       "sha256": "7534eb825f6317514d747ce53b4d6c23bf24df1dc1785f9599610ece5515e685"
     },
     {
+      "name": "libtdb1",
+      "version": "1.4.10-1build1",
+      "architecture": "amd64",
+      "filename": "libtdb1_1.4.10-1build1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/t/tdb/libtdb1_1.4.10-1build1_amd64.deb",
+      "bytes": 46772,
+      "sha256": "5b647b74d61b8bfe32f7bc03ffd22bac146a557df0724bd8e361b09f55237860"
+    },
+    {
       "name": "libthai-data",
       "version": "0.1.29-2build1",
       "architecture": "all",
@@ -1992,6 +2325,15 @@
       "url": "https://archive.ubuntu.com/ubuntu/pool/main/libu/libusb-1.0/libusb-1.0-0_1.0.27-1_amd64.deb",
       "bytes": 54008,
       "sha256": "d59e679a82ee2b724c556397e831e879936adbe8a007705872b65a5e1ec887b5"
+    },
+    {
+      "name": "libutempter0",
+      "version": "1.2.1-3build1",
+      "architecture": "amd64",
+      "filename": "libutempter0_1.2.1-3build1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libu/libutempter/libutempter0_1.2.1-3build1_amd64.deb",
+      "bytes": 9606,
+      "sha256": "46c0dfbfeca19ba0773398d654b7e7225b178f26b414f0e2f8250519551bfb32"
     },
     {
       "name": "libuv1t64",
@@ -2172,6 +2514,24 @@
       "url": "https://archive.ubuntu.com/ubuntu/pool/main/libw/libwebp/libwebpmux3_1.3.2-0.4build3_amd64.deb",
       "bytes": 25674,
       "sha256": "0dd0f2de0fbbda7239209332ddfe512f4383d0489dd3f9fb25398f58c1621724"
+    },
+    {
+      "name": "libwebrtc-audio-processing1",
+      "version": "0.3.1-0ubuntu6",
+      "architecture": "amd64",
+      "filename": "libwebrtc-audio-processing1_0.3.1-0ubuntu6_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/w/webrtc-audio-processing/libwebrtc-audio-processing1_0.3.1-0ubuntu6_amd64.deb",
+      "bytes": 290030,
+      "sha256": "3992aae1942c96122ed29791abb125a664495816c4d4b418b200f24ba05b087d"
+    },
+    {
+      "name": "libwrap0",
+      "version": "7.6.q-33",
+      "architecture": "amd64",
+      "filename": "libwrap0_7.6.q-33_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/t/tcp-wrappers/libwrap0_7.6.q-33_amd64.deb",
+      "bytes": 47874,
+      "sha256": "36118b862539868408ee056411d6e470068d14c46e5296b29bfb744770f5d2ce"
     },
     {
       "name": "libx11-6",
@@ -2633,6 +2993,15 @@
       "sha256": "0a596a628331e837b5756dec8bedf69ea699a9ef5d8a050c0c9b471f833039e1"
     },
     {
+      "name": "lxmenu-data",
+      "version": "0.1.5-2.1",
+      "architecture": "all",
+      "filename": "lxmenu-data_0.1.5-2.1_all.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/universe/l/lxmenu-data/lxmenu-data_0.1.5-2.1_all.deb",
+      "bytes": 48276,
+      "sha256": "198a97e431bcb4c44a3d7451f0c20002fdea7b717b7cadc1aab98adb5264001d"
+    },
+    {
       "name": "media-types",
       "version": "10.1.0",
       "architecture": "all",
@@ -2759,6 +3128,24 @@
       "sha256": "675b84971ffd4467707008c25ef7520f90ea7c23ef27b7a76b0dccf1d7c4dc3f"
     },
     {
+      "name": "patch",
+      "version": "2.7.6-7build3",
+      "architecture": "amd64",
+      "filename": "patch_2.7.6-7build3_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/p/patch/patch_2.7.6-7build3_amd64.deb",
+      "bytes": 104048,
+      "sha256": "fb7d78ed25c2788a607802270f3c28ac5ed6857bfb6cce9f73ad2cafac9159b3"
+    },
+    {
+      "name": "pcmanfm",
+      "version": "1.3.2-4build2",
+      "architecture": "amd64",
+      "filename": "pcmanfm_1.3.2-4build2_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/universe/p/pcmanfm/pcmanfm_1.3.2-4build2_amd64.deb",
+      "bytes": 312092,
+      "sha256": "5ab3eaf69f2502546d65224bfc58bf953f073f516c659c75cd2732a219337ab7"
+    },
+    {
       "name": "perl",
       "version": "5.38.2-3.2ubuntu0.6",
       "architecture": "amd64",
@@ -2784,6 +3171,24 @@
       "url": "https://archive.ubuntu.com/ubuntu/pool/main/p/poppler-data/poppler-data_0.4.12-1_all.deb",
       "bytes": 2059856,
       "sha256": "1a34af9cae9fcf9b05b1527c8985b06aad70f4fc546442bdc3d6e5bc70673206"
+    },
+    {
+      "name": "pulseaudio",
+      "version": "1:16.1+dfsg1-2ubuntu10.1",
+      "architecture": "amd64",
+      "filename": "pulseaudio_1:16.1+dfsg1-2ubuntu10.1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/universe/p/pulseaudio/pulseaudio_16.1+dfsg1-2ubuntu10.1_amd64.deb",
+      "bytes": 884262,
+      "sha256": "d26b78e296e1efab12e35a2674b8e698966efd9c194cf840f7b00f8eb64e38c1"
+    },
+    {
+      "name": "pulseaudio-utils",
+      "version": "1:16.1+dfsg1-2ubuntu10.1",
+      "architecture": "amd64",
+      "filename": "pulseaudio-utils_1:16.1+dfsg1-2ubuntu10.1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/universe/p/pulseaudio/pulseaudio-utils_16.1+dfsg1-2ubuntu10.1_amd64.deb",
+      "bytes": 73494,
+      "sha256": "3a6ade107e69849d3d98c592c8d16844fae449aa29cfc98c7b64c7dbe36a6d29"
     },
     {
       "name": "python-babel-localedata",
@@ -3101,6 +3506,24 @@
       "sha256": "7a2f1226161ca9d102d716dbb484d921ec33d5519fac4f943e1556deaf922c24"
     },
     {
+      "name": "python3-pip",
+      "version": "24.0+dfsg-1ubuntu1.3",
+      "architecture": "all",
+      "filename": "python3-pip_24.0+dfsg-1ubuntu1.3_all.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/universe/p/python-pip/python3-pip_24.0+dfsg-1ubuntu1.3_all.deb",
+      "bytes": 1319940,
+      "sha256": "4e1af0b6f0b52c847ffa7b192b9f650845b99ff300138af05ab9a6252eb75682"
+    },
+    {
+      "name": "python3-pip-whl",
+      "version": "24.0+dfsg-1ubuntu1.3",
+      "architecture": "all",
+      "filename": "python3-pip-whl_24.0+dfsg-1ubuntu1.3_all.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/universe/p/python-pip/python3-pip-whl_24.0+dfsg-1ubuntu1.3_all.deb",
+      "bytes": 1706638,
+      "sha256": "4b7c50db8f261b208c1d9cde8db148c1f682cc516957b986ada5088cfcee1359"
+    },
+    {
       "name": "python3-pkg-resources",
       "version": "68.1.2-2ubuntu1.2",
       "architecture": "all",
@@ -3173,6 +3596,15 @@
       "sha256": "27ede03d8c5046c30cf1dcdc8835708408d27bdd3561e881b5d66656e6ff23e7"
     },
     {
+      "name": "python3-setuptools-whl",
+      "version": "68.1.2-2ubuntu1.2",
+      "architecture": "all",
+      "filename": "python3-setuptools-whl_68.1.2-2ubuntu1.2_all.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/universe/s/setuptools/python3-setuptools-whl_68.1.2-2ubuntu1.2_all.deb",
+      "bytes": 716284,
+      "sha256": "edfa94cc1f6a33af99cfaf6ebfe35dbcd9c4bdd8555b90c0d8e78479faf5c8f0"
+    },
+    {
       "name": "python3-six",
       "version": "1.16.0-4",
       "architecture": "all",
@@ -3218,6 +3650,15 @@
       "sha256": "ea97aaa35a8d55fcdba5a00984bf6ecf35e632e70a9c120e6b195a876c221700"
     },
     {
+      "name": "python3-venv",
+      "version": "3.12.3-0ubuntu2.1",
+      "architecture": "amd64",
+      "filename": "python3-venv_3.12.3-0ubuntu2.1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/universe/p/python3-defaults/python3-venv_3.12.3-0ubuntu2.1_amd64.deb",
+      "bytes": 1032,
+      "sha256": "16d50387b7656796b79e2c059d06774dfe9fe3f42808d8d50b332ceb780f508a"
+    },
+    {
       "name": "python3-websockify",
       "version": "0.10.0+dfsg1-5build2",
       "architecture": "amd64",
@@ -3225,6 +3666,15 @@
       "url": "https://archive.ubuntu.com/ubuntu/pool/main/w/websockify/python3-websockify_0.10.0%2bdfsg1-5build2_amd64.deb",
       "bytes": 42208,
       "sha256": "6a37ea6f5a7d5ce824410939181e18a565b8c9fe2e93969731ddb3f259bdbf45"
+    },
+    {
+      "name": "python3-wheel",
+      "version": "0.42.0-2",
+      "architecture": "all",
+      "filename": "python3-wheel_0.42.0-2_all.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/universe/w/wheel/python3-wheel_0.42.0-2_all.deb",
+      "bytes": 53052,
+      "sha256": "e1a4076425d3d1f1772b11bff6a025055723b2d0a4972f9519849ddaa8cd3953"
     },
     {
       "name": "python3-wrapt",
@@ -3272,6 +3722,15 @@
       "sha256": "d452689b9660845345a4c3e05e4ad82c082d5474e04031b7aa47f1a6d5610a6e"
     },
     {
+      "name": "python3.12-venv",
+      "version": "3.12.3-1ubuntu0.17",
+      "architecture": "amd64",
+      "filename": "python3.12-venv_3.12.3-1ubuntu0.17_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/universe/p/python3.12/python3.12-venv_3.12.3-1ubuntu0.17_amd64.deb",
+      "bytes": 5684,
+      "sha256": "b8d4bfea3df63945b6a202bd0773caf7727dde86d2df91df6e88a8ccf7c18b7e"
+    },
+    {
       "name": "readline-common",
       "version": "8.2-4build1",
       "architecture": "all",
@@ -3279,6 +3738,24 @@
       "url": "https://archive.ubuntu.com/ubuntu/pool/main/r/readline/readline-common_8.2-4build1_all.deb",
       "bytes": 56484,
       "sha256": "879bfd7f8a9bc4c0f7cdc777cdd8bc6de5f8c4a2ac80c060322a1b22f13504bb"
+    },
+    {
+      "name": "ripgrep",
+      "version": "14.1.0-1",
+      "architecture": "amd64",
+      "filename": "ripgrep_14.1.0-1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/universe/r/rust-ripgrep/ripgrep_14.1.0-1_amd64.deb",
+      "bytes": 1551362,
+      "sha256": "c5ae63c7bee915b1cfc9f0bd07c55b4ce7f2bcd1133cba4da56719aac26101a4"
+    },
+    {
+      "name": "session-migration",
+      "version": "0.3.9build1",
+      "architecture": "amd64",
+      "filename": "session-migration_0.3.9build1_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/s/session-migration/session-migration_0.3.9build1_amd64.deb",
+      "bytes": 9034,
+      "sha256": "b8be9382fba445a345d8d311240f68d7772deea6a7f6a57c2a04db8492617728"
     },
     {
       "name": "sgml-base",
@@ -3315,6 +3792,15 @@
       "url": "https://archive.ubuntu.com/ubuntu/pool/main/t/tcl8.6/tcl8.6_8.6.14%2bdfsg-1build1_amd64.deb",
       "bytes": 14736,
       "sha256": "c262c559f67f37a150376c164642f63519469ed288559257f7502aae5448748c"
+    },
+    {
+      "name": "tint2",
+      "version": "17.0.1-1.1build2",
+      "architecture": "amd64",
+      "filename": "tint2_17.0.1-1.1build2_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/universe/t/tint2/tint2_17.0.1-1.1build2_amd64.deb",
+      "bytes": 414470,
+      "sha256": "2ec344c8989822cd970ea2810ee013447880f79658c0043291b14b6cda625520"
     },
     {
       "name": "tk",
@@ -3425,6 +3911,15 @@
       "sha256": "037e70571f39384e28c4ad0db07b44de11f0911ee6c02445560979b417012650"
     },
     {
+      "name": "xbitmaps",
+      "version": "1.1.1-2.2",
+      "architecture": "all",
+      "filename": "xbitmaps_1.1.1-2.2_all.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/x/xbitmaps/xbitmaps_1.1.1-2.2_all.deb",
+      "bytes": 22424,
+      "sha256": "be00b7ea28e33a6e8342ddc0608dd32d9c255a329b57fb7589c650fecd5fe58c"
+    },
+    {
       "name": "xdotool",
       "version": "1:3.20160805.1-5build1",
       "architecture": "amd64",
@@ -3479,6 +3974,15 @@
       "sha256": "ceeac76b9c94973c71e4e6566fa9ff5d3caae9716775d840810a4e1ad749a737"
     },
     {
+      "name": "xterm",
+      "version": "390-1ubuntu3",
+      "architecture": "amd64",
+      "filename": "xterm_390-1ubuntu3_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/universe/x/xterm/xterm_390-1ubuntu3_amd64.deb",
+      "bytes": 883484,
+      "sha256": "3541b6956d6c4be71db7b66ec91985bd5eb128fb130e806f1c879f9d94a97c72"
+    },
+    {
       "name": "xvfb",
       "version": "2:21.1.12-1ubuntu1.9",
       "architecture": "amd64",
@@ -3495,6 +3999,15 @@
       "url": "https://archive.ubuntu.com/ubuntu/pool/main/x/xz-utils/xz-utils_5.6.1%2breally5.4.5-1ubuntu0.4_amd64.deb",
       "bytes": 267426,
       "sha256": "18ef3c30308990626cfbda8b6336ef6ef5a412d1991bdad0cdaa226fd2041ffe"
+    },
+    {
+      "name": "zip",
+      "version": "3.0-13ubuntu0.2",
+      "architecture": "amd64",
+      "filename": "zip_3.0-13ubuntu0.2_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/z/zip/zip_3.0-13ubuntu0.2_amd64.deb",
+      "bytes": 175652,
+      "sha256": "30b325b542ef8e9a22a5e1e1cfce8c4f4b75db73e339e76bf405b635861f1f76"
     }
   ]
 }

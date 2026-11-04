@@ -5,21 +5,18 @@ import { useRouter } from "next/navigation";
 import { Bot, Gauge, Plus, ShieldAlert, ShieldQuestion, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AgentForm } from "@/components/workspace/agent-form";
+import { AgentAvatar } from "@/components/workspace/agent-avatar";
 import { ModalDialog } from "@/components/workspace/modal-dialog";
 import { AstraBadge } from "@/components/ui/astra-badge";
 import { cn } from "@/lib/utils";
 
 export type AgentAttention = "budget_warning" | "budget_paused" | "teach_paused" | "security_stop" | "approval_pending";
-export type AgentSummary = { id: string; name: string; role: string; status: "active" | "paused"; astraMode: boolean; attention?: AgentAttention | null };
+export type AgentSummary = { id: string; name: string; role: string; status: "active" | "paused"; astraMode: boolean; avatarVariant: number; attention?: AgentAttention | null };
 
-type Props = { agents: AgentSummary[]; selectedAgentId?: string; error?: string; csrfToken: string };
-type Toast = { agentId: string; title: string; text: string; persistent: boolean; security?: boolean; approval?: boolean };
+type Props = { agents: AgentSummary[]; selectedAgentId?: string; error?: string; csrfToken: string; variant?: "pane" | "sidebar" };
+type Toast = { agentId: string; title: string; text: string; persistent: boolean; security?: boolean; approval?: boolean; actionLabel?: string; actionHref?: string };
 
-function initials(name: string) {
-  return name.trim().split(/\s+/).slice(0, 2).map((part) => part[0]?.toUpperCase() ?? "").join("") || "A";
-}
-
-export function AgentPane({ agents, selectedAgentId, error, csrfToken }: Props) {
+export function AgentPane({ agents, selectedAgentId, error, csrfToken, variant = "pane" }: Props) {
   const router = useRouter();
   const [creating, setCreating] = useState(false);
   const [attention, setAttention] = useState<Record<string, AgentAttention>>(() => Object.fromEntries(
@@ -49,14 +46,14 @@ export function AgentPane({ agents, selectedAgentId, error, csrfToken }: Props) 
           announced.current.add(key);
           const name = agents.find((agent) => agent.id === item.id)?.name ?? "An agent";
           setToast(item.attention === "security_stop"
-            ? { agentId: item.id, title: `${name}: security stop`, text: "A canary secret was found in data this agent was about to send. The desktop was stopped and the agent is paused. Review what happened, then resume the agent.", persistent: true, security: true }
+            ? { agentId: item.id, title: `${name}: security stop`, text: "A canary secret was found in data this agent was about to send. The desktop was stopped and the agent is paused. Review what happened, then resume the agent.", persistent: true, security: true, actionLabel: "Open settings", actionHref: `/?agent=${item.id}&panel=settings` }
             : item.attention === "approval_pending"
-            ? { agentId: item.id, title: `${name}: approval needed`, text: "An action is waiting for your decision in chat. Open the chat to allow or deny it.", persistent: true, approval: true }
+            ? { agentId: item.id, title: `${name}: approval needed`, text: "An action is waiting for your decision in chat. Open the chat to allow or deny it.", persistent: true, approval: true, actionLabel: "Open chat", actionHref: `/?agent=${item.id}` }
             : item.attention === "teach_paused"
-            ? { agentId: item.id, title: `${name}: recording paused`, text: "Recording paused for privacy. Check the managed browser, then resume explicitly or stop recording.", persistent: true }
+            ? { agentId: item.id, title: `${name}: recording paused`, text: "Recording paused for privacy. Check the managed browser, then resume explicitly or stop recording.", persistent: true, actionLabel: "Open chat", actionHref: `/?agent=${item.id}` }
             : item.attention === "budget_paused"
-            ? { agentId: item.id, title: `${name}: budget paused`, text: "Raise the budget or wait for the next period, then resume the agent.", persistent: true }
-            : { agentId: item.id, title: `${name}: budget warning`, text: "Spending reached 80%. The agent pauses before another model call at 100%.", persistent: false });
+            ? { agentId: item.id, title: `${name}: budget paused`, text: "Raise the budget or wait for the next period, then resume the agent.", persistent: true, actionLabel: "Open settings", actionHref: `/?agent=${item.id}&panel=settings` }
+            : { agentId: item.id, title: `${name}: budget warning`, text: "Spending reached 80%. The agent pauses before another model call at 100%.", persistent: false, actionLabel: "Open settings", actionHref: `/?agent=${item.id}&panel=settings` });
         }
         setAttention(next);
       } catch {
@@ -78,14 +75,35 @@ export function AgentPane({ agents, selectedAgentId, error, csrfToken }: Props) 
     return () => window.clearTimeout(timer);
   }, [toast]);
 
+  // Orbit-style success/info toasts: any component can dispatch
+  // window.dispatchEvent(new CustomEvent("eclipse-notify", { detail: { title, text, agentId?, href? } }))
+  useEffect(() => {
+    const onNotify = (event: Event) => {
+      const detail = (event as CustomEvent<{ title?: string; text?: string; agentId?: string; actionLabel?: string; actionHref?: string }>).detail;
+      if (!detail?.title) return;
+      setToast({ agentId: detail.agentId ?? "", title: detail.title, text: detail.text ?? "", persistent: false, actionLabel: detail.actionLabel, actionHref: detail.actionHref });
+    };
+    window.addEventListener("eclipse-notify", onNotify as EventListener);
+    return () => window.removeEventListener("eclipse-notify", onNotify as EventListener);
+  }, []);
+
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-border px-4">
-        <h2 className="text-lg font-semibold tracking-tight">Agents</h2>
-        <Button type="button" size="sm" onClick={() => setCreating(true)}>
-          <Plus aria-hidden="true" className="size-4" />Create agent
-        </Button>
-      </div>
+      {variant === "sidebar" ? (
+        <div className="flex h-11 shrink-0 items-center justify-between px-4">
+          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Agents</p>
+          <Button type="button" variant="ghost" size="sm" aria-label="Create agent" title="Create agent" onClick={() => setCreating(true)}>
+            <Plus aria-hidden="true" className="size-4" />
+          </Button>
+        </div>
+      ) : (
+        <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-border px-4">
+          <h2 className="text-lg font-semibold tracking-tight">Agents</h2>
+          <Button type="button" size="sm" onClick={() => setCreating(true)}>
+            <Plus aria-hidden="true" className="size-4" />Create agent
+          </Button>
+        </div>
+      )}
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         {error && <p role="alert" className="mb-3 rounded-md border border-danger px-3 py-2 text-sm text-danger">{error}</p>}
         {agents.length === 0 ? (
@@ -109,9 +127,8 @@ export function AgentPane({ agents, selectedAgentId, error, csrfToken }: Props) 
                   <Link href={`/?agent=${agent.id}`} aria-current={selected ? "page" : undefined}
                     className={cn("flex min-w-0 items-center gap-3 rounded-md border border-transparent px-2 py-2 transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring",
                       selected ? "border-border-strong bg-surface-hover" : "hover:bg-surface-hover")}>
-                    <span className={cn("flex size-8 shrink-0 items-center justify-center rounded-full border border-border text-xs font-semibold",
-                      agent.status === "paused" && !needsYou && "text-subtle", needsYou && "ring-1 ring-corona")} aria-hidden="true">
-                      {initials(agent.name)}
+                    <span className={cn("shrink-0 rounded-full", needsYou && "ring-1 ring-corona")}>
+                      <AgentAvatar seed={agent.id} variant={agent.avatarVariant} size={36} label={`${agent.name} avatar`} />
                     </span>
                     <span className="min-w-0 flex-1">
                       <span className="flex min-w-0 items-center gap-1.5">
@@ -141,6 +158,12 @@ export function AgentPane({ agents, selectedAgentId, error, csrfToken }: Props) 
           <div className="min-w-0 flex-1">
             <p className={cn("font-medium", toast.security ? "text-danger" : "text-corona")}>{toast.title}</p>
             <p className="mt-1 text-xs text-muted-foreground">{toast.text}</p>
+            {toast.actionLabel && toast.actionHref && (
+              <Link href={toast.actionHref} onClick={() => setToast(null)}
+                className="mt-2 inline-flex h-7 items-center rounded-md border border-border-strong bg-surface px-2.5 text-xs font-medium transition-colors duration-150 hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-ring">
+                {toast.actionLabel}
+              </Link>
+            )}
           </div>
           <button type="button" onClick={() => setToast(null)} aria-label="Dismiss attention alert"
             className="rounded-md p-1 text-muted-foreground hover:bg-surface-hover hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring">

@@ -63,7 +63,15 @@ export async function getRoutineQueue(): Promise<PgBoss> {
       max: 4,
       application_name: "eclipse-crew-routine",
     });
-    boss.on("error", () => console.error("Routine queue error."));
+    boss.on("error", (error) => {
+      let detail = "unknown";
+      try {
+        detail = error instanceof Error ? error.message
+          : typeof error === "string" ? error
+            : JSON.stringify(error).slice(0, 300);
+      } catch { /* keep the fixed fallback */ }
+      console.error("Routine queue error.", detail);
+    });
     try {
       await boss.start({ attempts: 5 });
       await boss.createQueue(ROUTINE_QUEUE, {

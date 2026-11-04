@@ -211,9 +211,10 @@ export async function runReplay(deps: ReplayDeps): Promise<ReplayResult> {
         continue;
       }
 
-      let before: Screenshot;
+      let before: Screenshot | null;
       try { before = await withinDeadline(deps.desktop.screenshot()); }
       catch (error) { if (!stopIfStopped()) stopForError(error); break; }
+      if (!before) { stop("desktop_error"); break; }
       // Like the step loop's gate, only click, type and key are checked against the page; scroll and wait have no target.
       const gated = step.action === "click" || step.action === "type" || step.action === "key";
       let snapshot: PageSnapshot | null = null;
@@ -251,9 +252,10 @@ export async function runReplay(deps: ReplayDeps): Promise<ReplayResult> {
         point = step.action === "click" ? { ...centreOf(target), method: "page_structure", role: target.role, name: target.name } : null;
         if (step.action === "click" && !validPoint(point, before)) { await blocked("target_missing"); break; }
         gate.push({ method: "page_structure", status: "pass", code: "unique_target" });
-        let fresh: PageSnapshot;
+        let fresh: PageSnapshot | null;
         try { fresh = await withinDeadline(deps.desktop.snapshot()); }
         catch (error) { if (!stopIfStopped()) stopForError(error); break; }
+        if (!fresh) { await blocked("page_unreadable"); break; }
         const chosen = target;
         const again = fresh.controls.filter((control) => sameControl(chosen, control) && (step.action === "click" || control.focused === true));
         if (fresh.href !== snapshot.href || again.length !== 1 || fresh.controls.filter((c) => c.name === chosen.name && c.role === chosen.role).length !== 1) {

@@ -139,8 +139,11 @@ async function main() {
           if (!/^[a-z0-9][a-z0-9+.-]+$/.test(entry.name ?? "") || !entry.filename.endsWith(".deb") || !Number.isSafeInteger(entry.bytes) || !/^[a-f0-9]{64}$/.test(entry.sha256 ?? "")) continue;
           const current = index.get(entry.name);
           if (!current || compareVersions(entry.version, current.version) > 0) index.set(entry.name, entry);
-          for (const provided of entry.provides.split(",").map((value) => value.trim().split(" ")[0]).filter(Boolean)) {
-            if (!provides.has(provided)) provides.set(provided, []); provides.get(provided).push(entry);
+          for (const value of entry.provides.split(",")) {
+            const provided = /^([a-z0-9][a-z0-9+.-]+)(?:\s*\(=\s*([^)]+)\))?$/i.exec(value.trim());
+            if (!provided) continue;
+            if (!provides.has(provided[1])) provides.set(provided[1], []);
+            provides.get(provided[1]).push({ entry, version: provided[2] });
           }
         }
       }
@@ -156,11 +159,12 @@ async function main() {
       const present = locked.get(parsed.name) ?? base.get(parsed.name);
       if (present && (!parsed.op || satisfies(present.version, parsed.op, parsed.version))) return present;
       const providers = provides.get(parsed.name) ?? [];
-      const installed = providers.find((candidate) => locked.has(candidate.name) || base.has(candidate.name));
-      if (installed && !parsed.op) return locked.get(installed.name) ?? base.get(installed.name);
+      const installed = providers.find((candidate) => (locked.has(candidate.entry.name) || base.has(candidate.entry.name)) &&
+        (!parsed.op || satisfies(candidate.version ?? candidate.entry.version, parsed.op, parsed.version)));
+      if (installed) return installed.entry;
       const real = index.get(parsed.name);
       if (real && (!parsed.op || satisfies(real.version, parsed.op, parsed.version))) return real;
-      for (const candidate of providers) if (!parsed.op) return candidate;
+      for (const candidate of providers) if (!parsed.op || satisfies(candidate.version ?? candidate.entry.version, parsed.op, parsed.version)) return candidate.entry;
       fail(`dependency_unresolved_${parsed.name}`);
     };
     while (queue.length) {
@@ -169,8 +173,8 @@ async function main() {
       const present = locked.get(name) ?? base.get(name);
       if (present) { selected.set(name, present); continue; }
       const providers = provides.get(name) ?? [];
-      const installed = providers.find((candidate) => locked.has(candidate.name) || base.has(candidate.name));
-      const entry = installed ? locked.get(installed.name) ?? base.get(installed.name) : index.get(name) ?? providers[0];
+      const installed = providers.find((candidate) => locked.has(candidate.entry.name) || base.has(candidate.entry.name));
+      const entry = installed?.entry ?? index.get(name) ?? providers[0]?.entry;
       if (!entry) fail(`package_missing_${name}`);
       selected.set(name, entry); queue.push(...dependenciesOf(entry));
     }

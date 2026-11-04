@@ -80,9 +80,13 @@ export function createToolPort(options: {
     return client;
   }
 
-  async function prepareMcp(reference: string, signal?: AbortSignal): Promise<PreparedTool> {
+  async function prepareMcp(reference: string, signal?: AbortSignal, allowedTools?: readonly string[]): Promise<PreparedTool> {
     const split = splitToolReference(reference);
     if (!split) throw new McpError("tool_not_pinned", 403);
+    // TASK-076. A helper may only call a tool its parent granted, even when the server pin allows more.
+    if (allowedTools && !allowedTools.includes(reference) && !allowedTools.includes(split.tool) && !allowedTools.includes(`${split.serverKey}.*`)) {
+      throw new McpError("tool_not_pinned", 403);
+    }
     const server = await getMcpServerByKey(options.database, options.ownerId, options.agentId, split.serverKey);
     if (!server) throw new McpError("tool_not_pinned", 403);
     if (server.status !== "pinned") throw new McpError("tools_changed", 409);
@@ -122,7 +126,9 @@ export function createToolPort(options: {
       if (pinned) { match = { toolkit: account.toolkit, tool: pinned, accountId: account.connectedAccountId }; break; }
     }
     if (!match) throw new ComposioError("composio_not_connected", 409);
-    if (allowedTools && !allowedTools.includes(tool)) throw new ComposioError("tool_not_pinned", 403);
+    if (allowedTools && !allowedTools.includes(tool) && !allowedTools.includes(`${COMPOSIO_AGENT_KEY}.${tool}`)) {
+      throw new ComposioError("tool_not_pinned", 403);
+    }
     const active = match;
 
     let sessionPromise = composioSessions.get(active.toolkit);
@@ -185,7 +191,7 @@ export function createToolPort(options: {
       const split = splitToolReference(reference);
       if (!split) throw new McpError("tool_not_pinned", 403);
       if (split.serverKey === COMPOSIO_AGENT_KEY) return prepareComposio(split.tool, signal, prepareOptions?.allowedTools);
-      return prepareMcp(reference, signal);
+      return prepareMcp(reference, signal, prepareOptions?.allowedTools);
     },
     async close() {
       const sessions = [...composioSessions.values()];

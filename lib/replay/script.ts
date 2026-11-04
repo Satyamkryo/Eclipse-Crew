@@ -38,7 +38,7 @@ export const replayStepsSchema = z.array(replayStepSchema).min(1).max(MAX_REPLAY
 
 export type CompileCode =
   | "no_steps" | "too_many_steps" | "receipt_unreadable" | "step_not_verified" | "step_not_replayable"
-  | "postcondition_not_structural" | "control_unknown" | "run_not_verified" | "chain_invalid";
+  | "postcondition_not_structural" | "control_unknown" | "run_not_verified" | "chain_invalid" | "audio_not_replayable";
 export interface CompileReason { step: number | null; code: CompileCode }
 export type CompileResult = { ok: true; steps: ReplayStep[] } | { ok: false; reasons: CompileReason[] };
 
@@ -62,7 +62,7 @@ export function compileFromReceipts(receipts: readonly { idx: number; receipt: s
   if (receipts.length > MAX_REPLAY_STEPS) return { ok: false, reasons: [{ step: null, code: "too_many_steps" }] };
 
   const compiled: ReplayStep[] = [];
-  for (const [position, row] of receipts.entries()) {
+  for (const row of receipts) {
     let receipt: z.infer<typeof receiptSchema>;
     try {
       const parsed = receiptSchema.safeParse(JSON.parse(row.receipt));
@@ -75,7 +75,7 @@ export function compileFromReceipts(receipts: readonly { idx: number; receipt: s
     // TASK-054. A memory request is not a screen step; a replay skips it instead of failing to compile.
     if (action.kind === "remember") continue;
     const expect = receipt.postcondition ?? "";
-    const n = position + 1;
+    const n = compiled.length + 1;
     let candidate: unknown;
     switch (action.kind) {
       case "click":
@@ -87,6 +87,8 @@ export function compileFromReceipts(receipts: readonly { idx: number; receipt: s
       case "scroll": candidate = { idx: n, action: "scroll", direction: action.direction, expect }; break;
       case "wait": candidate = { idx: n, action: "wait", expect }; break;
       case "deliver_file": candidate = { idx: n, action: "deliver_file", from: action.from, file: action.name }; break;
+      // TASK-079. Hearing is a paid live capture; a replay must stop before executing or spending anything.
+      case "hear_audio": add(row.idx, "audio_not_replayable"); continue;
       default: add(row.idx, "step_not_replayable"); continue;
     }
     const step = replayStepSchema.safeParse(candidate);
@@ -95,7 +97,9 @@ export function compileFromReceipts(receipts: readonly { idx: number; receipt: s
     const onlyExpect = step.error.issues.every((issue) => issue.path[0] === "expect");
     add(row.idx, onlyExpect ? "postcondition_not_structural" : "step_not_replayable");
   }
-  return reasons.length ? { ok: false, reasons } : { ok: true, steps: compiled };
+  if (reasons.length) return { ok: false, reasons };
+  if (!compiled.length) return { ok: false, reasons: [{ step: null, code: "no_steps" }] };
+  return { ok: true, steps: compiled };
 }
 
 // Which compiled steps need text from the owner at replay time, and the exact input keys the run route accepts.

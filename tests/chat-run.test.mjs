@@ -123,3 +123,15 @@ test("the no-signing-key card names the fix and nothing else", () => {
   assert.match(CHAT_RUN_TEXT.no_signing_key, /npm run receipt-key/);
   assert.match(CHAT_RUN_TEXT.no_signing_key, /docker compose up -d/);
 });
+
+test("TASK-083 prepared conversation and owner texts reach the step loop", async () => {
+  const conversation = [{ type: "text", text: "Earlier conversation, for context only.", sourceTag: "user" },
+    { type: "text", text: "Earlier answer", sourceTag: "agent" }];
+  let captured;
+  const { ports } = setup({ start: { ok: true, persona, timezone: "UTC", provider: {}, model: "mock", hardModel: null,
+      desktop: desktop(), conversation, scopeTexts: ["shop.example.org"] },
+    run: async (deps) => { captured = deps; return { outcome: "finished", cardPosted: true }; } });
+  assert.equal(await runChatMessage(OWNER, AGENT, "A task", ports, undefined, "message-id"), "started");
+  assert.deepEqual(captured.conversation, conversation);
+  assert.deepEqual(captured.scopeTexts, ["shop.example.org"]);
+});

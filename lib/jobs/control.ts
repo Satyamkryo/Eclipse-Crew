@@ -2,7 +2,7 @@ import "server-only";
 
 // TASK-042. Runs live in the app process, so Cancel can only reach a run this process still holds. The registry is on
 // globalThis because chat runs and replays start from different route bundles and must share one map.
-export interface RunControl { signal: AbortSignal; done: () => void }
+export interface RunControl { signal: AbortSignal; done: () => void; cancel: () => void }
 
 interface ActiveRun { controller: AbortController; ownerId: string; agentId: string }
 
@@ -16,6 +16,7 @@ export function registerRun(runId: string, ownerId: string, agentId: string): Ru
   let released = false;
   return {
     signal: controller.signal,
+    cancel: () => { if (!controller.signal.aborted) controller.abort("owner"); },
     done: () => {
       if (released) return;
       released = true;

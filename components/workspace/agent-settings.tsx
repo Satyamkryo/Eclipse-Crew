@@ -6,7 +6,10 @@ import { LoaderCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AgentForm } from "@/components/workspace/agent-form";
 import { AstraSettings } from "@/components/workspace/astra-settings";
+import { CrewHandoffSetting } from "@/components/workspace/crew-handoff-setting";
 import { AgentSetup } from "@/components/workspace/agent-setup";
+import { DesktopLifecycle } from "@/components/workspace/desktop-lifecycle";
+import type { DesktopStatus } from "@/lib/desktop/client";
 import { ModalDialog } from "@/components/workspace/modal-dialog";
 import { AstraBadge } from "@/components/ui/astra-badge";
 import { useRemote } from "@/components/history/use-remote";
@@ -20,6 +23,7 @@ export type AgentSettingsData = {
   soulMd: string;
   status: "active" | "paused";
   astraMode: boolean;
+  avatarVariant: number;
   dailyBudgetCents: number;
   monthlyBudgetCents: number;
   tools: string[];
@@ -28,13 +32,14 @@ export type AgentSettingsData = {
   memoryScopes: string[];
 };
 
-export function AgentSettings({ agent, desktopRunning, csrfToken }: { agent: AgentSettingsData; desktopRunning: boolean; csrfToken: string }) {
+export function AgentSettings({ agent, desktopStatus, csrfToken }: { agent: AgentSettingsData; desktopStatus?: DesktopStatus; csrfToken: string }) {
   const router = useRouter();
   const [loading, setLoading] = useState<"pause" | "resume" | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
-  const action = agent.status === "paused" || !desktopRunning ? "resume" : "pause";
-  const actionLabel = agent.status === "paused" ? "Resume agent" : desktopRunning ? "Pause agent" : "Start desktop";
+  // Pause/Resume is the agent's own state. Starting or stopping the desktop is a separate control below.
+  const action = agent.status === "paused" ? "resume" : "pause";
+  const actionLabel = agent.status === "paused" ? "Resume agent" : "Pause agent";
 
   async function changeStatus(action: "pause" | "resume") {
     setLoading(action);
@@ -56,6 +61,9 @@ export function AgentSettings({ agent, desktopRunning, csrfToken }: { agent: Age
           : action === "pause" ? "Couldn't pause this agent. Try again." : "Couldn't resume this agent. Try again.");
         return;
       }
+      window.dispatchEvent(new CustomEvent("eclipse-notify", {
+        detail: { title: action === "pause" ? `${agent.name} paused` : `${agent.name} resumed`, text: action === "pause" ? "Desktop stopped, files kept. Resume anytime." : "Agent is active again.", agentId: agent.id, actionLabel: "Open chat", actionHref: `/?agent=${agent.id}` },
+      }));
       router.refresh();
     } catch {
       setError("Unable to connect. Try again.");
@@ -75,7 +83,7 @@ export function AgentSettings({ agent, desktopRunning, csrfToken }: { agent: Age
               {agent.astraMode && <AstraBadge />}
             </p>
             <p className="mt-1 text-sm text-muted-foreground">
-              {agent.status === "paused" ? "Paused" : desktopRunning ? "Active · Desktop running" : "Active · Desktop stopped"} · Permissions are default deny.
+              {agent.status === "paused" ? "Paused" : "Active"} · Permissions are default deny.
             </p>
           </div>
           <Button type="button" variant="secondary" disabled={loading !== null}
@@ -90,8 +98,10 @@ export function AgentSettings({ agent, desktopRunning, csrfToken }: { agent: Age
             onSaved={() => router.refresh()} />
         </div>
       </section>
+      <DesktopLifecycle key={agent.id} agentId={agent.id} csrfToken={csrfToken} initial={desktopStatus} />
       <AstraSettings agentId={agent.id} agentName={agent.name} astraMode={agent.astraMode} csrfToken={csrfToken} />
       <AgentSetup agentId={agent.id} actions={agent.actions} tools={agent.tools} domains={agent.domains} />
+      <CrewHandoffSetting csrfToken={csrfToken} />
       <SavedApprovals agentId={agent.id} csrfToken={csrfToken} />
       <section className="rounded-lg border border-border bg-card p-4">
         <h3 className="text-sm font-semibold">Delete agent</h3>
@@ -101,7 +111,7 @@ export function AgentSettings({ agent, desktopRunning, csrfToken }: { agent: Age
       <div className="flex flex-wrap gap-4">
         <Link href="/settings/models" className="text-sm underline underline-offset-4">Model settings</Link>
         <Link href="/settings/connections" className="text-sm underline underline-offset-4">Connections</Link>
-        <Link href="/settings/account" className="text-sm underline underline-offset-4">Account settings</Link>
+        <Link href="/profile" className="text-sm underline underline-offset-4">Profile</Link>
       </div>
       {confirmingDelete && <DeleteAgentDialog agent={agent} csrfToken={csrfToken} onClose={() => setConfirmingDelete(false)} />}
     </div>

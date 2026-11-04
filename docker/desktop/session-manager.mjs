@@ -9,7 +9,8 @@ import { processIdentity, SESSION_FAILURES } from "./session-worker.mjs";
 import { createChannel, writeFramed } from "./controller-channel.mjs";
 
 export const SESSION_SOCKET = "/run/eclipse/sessions.sock";
-const COMMANDS = ["session-start", "session-status", "session-stop", "session-fixture", "session-fixture-cookie"];
+const COMMANDS = ["session-start", "session-status", "session-stop", "session-sandbox", "session-desktop-start", "session-desktop-stop",
+  "session-browser-start", "session-browser-stop", "session-fixture", "session-fixture-cookie", "session-fixture-page"];
 export function validateSessionRequest(value) {
   if (!value || Object.keys(value).sort().join() !== "agentId,command,ownerId" || !COMMANDS.includes(value.command)) throw new AgentError("invalid_session_request");
   validateIds(value.ownerId, value.agentId); return value;
@@ -40,6 +41,7 @@ export class SessionManager {
   async observe(entry) {
     if (entry.observing) return entry.observing;
     entry.observing = (async () => {
+      if (!entry.child) return;
       const visit = async (pid, depth = 0) => {
         if (depth > 12 || entry.tracked.size >= 1024) return;
         const identity = await processIdentity(pid); if (!identity) return;
@@ -71,12 +73,14 @@ export class SessionManager {
     const cleanup = (async () => {
       this.closeViewers(entry.record.agentId);
       if (entry.monitor) clearInterval(entry.monitor);
-      await this.observe(entry);
-      // Send framed stop command to worker via stdin pipe
-      if (entry.channel && entry.child.stdin && !entry.child.stdin.destroyed) {
-        try { await writeFramed(entry.child.stdin, { command: "stop" }); } catch { /* disconnected */ }
+      if (entry.child) {
+        await this.observe(entry);
+        // Send framed stop command to worker via stdin pipe
+        if (entry.channel && entry.child.stdin && !entry.child.stdin.destroyed) {
+          try { await writeFramed(entry.child.stdin, { command: "stop" }); } catch { /* disconnected */ }
+        }
+        for (let i = 0; i < 60 && entry.child.exitCode === null && entry.child.signalCode === null; i++) await delay(100);
       }
-      for (let i = 0; i < 60 && entry.child.exitCode === null && entry.child.signalCode === null; i++) await delay(100);
       await this.terminate(entry);
       await entry.relay?.close().catch(() => {});
       await entry.gatewayRelay?.close().catch(() => {});
@@ -97,59 +101,192 @@ export class SessionManager {
   }
   state(entry) {
     return { ...publicState(entry.record, entry.state), generation: entry.generation,
-      ...(entry.reason ? { reason: entry.reason } : {}), ...(entry.vncPort ? { vncPort: entry.vncPort, vncReady: !!entry.vncReady } : {}), takenOver: !!this.takeovers.get(entry.record.agentId) };
+      sandbox: entry.sandbox ?? (entry.state === "running" ? "running" : "stopped"), graphics: entry.graphics ?? "stopped", browser: entry.browser ?? "stopped",
+      ...(entry.reason ? { reason: entry.reason } : {}),
+      ...(entry.vncPort && entry.graphics === "running" ? { vncPort: entry.vncPort, vncReady: !!entry.vncReady } : {}),
+      takenOver: !!this.takeovers.get(entry.record.agentId) };
   }
-  start(ownerId, agentId) {
-    validateIds(ownerId, agentId);
-    return this.serialize(agentId, async () => {
-      if (this.closing) throw new AgentError("supervisor_stopping");
-      const record = await inspectAgent(ownerId, agentId); const old = this.entries.get(agentId);
-      if (this.closing) throw new AgentError("supervisor_stopping");
-      if (old?.state === "running" && !old.uncertain) return this.state(old);
-      if (old) await this.clean(old);
-      this.takeovers.delete(agentId); this.requestIds.set(agentId, new Set());
-      const { home: _h, downloads: _d, ...identity } = record; void _h; void _d;
+  // Worker events are lifecycle facts, not session failures: only the sandbox worker ending fails the whole session.
+  async handleWorkerEvent(entry, message, { onReady = () => {}, onFatal = () => {} } = {}) {
+    const record = entry.record;
+    if (message.state === "runtime" && typeof message.directory === "string" && new RegExp(`^/tmp/ec-${record.uid}-[a-zA-Z0-9]{6}$`).test(message.directory)) {
+      entry.runtimeReady = lstat(message.directory).then((st) => {
+        if (!st.isDirectory() || st.uid !== record.uid || (st.mode & 0o7777) !== 0o700) throw Error("unsafe_runtime");
+        entry.runtime = { path: message.directory, ino: st.ino, dev: st.dev };
+      }); await entry.runtimeReady;
+    } else if (message.state === "sandbox_running" && entry.state === "starting") {
+      entry.state = "running"; entry.sandbox = "running"; onReady();
+    } else if (message.state === "vnc_ready") {
+      if (message.vncPort !== 5950 + record.uid - 20000 || typeof message.password !== "string" || !/^[A-Za-z0-9+/]{8}$/.test(message.password)) throw Error("invalid_vnc_metadata");
+      entry.vncPort = message.vncPort; entry.vncPassword = message.password; entry.vncReady = true; entry.vncSocket = `${entry.nsDir}/vnc.sock`;
+    } else if (message.state === "desktop_starting") entry.graphics = "starting";
+    else if (message.state === "desktop_running") { entry.graphics = "running"; entry.vncReady = true; }
+    else if (message.state === "desktop_stopped") {
+      entry.graphics = "stopped"; entry.browser = "stopped"; entry.vncReady = false;
+      delete entry.vncPort; delete entry.vncPassword; delete entry.vncSocket; this.closeViewers(record.agentId);
+    } else if (message.state === "desktop_failed") {
+      entry.graphics = "failed"; entry.reason = SESSION_FAILURES.has(message.reason) ? message.reason : "desktop_start_failed";
+      entry.vncReady = false; delete entry.vncPort; delete entry.vncPassword; delete entry.vncSocket;
+      this.closeViewers(record.agentId);
+    } else if (message.state === "browser_starting") entry.browser = "starting";
+    else if (message.state === "browser_running") entry.browser = "running";
+    else if (message.state === "browser_stopped") entry.browser = "stopped";
+    else if (message.state === "browser_failed") entry.browser = "failed";
+    else if (message.state === "failed") {
+      const code = SESSION_FAILURES.has(message.reason) ? message.reason : "session_component_failed";
+      onFatal(code);
+      if (["stopping", "stopped", "failed"].includes(entry.state)) return;
+      entry.state = "failed"; entry.sandbox = "failed"; entry.reason = code;
+      this.closeViewers(record.agentId); void this.clean(entry).catch(() => {});
+    } else throw Error("invalid_worker_event");
+  }
+  // One worker is the sandbox. Graphics and the managed browser are started and stopped over its framed pipe.
+  async launch(record) {
+    const { home: _h, downloads: _d, ...identity } = record; void _h; void _d;
+    // Register before any await, so a shutdown during setup can find and cancel this start.
+    const entry = { record, state: "starting", sandbox: "starting", graphics: "stopped", browser: "stopped",
+      generation: randomUUID(), tracked: new Map(), relay: null, gatewayRelay: null, nsDir: null };
+    this.entries.set(record.agentId, entry); this.generations.set(record.agentId, entry.generation);
+    try {
       // TASK-071. The token never enters the agent namespace: the supervisor relay injects it outside.
       const nsDir = await ensureNsDirectory(record);
+      if (this.closing) throw new AgentError("supervisor_stopping");
+      entry.nsDir = nsDir;
       const egressSecret = process.env.EGRESS_DESKTOP_SECRET ?? "";
-      const egressToken = /^[0-9a-f]{64}$/.test(egressSecret) ? agentEgressToken(agentId, egressSecret) : null;
+      const egressToken = /^[0-9a-f]{64}$/.test(egressSecret) ? agentEgressToken(record.agentId, egressSecret) : null;
       if (!egressToken) throw new AgentError("egress_not_configured");
-      const relay = createEgressRelay({ agentId, path: `${nsDir}/egress.sock`, token: egressToken });
+      const relay = createEgressRelay({ agentId: record.agentId, path: `${nsDir}/egress.sock`, token: egressToken });
+      entry.relay = relay;
       await relay.listen().catch(() => { throw new AgentError("egress_not_configured"); });
-      const gatewayRelay = createGatewayRelay({ agentId, path: `${nsDir}/gateway.sock`, token: egressToken });
+      if (this.closing) throw new AgentError("supervisor_stopping");
+      const gatewayRelay = createGatewayRelay({ agentId: record.agentId, path: `${nsDir}/gateway.sock`, token: egressToken });
+      entry.gatewayRelay = gatewayRelay;
       await gatewayRelay.listen().catch(async () => { await relay.close().catch(() => {}); throw new AgentError("egress_not_configured"); });
+      if (this.closing) throw new AgentError("supervisor_stopping");
       let child;
       try {
         child = launchAgent(record, ["node", "/opt/eclipse/desktop/session-worker.mjs", JSON.stringify(identity)], { stdio: ["pipe", "pipe", "ignore"],
           ...(process.env.ECLIPSE_FIXTURES === "1" ? { extraEnv: { ECLIPSE_FIXTURES: "1" } } : {}) });
       } catch (error) { await gatewayRelay.close().catch(() => {}); await relay.close().catch(() => {}); throw error; }
-      const entry = { record, child, state: "starting", generation: randomUUID(), tracked: new Map(), relay, gatewayRelay, nsDir }; this.entries.set(agentId, entry); this.generations.set(agentId, entry.generation);
+      entry.child = child;
+      if (this.closing) throw new AgentError("supervisor_stopping");
       entry.monitor = setInterval(() => { void this.observe(entry).catch(() => {}); }, 200);
       let readyResolve, readyReject; const ready = new Promise((resolve, reject) => { readyResolve = resolve; readyReject = reject; });
       entry.cancelStart = () => readyReject(new AgentError("supervisor_stopping"));
       const failed = (code = "session_worker_exited") => {
         readyReject(new AgentError(code));
         if (["stopping", "stopped", "failed"].includes(entry.state)) return;
-        entry.state = "failed"; entry.reason = code; this.closeViewers(agentId); void this.clean(entry).catch(() => {});
+        entry.state = "failed"; entry.sandbox = "failed"; entry.reason = code; this.closeViewers(record.agentId); void this.clean(entry).catch(() => {});
       };
       const timer = setTimeout(() => failed("session_start_timeout"), 30000);
       child.once("error", () => failed()); child.once("exit", () => failed());
-      entry.channel = createChannel(child.stdout, child.stdin, { onEvent: async (message) => {
-        if (message.state === "runtime" && typeof message.directory === "string" && new RegExp(`^/tmp/ec-${record.uid}-[a-zA-Z0-9]{6}$`).test(message.directory)) {
-          entry.runtimeReady = lstat(message.directory).then((st) => {
-            if (!st.isDirectory() || st.uid !== record.uid || (st.mode & 0o7777) !== 0o700) throw Error("unsafe_runtime");
-            entry.runtime = { path: message.directory, ino: st.ino, dev: st.dev };
-          }); await entry.runtimeReady;
-        } else if (message.state === "vnc_ready") {
-          if (message.vncPort !== 5950 + record.uid - 20000 || typeof message.password !== "string" || !/^[A-Za-z0-9+/]{8}$/.test(message.password)) throw Error("invalid_vnc_metadata");
-          entry.vncPort = message.vncPort; entry.vncPassword = message.password; entry.vncReady = true; entry.vncSocket = `${nsDir}/vnc.sock`;
-        } else if (message.state === "running" && entry.state === "starting") { entry.state = "running"; readyResolve(); }
-        else if (message.state === "failed") failed(SESSION_FAILURES.has(message.reason) ? message.reason : "session_component_failed");
-        else throw Error("invalid_worker_event");
-      } });
-      void entry.channel.done.then(() => failed());
-      try { await ready; await this.observe(entry); return this.state(entry); }
-      catch (error) { await this.clean(entry); throw error; } finally { clearTimeout(timer); delete entry.cancelStart; }
+      entry.channel = createChannel(child.stdout, child.stdin, { onEvent: (message) => this.handleWorkerEvent(entry, message, {
+        onReady: readyResolve, onFatal: (code) => readyReject(new AgentError(code)),
+      }) });
+    void entry.channel.done.then(() => failed());
+    try { await ready; await this.observe(entry); return entry; }
+    finally { clearTimeout(timer); delete entry.cancelStart; }
+    } catch (error) {
+      // A shutdown keeps the entry as a stopped tombstone; a real setup failure removes it.
+      const shutdown = this.closing;
+      if (shutdown) { entry.state = "stopped"; entry.sandbox = "stopped"; }
+      else { this.entries.delete(record.agentId); this.generations.delete(record.agentId); }
+      await this.clean(entry).catch(() => {});
+      throw shutdown ? new AgentError("supervisor_stopping") : error;
+    }
+  }
+  async ensureEntry(ownerId, agentId) {
+    const record = await inspectAgent(ownerId, agentId);
+    let entry = this.entries.get(agentId);
+    if (entry && entry.record.ownerId !== ownerId) throw new AgentError("agent_unavailable");
+    if (entry && entry.state === "running" && entry.sandbox === "running") return entry;
+    if (entry) { entry.state = "stopping"; await this.clean(entry); this.entries.delete(agentId); this.generations.delete(agentId); }
+    if (this.closing) throw new AgentError("supervisor_stopping");
+    this.takeovers.delete(agentId); this.requestIds.set(agentId, new Set());
+    entry = await this.launch(record);
+    this.entries.set(agentId, entry); this.generations.set(agentId, entry.generation);
+    return entry;
+  }
+  applyLifecycle(entry, result) {
+    if (result.sandbox) { entry.sandbox = result.sandbox; entry.state = result.sandbox === "starting" ? "starting" : result.sandbox; }
+    if (result.graphics) entry.graphics = result.graphics;
+    if (result.browser) entry.browser = result.browser;
+    if (result.vncPort && result.graphics === "running") { entry.vncPort = result.vncPort; entry.vncReady = true; }
+    else if (entry.graphics !== "running") { entry.vncReady = false; delete entry.vncPort; delete entry.vncPassword; }
+  }
+  async sendLifecycle(entry, command, timeoutMs) {
+    try {
+      const result = await entry.channel.send({ command, requestId: randomUUID() }, { timeoutMs });
+      const states = new Set(["stopped", "starting", "running", "failed"]);
+      if (!result || result.agentId !== entry.record.agentId || !states.has(result.sandbox) || !states.has(result.graphics) || !states.has(result.browser))
+        throw new AgentError("invalid_worker_result");
+      this.applyLifecycle(entry, result);
+      return result;
+    } catch (error) {
+      if (error instanceof AgentError) throw error;
+      const code = typeof error?.code === "string" && /^[a-z_]{1,64}$/.test(error.code) ? error.code : `${command.replace(".", "_")}_failed`;
+      throw new AgentError(code);
+    }
+  }
+  ensureSandbox(ownerId, agentId) {
+    validateIds(ownerId, agentId);
+    return this.serialize(agentId, async () => {
+      if (this.closing) throw new AgentError("supervisor_stopping");
+      return this.state(await this.ensureEntry(ownerId, agentId));
+    });
+  }
+  // Legacy session.start means "sandbox plus graphics plus managed browser".
+  start(ownerId, agentId) {
+    validateIds(ownerId, agentId);
+    return this.serialize(agentId, async () => {
+      if (this.closing) throw new AgentError("supervisor_stopping");
+      const entry = await this.ensureEntry(ownerId, agentId);
+      if (entry.graphics === "running" && entry.browser === "running") return this.state(entry);
+      await this.sendLifecycle(entry, "desktop.start", 45000);
+      return this.state(entry);
+    });
+  }
+  startDesktop(ownerId, agentId, generation) {
+    validateIds(ownerId, agentId);
+    return this.serialize(agentId, async () => {
+      if (this.closing) throw new AgentError("supervisor_stopping");
+      const entry = await this.ensureEntry(ownerId, agentId);
+      this.authorize(ownerId, agentId, generation, { running: false });
+      if (entry.graphics === "running" && entry.browser === "running") return this.state(entry);
+      await this.sendLifecycle(entry, "desktop.start", 45000);
+      return this.state(entry);
+    });
+  }
+  stopDesktop(ownerId, agentId, generation) {
+    validateIds(ownerId, agentId);
+    return this.serialize(agentId, async () => {
+      const record = await inspectAgent(ownerId, agentId); const entry = this.entries.get(agentId);
+      if (!entry) return { ...publicState(record), sandbox: "stopped", graphics: "stopped", browser: "stopped" };
+      this.authorize(ownerId, agentId, generation, { running: false });
+      await this.sendLifecycle(entry, "desktop.stop", 15000);
+      this.closeViewers(agentId); this.takeovers.delete(agentId);
+      return this.state(entry);
+    });
+  }
+  startBrowser(ownerId, agentId, generation) {
+    validateIds(ownerId, agentId);
+    return this.serialize(agentId, async () => {
+      if (this.closing) throw new AgentError("supervisor_stopping");
+      const entry = await this.ensureEntry(ownerId, agentId);
+      this.authorize(ownerId, agentId, generation, { running: false });
+      if (entry.graphics === "running" && entry.browser === "running") return this.state(entry);
+      await this.sendLifecycle(entry, "browser.start", 45000);
+      return this.state(entry);
+    });
+  }
+  stopBrowser(ownerId, agentId, generation) {
+    validateIds(ownerId, agentId);
+    return this.serialize(agentId, async () => {
+      const record = await inspectAgent(ownerId, agentId); const entry = this.entries.get(agentId);
+      if (!entry) return { ...publicState(record), sandbox: "stopped", graphics: "stopped", browser: "stopped" };
+      this.authorize(ownerId, agentId, generation, { running: false });
+      await this.sendLifecycle(entry, "browser.stop", 15000);
+      return this.state(entry);
     });
   }
   // TASK-071. The optional mock vendor runs inside the session namespace; only enabled in tests/dev.
@@ -170,6 +307,15 @@ export class SessionManager {
       return entry.channel.send({ command: "operation", requestId: randomUUID(), operation: "fixture.mock_vendor", params: { fixture: "cookie", action: "start" } });
     });
   }
+  // Test-only A/B page for the desktop primitive probes; fixed port, inside the session namespace.
+  fixturePage(ownerId, agentId) {
+    validateIds(ownerId, agentId);
+    return this.serialize(agentId, async () => {
+      if (process.env.ECLIPSE_FIXTURES !== "1") throw new AgentError("fixtures_disabled");
+      const entry = this.authorize(ownerId, agentId, undefined);
+      return entry.channel.send({ command: "operation", requestId: randomUUID(), operation: "fixture.mock_vendor", params: { fixture: "page", action: "start" } });
+    });
+  }
   create(ownerId, agentId) {
     validateIds(ownerId, agentId);
     return this.serialize(agentId, async () => {
@@ -185,9 +331,9 @@ export class SessionManager {
       const entry = this.entries.get(agentId);
       if (entry && entry.record.ownerId !== ownerId) throw new AgentError("agent_unavailable");
       if (entry) {
-        entry.state = "stopping";
+        entry.state = "stopping"; entry.sandbox = "stopping"; entry.graphics = "stopped"; entry.browser = "stopped";
         await this.clean(entry);
-        entry.state = "stopped";
+        entry.state = "stopped"; entry.sandbox = "stopped";
       }
       this.closeViewers(agentId);
       this.takeovers.delete(agentId);
@@ -200,16 +346,24 @@ export class SessionManager {
   }
   async status(ownerId, agentId) {
     const record = await inspectAgent(ownerId, agentId); const entry = this.entries.get(agentId);
-    if (!entry) return publicState(record);
+    if (!entry) return { ...publicState(record), sandbox: "stopped", graphics: "stopped", browser: "stopped" };
     if (entry.record.ownerId !== ownerId) throw new AgentError("agent_unavailable");
     return this.state(entry);
   }
+  // Full session stop: used by Pause agent, crew stop and security stops. It ends the sandbox too, so no headless work runs.
   stop(ownerId, agentId, generation) {
     validateIds(ownerId, agentId);
     return this.serialize(agentId, async () => {
       const record = await inspectAgent(ownerId, agentId); const entry = this.entries.get(agentId);
-      if (entry) { this.authorize(ownerId, agentId, generation, { running: false }); entry.state = "stopping"; await this.clean(entry); entry.state = "stopped"; }
-      this.closeViewers(agentId); this.takeovers.delete(agentId); return entry ? this.state(entry) : publicState(record);
+      if (entry) {
+        this.authorize(ownerId, agentId, generation, { running: false });
+        entry.state = "stopping"; entry.sandbox = "stopping"; entry.graphics = "stopped"; entry.browser = "stopped";
+        await this.clean(entry);
+        entry.state = "stopped"; entry.sandbox = "stopped";
+        this.entries.delete(agentId); this.generations.delete(agentId);
+      }
+      this.closeViewers(agentId); this.takeovers.delete(agentId);
+      return entry ? this.state(entry) : { ...publicState(record), sandbox: "stopped", graphics: "stopped", browser: "stopped" };
     });
   }
   closeViewers(agentId) {
@@ -219,7 +373,7 @@ export class SessionManager {
   }
   streamInfo(ownerId, agentId, control) {
     const entry = this.authorize(ownerId, agentId, control.generation);
-    if (!entry.vncReady || !entry.vncPassword) throw new AgentError("stream_unavailable");
+    if (entry.graphics !== "running" || !entry.vncReady || !entry.vncPassword) throw new AgentError("stream_unavailable");
     return { port: entry.vncPort, socket: entry.vncSocket, password: entry.vncPassword };
   }
   registerViewer(ownerId, agentId, control, close) {
@@ -302,11 +456,11 @@ export class SessionManager {
       return result;
     });
   }
-  async perform(entry, requestId, operation, params, trustedOwnerInput = false) {
+  async perform(entry, requestId, operation, params, trustedOwnerInput = false, timeoutMs) {
     try {
       const message = { command: "operation", requestId, operation, params };
       if (trustedOwnerInput) message.ownerInput = true;
-      const value = await entry.channel.send(message); return resultFor(operation, value, params);
+      const value = await entry.channel.send(message, timeoutMs ? { timeoutMs } : undefined); return resultFor(operation, value, params);
     }
     catch (error) {
       if (["uncertain_outcome", "channel_closed"].includes(error.code)) {
@@ -333,12 +487,16 @@ export class SessionManager {
       const entry = this.authorize(ownerId, agentId, generation);
       if (this.takeovers.has(agentId)) throw new AgentError("takeover_active");
       const fields = operationFields({ ...params, operation }); this.remember(agentId, requestId);
-      return this.perform(entry, requestId, operation, fields);
+      const timeoutMs = operation === "audio.capture" ? (Number(fields.seconds) + 8) * 1000 : undefined;
+      return this.perform(entry, requestId, operation, fields, false, timeoutMs);
     });
   }
   async closeAll() {
     this.closing = true;
-    const results = await Promise.allSettled([...this.entries.values()].map(async (entry) => { entry.cancelStart?.(); entry.state = "stopping"; await this.clean(entry); entry.state = "stopped"; }));
+    const results = await Promise.allSettled([...this.entries.values()].map(async (entry) => {
+      entry.cancelStart?.(); entry.state = "stopping"; entry.sandbox = "stopping"; entry.graphics = "stopped"; entry.browser = "stopped";
+      await this.clean(entry); entry.state = "stopped"; entry.sandbox = "stopped";
+    }));
     await Promise.allSettled([...this.queues.values()]);
     if (results.some((result) => result.status === "rejected")) throw new AgentError("session_cleanup_failed");
   }
@@ -359,7 +517,9 @@ export async function listenSessions(manager) {
       void (async () => {
         try {
           const request = validateSessionRequest(JSON.parse(body));
-          const method = { "session-start": "start", "session-status": "status", "session-stop": "stop", "session-fixture": "fixture", "session-fixture-cookie": "fixtureCookie" }[request.command];
+          const method = { "session-start": "start", "session-status": "status", "session-stop": "stop", "session-sandbox": "ensureSandbox",
+            "session-desktop-start": "startDesktop", "session-desktop-stop": "stopDesktop", "session-browser-start": "startBrowser",
+            "session-browser-stop": "stopBrowser", "session-fixture": "fixture", "session-fixture-cookie": "fixtureCookie", "session-fixture-page": "fixturePage" }[request.command];
           respond(await manager[method](request.ownerId, request.agentId));
         } catch (error) { respond({ outcome: "refused", reason: error instanceof AgentError ? error.code : "session_request_failed" }); }
       })();

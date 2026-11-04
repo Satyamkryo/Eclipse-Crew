@@ -19,10 +19,15 @@ const summarySchema = z.object({
   chars: count.optional(),
   time: z.string().max(200).optional(),
   file: z.string().max(255).optional(),
+  hits: count.optional(),
   tool: z.string().max(200).optional(),
   program: z.string().max(64).optional(),
   exit: z.number().int().min(-256).max(256).optional(),
   offset: count.optional(),
+  // start_desktop / start_browser only: the verified graphics/browser states after the step.
+  state: z.string().max(64).optional(),
+  // TASK-079. Requested listening seconds only; no transcript or raw audio.
+  seconds: count.optional(),
   code: z.string().max(64).optional(),
   result: z.enum(["executed", "invalid_output", "target_not_found", "failed"]),
 }).strict();
@@ -36,6 +41,8 @@ export const checkpointStateSchema = z.object({
   // Contents are not kept; the file is read again on resume.
   documents: z.array(z.object({ name: shortText(255), offset: count }).strict()).max(20),
   delivered: z.array(shortText(255)).max(100),
+  // TASK-084. Value names only; the extracted text never enters a checkpoint.
+  valueNames: z.array(z.string().regex(/^[a-z][a-z0-9_]{0,31}$/)).max(10).optional(),
   counters: z.object({ invalid: count, repeats: count, misses: count, hardTurns: count, hardDisabled: z.boolean() }).strict(),
   // The previous intent in a form that is safe to keep: typed text is replaced by its length.
   previous: z.string().max(2000).nullable(),
@@ -51,6 +58,8 @@ export function safeIntentKey(intent: Intent | null): string | null {
   // TASK-072. Tool arguments are not kept; the hash is enough to tell a repeated call apart.
   if (intent.action === "tool_call") copy.args = sha256Hex(Buffer.from(intent.args, "utf8"));
   if (intent.action === "shell") copy.command = sha256Hex(Buffer.from(intent.command, "utf8"));
+  // TASK-084. Extracted text is run memory only, never a checkpoint.
+  if (intent.action === "extract") copy.value = `[${[...intent.value].length} characters]`;
   return canonicalJson(copy).slice(0, 2000);
 }
 
@@ -61,6 +70,7 @@ export interface LoopSnapshot {
   history: readonly StepSummary[];
   documents: readonly { name: string; window: { kind: string; offset?: number } }[];
   delivered: readonly string[];
+  valueNames?: readonly string[];
   counters: CheckpointState["counters"];
   previous: Intent | null;
   usage: CheckpointState["usage"];
@@ -72,7 +82,7 @@ export function captureState(snapshot: LoopSnapshot): { text: string; state: Che
     v: 1, task: snapshot.task.slice(0, 2000), turn: snapshot.turn, receiptIdx: snapshot.receiptIdx,
     history: snapshot.history.map((item) => ({ ...item })).slice(-200),
     documents: snapshot.documents.map((item) => ({ name: item.name, offset: item.window.offset ?? 0 })).slice(-20),
-    delivered: [...snapshot.delivered].slice(-100), counters: snapshot.counters,
+    delivered: [...snapshot.delivered].slice(-100), valueNames: [...(snapshot.valueNames ?? [])].slice(0, 10), counters: snapshot.counters,
     previous: safeIntentKey(snapshot.previous), usage: snapshot.usage,
   });
   const text = canonicalJson(state);

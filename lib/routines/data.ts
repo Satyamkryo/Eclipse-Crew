@@ -82,6 +82,18 @@ export async function setRoutineActive(
   return serializeRoutine(updated[0]);
 }
 
+// Owner-scoped routine delete. Runs are append-only proof and stay; only the schedule row is removed.
+export async function deleteRoutine(
+  database: Pick<Database, "select" | "delete">, ownerId: string, routineId: string,
+): Promise<{ agentId: string }> {
+  const found = await database.select({ agentId: routines.agentId }).from(routines)
+    .where(and(eq(routines.ownerId, ownerId), eq(routines.id, routineId))).limit(1);
+  if (!found[0]) throw new RoutineError("routine_not_found");
+  await database.delete(routines)
+    .where(and(eq(routines.ownerId, ownerId), eq(routines.id, routineId)));
+  return { agentId: found[0].agentId };
+}
+
 async function ownedRoutineCard(database: Pick<Database, "select">, ownerId: string, agentId: string, messageId: string) {
   const rows = await database.select({ content: messages.content }).from(messages)
     .innerJoin(chatSessions, eq(messages.sessionId, chatSessions.id))

@@ -12,6 +12,7 @@ import {
   type MainModelSettingsInput,
   type SamModelSettingsInput,
 } from "./schema";
+import type { BackgroundModelSettingsInput } from "./schema";
 
 export type MainModelSettings = {
   configured: boolean;
@@ -33,9 +34,20 @@ export type SamModelSettings = {
   canUseMainKey: boolean;
 };
 
+// TASK-086. Optional: an unset background role makes memory jobs use Main.
+export type BackgroundModelSettings = {
+  configured: boolean;
+  kind: "meta" | "openai-compatible";
+  baseUrl: string | null;
+  model: string;
+  hasKey: boolean;
+  keyHint: string | null;
+};
+
 export type ModelSettings = {
   main: MainModelSettings;
   sam: SamModelSettings;
+  background: BackgroundModelSettings;
 };
 
 function encryptedFields(apiKey: string | undefined) {
@@ -74,9 +86,36 @@ function samView(main: StoredModelRole | null, sam: StoredModelRole | null): Sam
   };
 }
 
+function backgroundView(role: StoredModelRole | null): BackgroundModelSettings {
+  return {
+    configured: Boolean(role?.provider && role.model),
+    kind: role?.provider?.kind ?? "meta",
+    baseUrl: role?.provider?.baseUrl ?? null,
+    model: role?.model ?? MAIN_MODEL,
+    hasKey: Boolean(role?.provider?.encryptedKey),
+    keyHint: role?.provider?.keyHint ?? null,
+  };
+}
+
 export async function readModelSettings(store: ModelSettingsStore, ownerId: string): Promise<ModelSettings> {
   const stored = await store.load(ownerId);
-  return { main: mainView(stored.main), sam: samView(stored.main, stored.sam) };
+  return { main: mainView(stored.main), sam: samView(stored.main, stored.sam), background: backgroundView(stored.background) };
+}
+
+// TASK-086. Background memory jobs use this role when it is set, otherwise Main.
+export async function saveBackgroundSettings(
+  store: ModelSettingsStore, ownerId: string, input: BackgroundModelSettingsInput,
+): Promise<ModelSettings> {
+  if (!input.enabled) {
+    await store.saveBackground(ownerId, { mode: "off" });
+    return readModelSettings(store, ownerId);
+  }
+  let encrypted;
+  try { encrypted = encryptedFields(input.apiKey); } catch { throw new ModelSettingsError("encryption_unavailable", 503); }
+  await store.saveBackground(ownerId, {
+    mode: "active", kind: input.kind, baseUrl: input.kind === "meta" ? null : input.baseUrl ?? null, model: input.model, ...encrypted,
+  });
+  return readModelSettings(store, ownerId);
 }
 
 export async function saveMainSettings(

@@ -3,6 +3,10 @@ import "server-only";
 import { z } from "zod";
 
 import { desktopCommand } from "../desktop/client";
+import {
+  clearPushApprovals, denyPush, fetchPushPending, grantPush,
+  type PushDependencies, type PushPending,
+} from "../egress/sync";
 
 // TASK-073. The app's only view of the shell. The command runs in the desktop worker's private namespace; this module
 // validates its bounded result and nothing else.
@@ -25,30 +29,68 @@ export interface ShellInput {
   timeout?: number;
 }
 
+// TASK-073c. A blocked push becomes one pending record per protected ref. The app sees the same
+// fields it needs for an approval card and never supplies the gateway's identity itself.
+export type { PushPending };
+
 export interface ShellPort {
   run(input: ShellInput, signal?: AbortSignal): Promise<ShellResult>;
+  pending(): Promise<PushPending[]>;
+  grant(pendingId: string): Promise<void>;
+  deny(pendingId: string): Promise<void>;
+  clearApprovals(): Promise<void>;
 }
 
-export const SHELL_FAILURE = new Set(["shell_busy", "shell_invalid", "shell_cwd_invalid", "session_not_running", "takeover_active"]);
+const approvalError = () => Object.assign(Error("approval_unavailable"), { code: "approval_unavailable" });
+
+export const SHELL_FAILURE = new Set(["shell_busy", "shell_invalid", "shell_cwd_invalid", "session_not_running", "takeover_active", "sandbox_start_failed"]);
 
 export function createShellPort(options: {
   agentId: string;
   ownerId: string;
-  generation: string;
+  generation?: string;
+  // Production: establish or reuse the agent's sandbox and return its current generation. No graphics are needed.
+  ensure?: () => Promise<string>;
   command?: typeof desktopCommand;
+  // Tests replace these; production uses the authenticated proxy controls.
+  dependencies?: PushDependencies;
+  pendingCall?: typeof fetchPushPending;
+  grantCall?: typeof grantPush;
+  denyCall?: typeof denyPush;
+  clearCall?: typeof clearPushApprovals;
 }): ShellPort {
   const send = options.command ?? desktopCommand;
+  const pendingCall = options.pendingCall ?? fetchPushPending;
+  const grantCall = options.grantCall ?? grantPush;
+  const denyCall = options.denyCall ?? denyPush;
+  const clearCall = options.clearCall ?? clearPushApprovals;
   return {
     async run(input) {
+      const generation = options.ensure ? await options.ensure() : options.generation;
+      if (!generation) throw Object.assign(Error("sandbox_start_failed"), { code: "sandbox_start_failed" });
       const params = {
         command: input.command,
         ...(input.cwd ? { cwd: input.cwd } : {}),
         ...(input.timeout ? { timeout: input.timeout } : {}),
       };
-      const raw = await send(options.agentId, options.ownerId, options.generation, "shell.run", params);
+      const raw = await send(options.agentId, options.ownerId, generation, "shell.run", params);
       const parsed = shellResultSchema.safeParse(raw);
       if (!parsed.success) throw Object.assign(Error("shell_invalid_result"), { code: "shell_invalid_result" });
       return parsed.data;
+    },
+    async pending() {
+      const value = await pendingCall(options.agentId, options.dependencies ?? {});
+      if (value === null) throw approvalError();
+      return value;
+    },
+    async grant(pendingId) {
+      if (!(await grantCall(options.agentId, pendingId, options.dependencies ?? {}))) throw approvalError();
+    },
+    async deny(pendingId) {
+      if (!(await denyCall(options.agentId, pendingId, options.dependencies ?? {}))) throw approvalError();
+    },
+    async clearApprovals() {
+      if (!(await clearCall(options.agentId, options.dependencies ?? {}))) throw approvalError();
     },
   };
 }

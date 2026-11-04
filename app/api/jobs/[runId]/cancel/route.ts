@@ -1,5 +1,7 @@
+import { and, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { getDatabase } from "@/db/client";
+import { runs } from "@/db/schema";
 import { requestErrorResponse, requireNoQuery, requireOwnerRequest, RequestError } from "@/lib/auth/request";
 import { cancelRun } from "@/lib/jobs/control";
 import { loadRunForAction } from "@/lib/jobs/data";
@@ -19,7 +21,12 @@ export async function POST(request: Request, { params }: { params: Promise<{ run
     const run = await loadRunForAction(await getDatabase(), session.ownerId, parsed.data.runId);
     if (!run) return Response.json({ error: "run_not_found" }, { status: 404, headers: NO_STORE });
     if (cancelRun(session.ownerId, parsed.data.runId) === "not_running") {
-      return Response.json({ error: "not_running" }, { status: 409, headers: NO_STORE });
+      // TASK-085. A run held by another process sees this flag on its next heartbeat.
+      const updated = await (await getDatabase()).update(runs).set({ cancelRequestedAt: new Date() })
+        .where(and(eq(runs.id, parsed.data.runId), eq(runs.ownerId, session.ownerId), isNull(runs.signature)))
+        .returning({ id: runs.id });
+      if (!updated[0]) return Response.json({ error: "not_running" }, { status: 409, headers: NO_STORE });
+      return Response.json({ cancelling: true }, { headers: NO_STORE });
     }
     return Response.json({ cancelled: true }, { headers: NO_STORE });
   } catch (error) {

@@ -62,7 +62,14 @@ test("desktop inputs preserve approved package pins and browser sandbox constrai
   assert.match(dockerfile, /RUN --network=none --mount=.*from=package_archives/);
   assert.match(dockerfile, /apt-get --no-download install/);
   assert.doesNotMatch(dockerfile, /apt-get.*update|snapshot\.ubuntu\.com/);
-  assert.match(dockerfile, /65eedec10a9948b2168e37ba70a6ada69a9c5d9bf3078e2733a371fd1f011d15/);
+  assert.match(dockerfile, /browser-build.mjs fetch/);
+  assert.doesNotMatch(dockerfile, /chromium-browser-snapshots/);
+  const browserLock = JSON.parse(await readFile("docker/desktop/browser-build.lock.json", "utf8"));
+  assert.equal(browserLock.browsers.amd64.bytes, 201329937);
+  assert.equal(browserLock.browsers.amd64.sha256, "b711c720f774be355197f32edf37e0651418ba036d92446ee2da19ac017540a7");
+  assert.equal(browserLock.browsers.arm64.bytes, 200722708);
+  assert.equal(browserLock.browsers.arm64.sha256, "1f496a826c9ba4d6a5f5bf2de686145fe718528c2cc3dbeb96b5893b89653724");
+  assert.equal(browserLock.browsers.arm64.url, "https://storage.googleapis.com/chrome-for-testing-public/156.0.8078.80/linux-arm64/chrome-linux-arm64.zip");
   assert.match(dockerfile, /48cc0e21e048790e54c0cf5749c2725005313d652651c40b7a21feb9697aaf75/);
   assert.match(dockerfile, /USER 65534:65534/);
   assert.doesNotMatch(dockerfile, /--allow-unauthenticated|Verify-Peer[ =]+false|npm (?:install|i)\b|playwright install/);
@@ -76,7 +83,7 @@ test("desktop inputs preserve approved package pins and browser sandbox constrai
 
 test("package lock has the approved digest and refuses a mutated manifest or unsafe source entry", async () => {
   const original = await readFile("docker/desktop/ubuntu-packages.lock.json");
-  const manifest = validateManifest(original); assert.equal(manifest.packages.length, 388);
+  const manifest = validateManifest(original); assert.equal(manifest.packages.length, 445);
   validateManifest(Buffer.from(original.toString().replace(/\n/g, "\r\n")));
   assert.throws(() => validateManifest(Buffer.from(original.toString().replace('"schema": 1', '"schema": 2'))));
   const entry = manifest.packages[0];
@@ -102,6 +109,43 @@ test("package downloader preserves verified bytes and rejects corruption, size m
     await fetchPackage(entry, directory, { fetchImpl: async () => new Response(bytes) });
     assert.deepEqual(await readFile(path.join(directory, `${sha256}.deb`)), bytes);
     assert.deepEqual(await readdir(directory), [`${sha256}.deb`]);
+  } finally {
+    const resolved = await realpath(directory); assert.equal(path.dirname(resolved), root);
+    assert.ok(path.basename(resolved).startsWith("eclipse010-package-test-")); await rm(resolved, { recursive: true, force: true });
+  }
+});
+
+test("package downloads restart interrupted archives, bound socket retries and never retry corruption", async () => {
+  const root = await realpath(tmpdir()); const directory = await mkdtemp(path.join(root, "eclipse010-package-test-"));
+  const bytes = Buffer.from("verified after a dropped socket");
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  const entry = { name: "test-package", version: "1.0", architecture: "all", filename: "test-package_1.0_all.deb",
+    url: "https://archive.ubuntu.com/ubuntu/pool/main/t/test-package/test-package_1.0_all.deb", bytes: bytes.length, sha256 };
+  const socketError = () => new TypeError("terminated", { cause: Object.assign(new Error("socket closed"), { code: "UND_ERR_SOCKET" }) });
+  let calls = 0;
+  try {
+    await fetchPackage(entry, directory, { fetchImpl: async () => {
+      calls++;
+      if (calls === 1) return new Response(new ReadableStream({ start(controller) {
+        controller.enqueue(bytes.subarray(0, 4)); setTimeout(() => controller.error(socketError()), 0);
+      } }));
+      assert.deepEqual(await readdir(directory), [], "partial archive is removed before retry");
+      if (calls === 2) throw socketError();
+      return new Response(bytes);
+    } });
+    assert.equal(calls, 3);
+    assert.deepEqual(await readFile(path.join(directory, `${sha256}.deb`)), bytes);
+    await rm(path.join(directory, `${sha256}.deb`));
+    calls = 0;
+    await assert.rejects(fetchPackage(entry, directory, { fetchImpl: async () => { calls++; throw socketError(); } }));
+    assert.equal(calls, 3, "socket retries are bounded");
+    calls = 0;
+    await assert.rejects(fetchPackage(entry, directory, { fetchImpl: async () => { calls++; return new Response(Buffer.alloc(bytes.length)); } }), /package_integrity_mismatch/);
+    assert.equal(calls, 1, "checksum failures are never retried");
+    assert.deepEqual(await readdir(directory), []);
+    const abort = new AbortController(); calls = 0;
+    await assert.rejects(fetchPackage(entry, directory, { signal: abort.signal, fetchImpl: async () => { calls++; abort.abort(); throw socketError(); } }));
+    assert.equal(calls, 1, "cancellation stops retries");
   } finally {
     const resolved = await realpath(directory); assert.equal(path.dirname(resolved), root);
     assert.ok(path.basename(resolved).startsWith("eclipse010-package-test-")); await rm(resolved, { recursive: true, force: true });

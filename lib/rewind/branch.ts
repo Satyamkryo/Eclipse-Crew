@@ -134,7 +134,7 @@ export async function startBranch(options: BranchOptions): Promise<BranchResult>
     const resume: RunResume = {
       // The stored state is validated and only shown to the model; its action field is the same closed set the loop writes.
       history: checkpoint.state.history.map((item) => ({ ...item, action: item.action as StepSummary["action"] })),
-      documents: checkpoint.state.documents, delivered: checkpoint.state.delivered, turn: checkpoint.state.turn,
+      documents: checkpoint.state.documents, delivered: checkpoint.state.delivered, valueNames: checkpoint.state.valueNames ?? [], turn: checkpoint.state.turn,
     };
     let settle!: (started: boolean) => void;
     const startPromise = new Promise<boolean>((resolve) => { settle = resolve; });

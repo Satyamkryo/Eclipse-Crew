@@ -1,0 +1,9 @@
+ALTER TABLE "audit_log" DROP CONSTRAINT "audit_log_kind_check";--> statement-breakpoint
+ALTER TABLE "run_meta" DROP CONSTRAINT "run_meta_trigger_check";--> statement-breakpoint
+ALTER TABLE "run_meta" ADD COLUMN "handoff_of" uuid;--> statement-breakpoint
+ALTER TABLE "runs" ADD COLUMN "heartbeat_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "runs" ADD COLUMN "cancel_requested_at" timestamp with time zone;--> statement-breakpoint
+ALTER TABLE "run_meta" ADD CONSTRAINT "run_meta_handoff_of_runs_id_fk" FOREIGN KEY ("handoff_of") REFERENCES "public"."runs"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
+CREATE INDEX "runs_heartbeat_idx" ON "runs" USING btree ("heartbeat_at") WHERE "runs"."signature" is null;--> statement-breakpoint
+ALTER TABLE "audit_log" ADD CONSTRAINT "audit_log_kind_check" CHECK ("audit_log"."kind" in ('tripwire', 'scope_blocked', 'egress_blocked', 'approval_denied', 'agent_stopped', 'crew_stopped', 'crew_resumed', 'login', 'password_changed', 'email_changed', 'sessions_revoked', 'agent_created', 'agent_updated', 'agent_paused', 'agent_resumed', 'agent_deleted', 'astra_enabled', 'astra_disabled', 'approval_allowed', 'permission_revoked', 'memory_approved', 'memory_rejected', 'memory_undone', 'memory_auto_saved', 'memory_tidied', 'memory_upgrade_applied', 'connection_added', 'connection_replaced', 'connection_removed', 'connection_device_started', 'connection_device_connected', 'connection_device_expired', 'composio_key_saved', 'composio_key_removed', 'composio_account_connected', 'composio_account_revoked', 'run_interrupted', 'run_handed_off', 'message_mentioned'));--> statement-breakpoint
+ALTER TABLE "run_meta" ADD CONSTRAINT "run_meta_trigger_check" CHECK ("run_meta"."trigger" in ('chat', 'run_now', 'schedule', 'replay', 'branch', 'heal', 'handoff'));

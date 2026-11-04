@@ -78,7 +78,7 @@ if (process.argv.includes("--inside")) {
     await database.execute(sql`GRANT SELECT, INSERT ON public.messages TO eclipse_app`);
     await database.execute(sql`GRANT SELECT, INSERT, UPDATE, DELETE ON public.providers TO eclipse_app`);
     await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.model_roles TO eclipse_app`);
-    // Receipts are append-only: no UPDATE or DELETE on steps. The only UPDATE on runs is the one-time seal.
+    // Receipts are append-only: no UPDATE or DELETE on steps. Runs allow only the one-time seal, heartbeat and DB cancel.
     await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.runs TO eclipse_app`);
     await database.execute(sql`GRANT SELECT, INSERT ON public.steps TO eclipse_app`);
     // TASK-031: display evidence next to receipts, insert-only like steps.
@@ -105,6 +105,8 @@ if (process.argv.includes("--inside")) {
     await database.execute(sql`GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA pgboss TO eclipse_app`);
     await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.skills TO eclipse_app`);
     await database.execute(sql`GRANT SELECT, INSERT ON public.skill_versions TO eclipse_app`);
+    // Teach captures store recording state; the workspace reads recording rows for attention badges.
+    await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.teach_recordings TO eclipse_app`);
     // TASK-047: the canary is bait and config (planted_at is claimed once); security events are append-only.
     await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.agent_canaries TO eclipse_app`);
     await database.execute(sql`GRANT SELECT, INSERT ON public.security_events TO eclipse_app`);
@@ -119,13 +121,25 @@ if (process.argv.includes("--inside")) {
     await database.execute(sql`GRANT SELECT, INSERT ON public.memory_versions TO eclipse_app`);
     // TASK-054: proposals are decided once (state and decided_at), never deleted.
     await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.memory_changes TO eclipse_app`);
+    // TASK-086: per-agent review cursor and tidy floor are read and written by the scheduler/workers.
+    await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.memory_review_state TO eclipse_app`);
     // TASK-070: the owner manages connections; tokens are encrypted and the proxy receives them in memory only.
     await database.execute(sql`GRANT SELECT, INSERT, UPDATE, DELETE ON public.connections TO eclipse_app`);
+    // TASK-088: pending GitHub App sign-ins are owner-managed rows; the device code is encrypted.
+    await database.execute(sql`GRANT SELECT, INSERT, UPDATE, DELETE ON public.github_device_flows TO eclipse_app`);
     // TASK-072: pinned MCP servers are owner-managed rows.
     await database.execute(sql`GRANT SELECT, INSERT, UPDATE, DELETE ON public.mcp_servers TO eclipse_app`);
     // TASK-075: the owner key and per-agent connected accounts are owner-managed rows.
     await database.execute(sql`GRANT SELECT, INSERT, UPDATE, DELETE ON public.composio_keys TO eclipse_app`);
     await database.execute(sql`GRANT SELECT, INSERT, UPDATE, DELETE ON public.composio_accounts TO eclipse_app`);
+    // TASK-058: the starter setup and report schedule are owner-managed rows; delivery rows are inserted once and linked.
+    await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.starter_crew_setups TO eclipse_app`);
+    await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.starter_crew_members TO eclipse_app`);
+    // Custom crews: the crew row and its membership rows are owner-managed; member states move as agents provision.
+    await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.crews TO eclipse_app`);
+    await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.crew_members TO eclipse_app`);
+    await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.crew_report_settings TO eclipse_app`);
+    await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.crew_report_deliveries TO eclipse_app`);
     console.log("Database migrations applied.");
   } catch {
     console.error(`Database ${stage} failed.`);

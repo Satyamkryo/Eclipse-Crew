@@ -48,6 +48,9 @@ export function RoutineCardActions({ agentId, messageId, csrfToken }: {
         const routineId = routineIdOf(body.routine);
         if (!routineId) throw new Error();
         setState({ status: "confirmed", routineId });
+        window.dispatchEvent(new CustomEvent("eclipse-notify", {
+          detail: { title: "Routine saved", text: "It will run on schedule. Run now to test it.", agentId, actionLabel: "Open Schedules", actionHref: "/schedules" },
+        }));
         return;
       }
       if (response.status === 409) {

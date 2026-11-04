@@ -1,7 +1,7 @@
 import "server-only";
 
 import { createHash, randomBytes } from "node:crypto";
-import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rename, rm, utimes, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 // TASK-031/032. Content-addressed files in the `artifacts` volume: `<root>/blobs/ab/<64 hex>`. The name is the SHA-256 of
@@ -13,6 +13,9 @@ export const MAX_BLOB_BYTES = 8 * 1024 * 1024;
 
 export interface BlobStore {
   has(hash: string): Promise<boolean>;
+  // Like `has`, and also marks an existing blob as just used. Retention deletes by age, so every reuse of a stored blob
+  // (an unchanged checkpoint file, a repeated screenshot) goes through `touch` or `put` and refreshes it.
+  touch?(hash: string): Promise<boolean>;
   put(bytes: Uint8Array): Promise<string>;
   // null when the blob is missing, too large, not a plain file or no longer matches its name.
   get(hash: string): Promise<Buffer | null>;
@@ -35,16 +38,27 @@ export function createBlobStore(root: string = artifactsRoot()): BlobStore {
   const plainFile = async (file: string) => {
     try { const info = await lstat(file); return info.isFile() && !info.isSymbolicLink() ? info : null; } catch { return null; }
   };
+  // Best effort: a failed timestamp update never fails the caller (the retention keep-set is the second guard).
+  const refresh = async (file: string) => {
+    const now = new Date();
+    await utimes(file, now, now).catch(() => undefined);
+  };
 
   return {
     async has(hash) {
       return (await plainFile(locate(hash))) !== null;
     },
+    async touch(hash) {
+      const file = locate(hash);
+      if (!(await plainFile(file))) return false;
+      await refresh(file);
+      return true;
+    },
     async put(bytes) {
       if (bytes.length > MAX_BLOB_BYTES) throw new Error("blob_too_large");
       const hash = sha256(bytes);
       const file = locate(hash);
-      if (await plainFile(file)) return hash;
+      if (await plainFile(file)) { await refresh(file); return hash; }
       await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
       const temp = path.join(path.dirname(file), `.${randomBytes(12).toString("hex")}.part`);
       try {

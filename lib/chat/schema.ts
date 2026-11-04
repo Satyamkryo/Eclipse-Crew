@@ -33,9 +33,13 @@ const timezone = z.string().trim().min(1).max(100).refine((value) => {
   }
 }, "is not an IANA timezone");
 
+// TASK-085. A message may offer Continue for its interrupted run, and a handoff receiver sees whose chat the
+// owner's words came from. Both are optional, so every earlier card stays byte-compatible.
 const messageCardSchema = z.object({
   type: z.literal("message"),
   text,
+  continueRunId: z.string().uuid().optional(),
+  fromAgent: singleLine.optional(),
 }).strict();
 
 const clarificationCardSchema = z.object({
@@ -115,6 +119,8 @@ const approvalCardSchema = z.object({
   actionClass: z.enum(ACTION_CLASSES),
   site: z.string().trim().max(255).refine((value) => !/[\u0000-\u001f\u007f]/.test(value), "contains control characters"),
   controlName: singleLine,
+  // TASK-076. A helper's risky call still uses the parent's identity and grants.
+  helperLabel: singleLine.optional(),
 }).strict();
 
 // TASK-054. Memory is add-only for agents. The card names the document and title; the text itself is shown only as an
@@ -125,6 +131,52 @@ const memoryChangeCardSchema = z.object({
   doc: z.enum(["user", "memory", "private"]),
   scope: z.enum(["global", "agent", "private"]),
   title: singleLine,
+}).strict();
+
+// TASK-086. An auto-applied memory change has its own card with Undo; a tidy batch has one card for the whole batch.
+const memorySavedCardSchema = z.object({
+  type: z.literal("memory_saved"),
+  versionId: z.string().uuid(),
+  title: singleLine,
+  op: z.enum(["add", "replace", "forget"]),
+  doc: z.enum(["user", "memory", "private"]),
+  scope: z.enum(["global", "agent", "private"]),
+}).strict();
+
+const memoryTidiedCardSchema = z.object({
+  type: z.literal("memory_tidied"),
+  batchId: z.string().uuid(),
+  merged: z.number().int().min(0).max(100),
+  archived: z.number().int().min(0).max(100),
+  doc: z.enum(["user", "memory", "private"]),
+}).strict();
+
+// TASK-058. A deterministic local report. Every value is computed from stored rows by code; the links are rebuilt from
+// runId and agentId at render time, so no URL or HTML from a page, model or message is stored in the card.
+const reportRunSchema = z.object({
+  runId: z.string().uuid(),
+  agentId: z.string().uuid(),
+  agentName: singleLine,
+  label: cardText,
+  outcome: z.enum(["running", "verified", "finished", "needs_you", "paused", "asked_you", "canceled", "failed", "not_sealed", "interrupted"]),
+  outcomeLabel: singleLine,
+  sealed: z.boolean(),
+}).strict();
+const crewReportCardSchema = z.object({
+  type: z.literal("crew_report"),
+  windowStart: z.string().datetime({ offset: true }),
+  windowEnd: z.string().datetime({ offset: true }),
+  timezone: singleLine,
+  counts: z.object({
+    completed: z.number().int().min(0).max(1_000_000),
+    running: z.number().int().min(0).max(1_000_000),
+    interrupted: z.number().int().min(0).max(1_000_000),
+    failed: z.number().int().min(0).max(1_000_000),
+    needsYou: z.number().int().min(0).max(1_000_000),
+  }).strict(),
+  totalRuns: z.number().int().min(0).max(1_000_000),
+  costMicroUsd: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+  runs: z.array(reportRunSchema).max(10),
 }).strict();
 
 export const chatCardSchema = z.discriminatedUnion("type", [
@@ -139,9 +191,16 @@ export const chatCardSchema = z.discriminatedUnion("type", [
   skillUpdateCardSchema,
   approvalCardSchema,
   memoryChangeCardSchema,
+  memorySavedCardSchema,
+  memoryTidiedCardSchema,
+  crewReportCardSchema,
 ]);
 
-export const userMessageInputSchema = z.object({ text }).strict();
+export const userMessageInputSchema = z.object({
+  text,
+  // TASK-085. Used by the server when an @mention routes an owner message to a teammate's chat.
+  fromAgent: singleLine.optional(),
+}).strict();
 
 export const chatHistoryQuerySchema = z.object({
   before: z.string().uuid().optional(),

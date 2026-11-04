@@ -10,7 +10,7 @@ function fixture() {
   const ownerId = randomUUID(), agentId = randomUUID(), generation = randomUUID();
   const calls = [], events = [];
   const record = { ownerId, agentId, uid: 20001, gid: 20001, name: "synthetic", state: "ready" };
-  const entry = { record, state: "running", generation, vncReady: true, vncPort: 5951, vncPassword: "SyntheT+",
+  const entry = { record, state: "running", graphics: "running", generation, vncReady: true, vncPort: 5951, vncPassword: "SyntheT+",
     channel: { async send(message) { calls.push(message); events.push("dispatch:" + message.operation); return { ok: true }; }, close() { events.push("channel:closed"); } }, tracked: new Map() };
   manager.entries.set(agentId, entry); manager.generations.set(agentId, generation);
   manager.clean = async () => { events.push("clean"); };

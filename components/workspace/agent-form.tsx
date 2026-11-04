@@ -1,10 +1,11 @@
 "use client";
-import { KNOWN_ACTIONS } from "@/lib/agents/actions";
+import { KNOWN_ACTIONS, SUBAGENT_HINT } from "@/lib/agents/actions";
 import { AGENT_TEMPLATES, type AgentTemplateId } from "@/lib/agents/templates";
 import { useEffect, useRef, useState } from "react";
-import { LoaderCircle } from "lucide-react";
+import { LoaderCircle, Shuffle } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { AgentAvatar, AVATAR_COUNT, randomAvatarVariant } from "@/components/workspace/agent-avatar";
 import { cn } from "@/lib/utils";
 
 export type AgentFormInitial = {
@@ -17,6 +18,7 @@ export type AgentFormInitial = {
   domains: string[];
   actions: string[];
   memoryScopes: string[];
+  avatarVariant?: number;
 };
 
 type Props = {
@@ -97,7 +99,12 @@ export function AgentForm({ mode, agentId, csrfToken, initial, onSaved, onCancel
   const [errors, setErrors] = useState<FieldErrors>({});
   const [status, setStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [memoryScopes, setMemoryScopes] = useState<string[]>(initial?.memoryScopes ?? []);
+  const [memoryScopes, setMemoryScopes] = useState<string[]>(initial?.memoryScopes ?? (mode === "create" ? ["global", "agent"] : []));
+  const [avatarVariant, setAvatarVariant] = useState<number>(() =>
+    initial?.avatarVariant !== undefined && Number.isInteger(initial.avatarVariant) &&
+    initial.avatarVariant >= 0 && initial.avatarVariant < AVATAR_COUNT
+      ? initial.avatarVariant
+      : randomAvatarVariant());
   const [template, setTemplate] = useState<AgentTemplateId | "blank">("blank");
   const [templateMessage, setTemplateMessage] = useState<string | null>(null);
   const formRef = useRef<HTMLFormElement>(null);
@@ -134,7 +141,7 @@ export function AgentForm({ mode, agentId, csrfToken, initial, onSaved, onCancel
       set("domains", (selected?.domains ?? []).join(", "));
       set("actions", (selected?.actions ?? KNOWN_ACTIONS).join(", "));
     }
-    setMemoryScopes(selected?.memoryScopes ?? []);
+    setMemoryScopes(selected?.memoryScopes ?? ["global", "agent"]);
     setTemplateMessage(selected ? `Template applied: ${selected.label}. Review the fields before saving.` : "Blank agent. Review the fields before saving.");
     requestAnimationFrame(() => statusRef.current?.focus());
   }
@@ -181,6 +188,7 @@ export function AgentForm({ mode, agentId, csrfToken, initial, onSaved, onCancel
       name: values.name,
       role: values.role,
       ...(mode === "create" && !values.soulMd.trim() ? {} : { soulMd: values.soulMd }),
+      avatarVariant,
       dailyBudgetUsd: values.dailyBudgetUsd,
       monthlyBudgetUsd: values.monthlyBudgetUsd,
       tools: parseList(values.tools),
@@ -216,6 +224,17 @@ export function AgentForm({ mode, agentId, csrfToken, initial, onSaved, onCancel
 
   return (
     <form ref={formRef} onSubmit={submit} noValidate className="flex flex-col gap-5">
+      <div className="flex items-center gap-3">
+        <AgentAvatar seed={mode === "edit" && agentId ? agentId : "new-agent"} variant={avatarVariant} size={40} label={`Avatar ${avatarVariant + 1} of ${AVATAR_COUNT}`} />
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium">Avatar</p>
+          <p aria-live="polite" className="text-xs text-muted-foreground">Avatar {avatarVariant + 1} of {AVATAR_COUNT}, picked at random.</p>
+        </div>
+        <Button type="button" variant="secondary" size="sm" aria-label="Shuffle avatar"
+          onClick={() => setAvatarVariant((current) => randomAvatarVariant(current))}>
+          <Shuffle aria-hidden="true" className="size-4" />Shuffle
+        </Button>
+      </div>
       {mode === "create" && (
         <div className="flex flex-col gap-2">
           <span className="text-sm font-medium">Start from</span>
@@ -287,7 +306,7 @@ export function AgentForm({ mode, agentId, csrfToken, initial, onSaved, onCancel
             aria-describedby={`${prefix}-domains-hint${errors.domains ? ` ${prefix}-domains-error` : ""}`} className={textareaClass} />
         </Field>
       </div>
-      <Field id={`${prefix}-actions`} label="Actions" error={errors.actions} hint={`Comma-separated. Available: ${KNOWN_ACTIONS.join(", ")}. MCP tools are opt-in: add tool_call yourself, then add the server key under Tools. Empty denies every action.`}>
+      <Field id={`${prefix}-actions`} label="Actions" error={errors.actions} hint={`Comma-separated. Available: ${KNOWN_ACTIONS.join(", ")}. Opt-in: add tool_call, shell or hear_audio yourself; tool_call also needs a server key under Tools. shell runs commands as this agent in its own sandbox, so add the domains it needs. ${SUBAGENT_HINT} Empty denies every action.`}>
         <textarea id={`${prefix}-actions`} name="actions" rows={2} defaultValue={initial ? listText(initial.actions) : KNOWN_ACTIONS.join(", ")}
           onBlur={(event) => validateOnBlur(event, "actions")}
           aria-invalid={errors.actions ? true : undefined}

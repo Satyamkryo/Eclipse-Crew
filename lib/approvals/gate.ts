@@ -58,6 +58,7 @@ export function createApprovalGate(ports: ApprovalGatePorts): ApprovalGate {
       try {
         await ports.postCard({
           type: "approval", approvalId, actionClass: input.actionClass, site: input.site ?? "", controlName: input.controlName,
+          ...(input.helperLabel ? { helperLabel: input.helperLabel } : {}),
         });
       } catch {
         await expireApproval(ports.database, ports.ownerId, approvalId).catch(() => undefined);

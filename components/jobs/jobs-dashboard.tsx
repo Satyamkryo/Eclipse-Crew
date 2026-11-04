@@ -4,18 +4,18 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { ListChecks, Search } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { PageHeader } from "@/components/ui/page-header";
+import { Select } from "@/components/ui/select";
 import { RoutineRunNow } from "@/components/chat/routine-run-now";
 import { cn } from "@/lib/utils";
 import type { JobOutcomeFilter, JobRange, JobRow } from "@/lib/jobs/view";
 import { JobActions } from "./job-actions";
 import { JobSummary } from "./job-summary";
 import { JobsTable } from "./jobs-table";
-import { UpcomingRuns } from "./upcoming-runs";
 
-type Tab = "all" | "upcoming" | "failed";
+type Tab = "all" | "failed";
 const TABS: { id: Tab; label: string }[] = [
   { id: "all", label: "All jobs" },
-  { id: "upcoming", label: "Upcoming runs" },
   { id: "failed", label: "Failed" },
 ];
 const OUTCOME_OPTIONS: { value: JobOutcomeFilter; label: string }[] = [
@@ -34,13 +34,18 @@ const RANGE_OPTIONS: { value: JobRange; label: string }[] = [
   { value: "all", label: "All time" },
 ];
 
-export function JobsDashboard({ agents, csrfToken, timeZone }: {
+const RANGES: JobRange[] = ["24h", "7d", "30d", "all"];
+
+export function JobsDashboard({ agents, csrfToken, timeZone, bare = false, initialRange }: {
   agents: { id: string; name: string }[]; csrfToken: string; timeZone: string;
+  /** Embedded in Mission Control: no page header, the page already has one. */
+  bare?: boolean; initialRange?: string;
 }) {
   const [tab, setTab] = useState<Tab>("all");
   const [agent, setAgent] = useState("");
   const [outcome, setOutcome] = useState<JobOutcomeFilter>("all");
-  const [range, setRange] = useState<JobRange>("7d");
+  const [range, setRange] = useState<JobRange>(
+    initialRange && (RANGES as string[]).includes(initialRange) ? initialRange as JobRange : "7d");
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [jobs, setJobs] = useState<JobRow[]>([]);
@@ -60,7 +65,6 @@ export function JobsDashboard({ agents, csrfToken, timeZone }: {
   }, [search]);
 
   useEffect(() => {
-    if (tab === "upcoming") return;
     const controller = new AbortController();
     let timer: ReturnType<typeof setTimeout> | undefined;
     const params = new URLSearchParams();
@@ -124,23 +128,11 @@ export function JobsDashboard({ agents, csrfToken, timeZone }: {
   const runningCount = jobs.filter((job) => job.outcome === "running").length;
 
   return (
-    <div className="min-h-dvh bg-background text-foreground">
-      <header className="border-b border-border px-4 py-6 sm:px-6">
-        <div className="mx-auto flex w-full max-w-7xl flex-wrap items-start justify-between gap-4">
-          <div>
-            <Link href="/" className="text-sm text-muted-foreground underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-ring">Back to workspace</Link>
-            <h1 className="mt-2 flex items-center gap-2 text-2xl font-semibold tracking-tight">
-              <ListChecks aria-hidden className="size-5 text-muted-foreground" strokeWidth={1.5} />Jobs
-            </h1>
-            <p className="mt-1 max-w-[70ch] text-sm text-muted-foreground">Crew-wide run status, outcomes and cost receipts.</p>
-          </div>
-          <Button type="button" variant="secondary" size="sm" onClick={() => setTab("upcoming")}>
-            <ListChecks aria-hidden className="size-4" strokeWidth={1.5} />Upcoming runs
-          </Button>
-        </div>
-      </header>
-
-      <main className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6">
+    <div className="w-full bg-background text-foreground">
+      <div className={bare ? "w-full" : "mx-auto w-full max-w-7xl px-4 py-6 sm:px-6"}>
+        {!bare && (
+          <PageHeader icon={ListChecks} title="Jobs" subtitle="Tracker of what your agents already ran — what succeeded and what failed." />
+        )}
         <div role="tablist" aria-label="Jobs views" className="flex gap-1 border-b border-border">
           {TABS.map((item) => (
             <button key={item.id} id={`jobs-tab-${item.id}`} type="button" role="tab" aria-selected={tab === item.id} aria-controls="jobs-panel"
@@ -152,29 +144,24 @@ export function JobsDashboard({ agents, csrfToken, timeZone }: {
           ))}
         </div>
         <p className="sr-only" aria-live="polite">
-          {tab === "upcoming" ? "Upcoming runs view." : loading ? "Loading jobs." : `${jobs.length} jobs loaded. ${runningCount} running.`}
+          {loading ? "Loading jobs." : `${jobs.length} jobs loaded. ${runningCount} running.`}
         </p>
+        <StorageBanner />
 
         <div id="jobs-panel" role="tabpanel" aria-labelledby={`jobs-tab-${tab}`} className="pt-4">
-          {tab === "upcoming" ? (
-            <UpcomingRuns agent={agent} csrfToken={csrfToken} />
-          ) : (
-            <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-4">
               <div className="flex flex-wrap items-center gap-2">
-                <select aria-label="Agent" value={agent} onChange={(event) => setAgent(event.target.value)}
-                  className="h-8 rounded-md border border-input bg-card px-2 text-sm focus-visible:outline-2 focus-visible:outline-ring">
+                <Select label="Agent" value={agent} onChange={setAgent}>
                   <option value="">All agents</option>
                   {agents.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-                </select>
-                <select aria-label="Outcome" value={effectiveOutcome} disabled={tab === "failed"}
-                  onChange={(event) => setOutcome(event.target.value as JobOutcomeFilter)}
-                  className="h-8 rounded-md border border-input bg-card px-2 text-sm focus-visible:outline-2 focus-visible:outline-ring disabled:opacity-60">
+                </Select>
+                <Select label="Outcome" value={effectiveOutcome} disabled={tab === "failed"}
+                  onChange={(value) => setOutcome(value as JobOutcomeFilter)}>
                   {OUTCOME_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-                </select>
-                <select aria-label="Date range" value={range} onChange={(event) => setRange(event.target.value as JobRange)}
-                  className="h-8 rounded-md border border-input bg-card px-2 text-sm focus-visible:outline-2 focus-visible:outline-ring">
+                </Select>
+                <Select label="Date range" value={range} onChange={(value) => setRange(value as JobRange)}>
                   {RANGE_OPTIONS.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-                </select>
+                </Select>
                 <div className="relative ml-auto w-full sm:w-64">
                   <Search aria-hidden className="pointer-events-none absolute left-2 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" strokeWidth={1.5} />
                   <input type="search" aria-label="Search runs" placeholder="Search runs…" value={search}
@@ -258,9 +245,36 @@ export function JobsDashboard({ agents, csrfToken, timeZone }: {
                 </aside>
               </div>
             </div>
-          )}
         </div>
-      </main>
+      </div>
     </div>
+  );
+}
+
+// Evidence retention meter: heavy bytes vs the instance cap. Warns at 80%;
+// at 100% the sweep purges the oldest evidence early (receipts always stay).
+function StorageBanner() {
+  const [usage, setUsage] = useState<{ fraction: number; full: boolean } | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/storage", { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) return;
+        const body = await response.json() as { fraction: number; full: boolean };
+        if (!cancelled && typeof body.fraction === "number") setUsage(body);
+      })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, []);
+  if (!usage || usage.fraction < 0.8) return null;
+  const pct = Math.round(usage.fraction * 100);
+  return (
+    <p role={usage.full ? "alert" : "status"}
+      className={usage.full ? "rounded-md border border-danger px-3 py-2 text-sm text-danger"
+        : "rounded-md border border-corona/40 px-3 py-2 text-sm text-corona"}>
+      {usage.full
+        ? `Storage ${pct}% full: oldest evidence is being purged early (receipts stay). Download what you need, then free disk space.`
+        : `Storage ${pct}% full: screenshots and checkpoints auto-delete after 32 days. Download evidence you want to keep.`}
+    </p>
   );
 }

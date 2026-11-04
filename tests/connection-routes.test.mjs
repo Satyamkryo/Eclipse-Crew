@@ -7,23 +7,29 @@ const unwrap = (module) => module.default ?? module;
 const request = (path, method = "GET") => new Request(`http://127.0.0.1:3000${path}`, { method });
 
 test("connection routes expose only authenticated handlers", async () => {
-  const [collection, item, testRoute] = await Promise.all([
+  const [collection, item, testRoute, device, flow] = await Promise.all([
     import("../app/api/connections/route.ts"),
     import("../app/api/connections/[connectionId]/route.ts"),
     import("../app/api/connections/[connectionId]/test/route.ts"),
+    import("../app/api/connections/github/device/route.ts"),
+    import("../app/api/connections/github/device/[flowId]/route.ts"),
   ]);
   assert.equal(typeof unwrap(collection).GET, "function");
   assert.equal(typeof unwrap(collection).POST, "function");
   assert.equal(typeof unwrap(item).PUT, "function");
   assert.equal(typeof unwrap(item).DELETE, "function");
   assert.equal(typeof unwrap(testRoute).POST, "function");
+  assert.equal(typeof unwrap(device).POST, "function");
+  assert.equal(typeof unwrap(flow).GET, "function");
 });
 
 test("every connection route returns 401 without an owner session", async () => {
-  const [collection, item, testRoute] = await Promise.all([
+  const [collection, item, testRoute, device, flow] = await Promise.all([
     import("../app/api/connections/route.ts"),
     import("../app/api/connections/[connectionId]/route.ts"),
     import("../app/api/connections/[connectionId]/test/route.ts"),
+    import("../app/api/connections/github/device/route.ts"),
+    import("../app/api/connections/github/device/[flowId]/route.ts"),
   ]);
   const responses = await Promise.all([
     unwrap(collection).GET(request(`/api/connections?agentId=${AGENT}`)),
@@ -31,6 +37,8 @@ test("every connection route returns 401 without an owner session", async () => 
     unwrap(item).PUT(request(`/api/connections/${CONNECTION}`, "PUT"), { params: Promise.resolve({ connectionId: CONNECTION }) }),
     unwrap(item).DELETE(request(`/api/connections/${CONNECTION}`, "DELETE"), { params: Promise.resolve({ connectionId: CONNECTION }) }),
     unwrap(testRoute).POST(request(`/api/connections/${CONNECTION}/test`, "POST"), { params: Promise.resolve({ connectionId: CONNECTION }) }),
+    unwrap(device).POST(request("/api/connections/github/device", "POST")),
+    unwrap(flow).GET(request(`/api/connections/github/device/${CONNECTION}`), { params: Promise.resolve({ flowId: CONNECTION }) }),
   ]);
   for (const response of responses) {
     assert.equal(response.status, 401);

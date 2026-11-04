@@ -26,6 +26,8 @@ export interface ApprovalRequest {
   actionClass: ActionClass;
   site: string | null;
   controlName: string;
+  // TASK-076. Set only for a helper's risky call, so the owner sees "Helper 2" in the card.
+  helperLabel?: string;
   signal?: AbortSignal;
   // TASK-051. Astra Mode removes only the wait; the request is still recorded.
   astra?: boolean;

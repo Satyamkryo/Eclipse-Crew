@@ -174,11 +174,11 @@ export async function listAgentMessages(
   return { messages: page.map(toMessage), hasMore };
 }
 
-export async function appendUserMessage(database: Database, ownerId: string, agentId: string, text: string) {
+export async function appendUserMessage(database: Database, ownerId: string, agentId: string, text: string, options: { fromAgent?: string } = {}) {
   const agent = await requireAgent(database, ownerId, agentId);
   if (agent.status !== "active") throw new ChatDataError("agent_paused");
   const session = await getOrCreateSession(database, ownerId, agentId);
-  const card = chatCardSchema.parse({ type: "message", text });
+  const card = chatCardSchema.parse({ type: "message", text, ...(options.fromAgent ? { fromAgent: options.fromAgent } : {}) });
   return insertMessage(database, ownerId, session.id, "user", card, "user", null);
 }
 

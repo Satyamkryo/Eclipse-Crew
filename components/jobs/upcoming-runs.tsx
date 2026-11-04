@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import { CalendarClock, Loader2, Pause, Play } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
 import { RoutineRunNow } from "@/components/chat/routine-run-now";
 import { AstraBadge } from "@/components/ui/astra-badge";
 import { cn } from "@/lib/utils";
@@ -55,9 +56,41 @@ export function UpcomingRuns({ agent, csrfToken }: { agent: string; csrfToken: s
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
   const [selected, setSelected] = useState<Selected | null>(null);
+  // Live: schedules fire on the minute tick; re-check every 30s while visible.
+  // (The Jobs list keeps its 5s poll, but only while a run is actually running.)
+  useEffect(() => {
+    const timer = window.setInterval(() => { if (document.visibilityState === "visible") setVersion((value) => value + 1); }, 30000);
+    return () => window.clearInterval(timer);
+  }, []);
   const [busy, setBusy] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [message, setMessage] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
   const [version, setVersion] = useState(0);
+
+  const select = (next: Selected | null) => { setSelected(next); setConfirmingDelete(false); };
+
+  async function remove(routineId: string) {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const response = await fetch(`/api/routines/${routineId}`, {
+        method: "DELETE", cache: "no-store", headers: { "x-csrf-token": csrfToken },
+      });
+      if (response.ok) {
+        window.dispatchEvent(new CustomEvent("eclipse-notify", {
+          detail: { title: "Routine deleted", text: "Past runs stay in History. The schedule is gone.", actionLabel: "Open Schedules", actionHref: "/schedules" },
+        }));
+        select(null);
+        setVersion((value) => value + 1);
+        return;
+      }
+      setMessage({ tone: "error", text: "Couldn't delete this routine. Try again." });
+    } catch {
+      setMessage({ tone: "error", text: "Couldn't delete this routine. Try again." });
+    } finally {
+      setBusy(false);
+    }
+  }
 
   useEffect(() => {
     const controller = new AbortController();
@@ -81,7 +114,7 @@ export function UpcomingRuns({ agent, csrfToken }: { agent: string; csrfToken: s
     ? data?.paused.find((routine) => routine.routineId === selected.routineId) ?? null
     : null;
 
-  const toggle = useCallback(async (routineId: string, active: boolean) => {
+  async function toggle(routineId: string, active: boolean) {
     setBusy(true);
     setMessage(null);
     try {
@@ -92,7 +125,11 @@ export function UpcomingRuns({ agent, csrfToken }: { agent: string; csrfToken: s
       });
       if (response.ok) {
         setMessage({ tone: "ok", text: active ? "Routine resumed." : "Routine paused." });
+        window.dispatchEvent(new CustomEvent("eclipse-notify", {
+          detail: { title: active ? "Routine resumed" : "Routine paused", text: active ? "It will run on its next schedule." : "It will skip schedules until resumed.", actionLabel: "Open Schedules", actionHref: "/schedules" },
+        }));
         setSelected({ routineId, kind: active ? "active" : "paused" });
+        setConfirmingDelete(false);
         setVersion((value) => value + 1);
         return;
       }
@@ -107,7 +144,7 @@ export function UpcomingRuns({ agent, csrfToken }: { agent: string; csrfToken: s
     } finally {
       setBusy(false);
     }
-  }, [csrfToken]);
+  }
 
   if (loading && !data) {
     return (
@@ -132,12 +169,11 @@ export function UpcomingRuns({ agent, csrfToken }: { agent: string; csrfToken: s
         <div className="flex flex-wrap items-center justify-between gap-3">
           <label className="flex items-center gap-2 text-sm">
             <span className="text-muted-foreground">Show</span>
-            <select value={days} onChange={(event) => setDays(event.target.value as "1" | "7" | "30")}
-              className="h-8 rounded-md border border-input bg-card px-2 text-sm focus-visible:outline-2 focus-visible:outline-ring">
+            <Select label="Show range" value={days} onChange={(value) => setDays(value as "1" | "7" | "30")}>
               <option value="1">Next 24 hours</option>
               <option value="7">Next 7 days</option>
               <option value="30">Next 30 days</option>
-            </select>
+            </Select>
           </label>
           <p className="text-xs text-muted-foreground">Timezone: {view.timezone}</p>
         </div>
@@ -154,7 +190,7 @@ export function UpcomingRuns({ agent, csrfToken }: { agent: string; csrfToken: s
             <ul className="divide-y divide-border">
               {day.runs.map((run) => (
                 <li key={`${run.routineId}-${run.startAt}`}>
-                  <button type="button" onClick={() => setSelected({ routineId: run.routineId, kind: "active" })}
+                  <button type="button" onClick={() => select({ routineId: run.routineId, kind: "active" })}
                     className={cn("flex w-full flex-wrap items-center gap-3 px-4 py-3 text-left transition-colors duration-150 hover:bg-accent focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring",
                       selected?.routineId === run.routineId && selected.kind === "active" && "bg-accent")}>
                     <span className="w-14 shrink-0 font-mono text-sm tabular-nums">{timeOnly(run.startAt, view.timezone)}</span>
@@ -190,17 +226,38 @@ export function UpcomingRuns({ agent, csrfToken }: { agent: string; csrfToken: s
                 </Button>
                 <RoutineRunNow key={activeSelected.routineId} routineId={activeSelected.routineId} csrfToken={csrfToken} className="mt-0" />
               </div>
+              {confirmingDelete ? (
+                <div className="mt-3 flex flex-wrap items-center gap-2" role="group" aria-label="Confirm routine delete">
+                  <span className="text-xs text-muted-foreground">Delete this schedule? Past runs stay.</span>
+                  <Button type="button" variant="destructive" size="sm" disabled={busy} onClick={() => void remove(activeSelected.routineId)}>Delete</Button>
+                  <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => setConfirmingDelete(false)}>Keep</Button>
+                </div>
+              ) : (
+                <Button type="button" variant="ghost" size="sm" className="mt-2 text-danger" disabled={busy} onClick={() => setConfirmingDelete(true)}>Delete routine</Button>
+              )}
             </>
           ) : pausedSelected ? (
             <>
               <div className="mt-3"><Details routine={pausedSelected} /></div>
-              <Button type="button" variant="secondary" size="sm" className="mt-4 min-w-[6.5rem]" disabled={busy}
-                onClick={() => void toggle(pausedSelected.routineId, true)}>
-                {busy ? <Loader2 aria-hidden className="size-4 motion-safe:animate-spin" strokeWidth={1.5} /> : <Play aria-hidden className="size-4" strokeWidth={1.5} />}
-                Resume
-              </Button>
+              <div className="mt-4 flex flex-wrap items-center gap-2">
+                <Button type="button" variant="secondary" size="sm" className="min-w-[6.5rem]" disabled={busy}
+                  onClick={() => void toggle(pausedSelected.routineId, true)}>
+                  {busy ? <Loader2 aria-hidden className="size-4 motion-safe:animate-spin" strokeWidth={1.5} /> : <Play aria-hidden className="size-4" strokeWidth={1.5} />}
+                  Resume
+                </Button>
+                <RoutineRunNow key={pausedSelected.routineId} routineId={pausedSelected.routineId} csrfToken={csrfToken} className="mt-0" />
+              </div>
+              {confirmingDelete ? (
+                <div className="mt-3 flex flex-wrap items-center gap-2" role="group" aria-label="Confirm routine delete">
+                  <span className="text-xs text-muted-foreground">Delete this schedule? Past runs stay.</span>
+                  <Button type="button" variant="destructive" size="sm" disabled={busy} onClick={() => void remove(pausedSelected.routineId)}>Delete</Button>
+                  <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => setConfirmingDelete(false)}>Keep</Button>
+                </div>
+              ) : (
+                <Button type="button" variant="ghost" size="sm" className="mt-2 text-danger" disabled={busy} onClick={() => setConfirmingDelete(true)}>Delete routine</Button>
+              )}
             </>
-          ) : <p className="mt-2 text-sm text-muted-foreground">Select a routine to see its schedule, agent, cost cap and missed-run policy.</p>}
+          ) : <p className="mt-2 text-sm text-muted-foreground">Select a routine to see its schedule, agent, cost cap and missed-run policy. Test with Run now before relying on the schedule.</p>}
           {message ? <p role={message.tone === "error" ? "alert" : "status"} className={cn("mt-3 text-xs", message.tone === "error" ? "text-danger" : "text-muted-foreground")}>{message.text}</p> : null}
         </section>
 
@@ -210,7 +267,7 @@ export function UpcomingRuns({ agent, csrfToken }: { agent: string; csrfToken: s
             <ul className="mt-2 divide-y divide-border">
               {view.paused.map((routine) => (
                 <li key={routine.routineId} className="py-3 first:pt-0 last:pb-0">
-                  <button type="button" onClick={() => setSelected({ routineId: routine.routineId, kind: "paused" })}
+                  <button type="button" onClick={() => select({ routineId: routine.routineId, kind: "paused" })}
                     className="w-full text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring">
                     <span className="flex items-center justify-between gap-2">
                       <span className="min-w-0 truncate text-sm">{routine.label}</span>

@@ -1,4 +1,5 @@
 import "server-only";
+import { randomInt } from "node:crypto";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { getDatabase } from "../../db/client";
 import { agentPolicies, agents, teachRecordings } from "../../db/schema";
@@ -18,6 +19,7 @@ const agentFields = {
   soulMd: agents.soulMd,
   status: agents.status,
   astraMode: agents.astraMode,
+  avatarVariant: agents.avatarVariant,
   dailyBudgetCents: agents.dailyBudgetCents,
   monthlyBudgetCents: agents.monthlyBudgetCents,
   createdAt: agents.createdAt,
@@ -37,6 +39,7 @@ export async function listAgentRecords(database: Database, ownerId: string) {
     role: agents.role,
     status: agents.status,
     astraMode: agents.astraMode,
+    avatarVariant: agents.avatarVariant,
     attentionReason: sql<string | null>`case when ${agents.attentionReason} is not null then ${agents.attentionReason} when exists (select 1 from ${teachRecordings} where ${teachRecordings.ownerId} = ${agents.ownerId} and ${teachRecordings.agentId} = ${agents.id} and ${teachRecordings.state} = 'paused') then 'teach_paused' else null end`,
   }).from(agents).where(eq(agents.ownerId, ownerId)).orderBy(asc(agents.name));
 }
@@ -63,31 +66,56 @@ export async function getAgentIdentity(
   return agent ? { ...agent, status: agent.status as AgentStatus } : undefined;
 }
 
-export async function createAgentRecord(
+// TASK-058. The starter crew reuses one preallocated UUID across retries. The first caller inserts the app identity and
+// records the audit row; a later caller that finds the same owner's row changes nothing and does not audit again.
+export async function createAgentRecordIfAbsent(
   database: Database, ownerId: string, input: AgentCreateInput, agentId: string,
   audit?: (transaction: Transaction) => Promise<void>,
-): Promise<{ agentId: string }> {
-  await database.transaction(async (transaction) => {
-    await transaction.insert(agents).values({
+): Promise<{ agentId: string; created: boolean }> {
+  return database.transaction(async (transaction) => {
+    const existing = await transaction.select({ ownerId: agents.ownerId }).from(agents)
+      .where(eq(agents.id, agentId)).limit(1);
+    if (existing[0]) {
+      if (existing[0].ownerId !== ownerId) throw new Error("agent_not_owned");
+      return { agentId, created: false };
+    }
+    const inserted = await transaction.insert(agents).values({
       id: agentId,
       ownerId,
       name: input.name,
       role: input.role,
       soulMd: input.soulMd ?? defaultSoul(input.name, input.role),
       status: "paused",
+      // A chosen avatar is kept; otherwise the server assigns a random voxel avatar.
+      avatarVariant: input.avatarVariant ?? randomInt(12),
       dailyBudgetCents: input.dailyBudgetCents,
       monthlyBudgetCents: input.monthlyBudgetCents,
-    }).returning({ agentId: agents.id });
+    }).onConflictDoNothing({ target: agents.id }).returning({ agentId: agents.id });
+    if (!inserted.length) {
+      const existing = await transaction.select({ ownerId: agents.ownerId }).from(agents)
+        .where(eq(agents.id, agentId)).limit(1);
+      if (existing[0]?.ownerId !== ownerId) throw new Error("agent_not_owned");
+      return { agentId, created: false };
+    }
     await transaction.insert(agentPolicies).values({
       agentId,
       ownerId,
       tools: input.tools,
       domains: input.domains,
       actions: input.actions,
-      memoryScopes: input.memoryScopes,
+      // TASK-086. New agents read USER.md and their own MEMORY.md by default.
+      memoryScopes: input.memoryScopes.length ? input.memoryScopes : ["global", "agent"],
     }).returning({ agentId: agentPolicies.agentId });
     await audit?.(transaction);
+    return { agentId, created: true };
   });
+}
+
+export async function createAgentRecord(
+  database: Database, ownerId: string, input: AgentCreateInput, agentId: string,
+  audit?: (transaction: Transaction) => Promise<void>,
+): Promise<{ agentId: string }> {
+  await createAgentRecordIfAbsent(database, ownerId, input, agentId, audit);
   return { agentId };
 }
 
@@ -104,6 +132,8 @@ export async function updateAgentRecord(
       name: input.name,
       role: input.role,
       soulMd: input.soulMd,
+      // An omitted avatar keeps the stored one.
+      ...(input.avatarVariant !== undefined ? { avatarVariant: input.avatarVariant } : {}),
       dailyBudgetCents: input.dailyBudgetCents,
       monthlyBudgetCents: input.monthlyBudgetCents,
       updatedAt: new Date(),

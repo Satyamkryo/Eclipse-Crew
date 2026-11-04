@@ -1,56 +1,65 @@
 "use client";
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import Link from "next/link";
-import { Bot, ListChecks, MessageSquare, PanelRight, ShieldCheck, UsersRound, X } from "lucide-react";
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { Loader2, PanelRight, UsersRound, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { AppShell, type OwnerChip } from "@/components/workspace/app-shell";
+import { RoutinesTabEmpty, ToolsTabEmpty, WorkspaceCenter, type CenterAgent, type WorkspaceTabId } from "@/components/workspace/workspace-center";
+import { DesktopColumn } from "@/components/workspace/desktop-column";
 import { cn } from "@/lib/utils";
+import { MobileDock } from "@/components/workspace/mobile-dock";
+import type { AgentSummary } from "@/components/workspace/agent-pane";
 
-type Layout = "mobile" | "tablet" | "desktop";
 type MobileView = "agents" | "chat" | "panel";
-type Props = { initialMobileView: MobileView; showAgentPanel: boolean; showAgentError: boolean; agentPane: ReactNode; chatPane: ReactNode; panel: ReactNode };
+type Props = {
+  initialMobileView: MobileView;
+  initialTab?: WorkspaceTabId;
+  agents: AgentSummary[];
+  selectedAgent?: CenterAgent | null;
+  owner: OwnerChip;
+  csrfToken: string;
+  agentPane: ReactNode;
+  chatPane: ReactNode;
+  settings?: ReactNode;
+  desktop?: ReactNode;
+  history: ReactNode;
+  memory: ReactNode;
+};
 
-export function WorkspaceShell({ initialMobileView, showAgentPanel, showAgentError, agentPane, chatPane, panel }: Props) {
-  const [layout, setLayout] = useState<Layout | null>(null);
+// The workspace composes the shared reference shell: sidebar + header from AppShell, the
+// agent heading with central tabs in the center, and the live desktop + activity column on
+// the right (docs/DESIGN.md "App shell"; images 05, 39, 40).
+function subscribeViewport(onChange: () => void) {
+  window.addEventListener("resize", onChange);
+  return () => window.removeEventListener("resize", onChange);
+}
+const readViewport = () => window.innerWidth;
+const readNoViewport = () => null;
+
+export function WorkspaceShell({ initialMobileView, initialTab, agents, selectedAgent, owner, csrfToken, agentPane, chatPane, settings, desktop, history, memory }: Props) {
   const [mobileView, setMobileView] = useState<MobileView>(initialMobileView);
   const [panelOpen, setPanelOpen] = useState(false);
-  const [agentsOpen, setAgentsOpen] = useState(false);
-  const [panelWidth, setPanelWidth] = useState(380);
-  const [viewportWidth, setViewportWidth] = useState(1440);
+  const [agentsSheetOpen, setAgentsSheetOpen] = useState(initialMobileView === "agents");
+  const [panelWidth, setPanelWidth] = useState(400);
+  // The server and hydration render have no width (laid out as 1440 px); the live view waits for the real width so its
+  // stream opens once, in the final layout, instead of opening in a guessed layout and reconnecting.
+  const measuredWidth = useSyncExternalStore(subscribeViewport, readViewport, readNoViewport);
+  const viewportWidth = measuredWidth ?? 1440;
+  const measured = measuredWidth !== null;
   const panelOpener = useRef<HTMLButtonElement>(null);
-  const agentsOpener = useRef<HTMLButtonElement>(null);
   const panelWasOpen = useRef(false);
-  const agentsWereOpen = useRef(false);
+  const agentsOpener = useRef<HTMLButtonElement>(null);
+  const agentsWasOpen = useRef(false);
   const styleSheet = useRef<CSSStyleSheet | null>(null);
   const drag = useRef<{ startX: number; startWidth: number } | null>(null);
   const maxPanelWidth = Math.max(380, Math.floor(viewportWidth / 2));
   const effectivePanelWidth = Math.min(Math.max(panelWidth, 380), maxPanelWidth);
+  const isMobile = viewportWidth < 768;
+  const isDesktop = viewportWidth >= 1280;
 
-  useEffect(() => {
-    const desktop = window.matchMedia("(min-width: 1280px)");
-    const tablet = window.matchMedia("(min-width: 768px)");
-    const update = () => {
-      const next = desktop.matches ? "desktop" : tablet.matches ? "tablet" : "mobile";
-      setLayout(next);
-      if (next !== "tablet") { setPanelOpen(false); setAgentsOpen(false); }
-      else if (showAgentPanel) setPanelOpen(true);
-      else if (showAgentError) setAgentsOpen(true);
-    };
-    update();
-    desktop.addEventListener("change", update);
-    tablet.addEventListener("change", update);
-    return () => { desktop.removeEventListener("change", update); tablet.removeEventListener("change", update); };
-  }, [showAgentPanel, showAgentError]);
-
-  useEffect(() => {
-    const update = () => setViewportWidth(window.innerWidth);
-    update();
-    window.addEventListener("resize", update);
-    return () => window.removeEventListener("resize", update);
-  }, []);
 
   useEffect(() => {
     const sheet = new CSSStyleSheet();
-    sheet.replaceSync(".workspace-panel{width:380px}");
+    sheet.replaceSync(".workspace-panel{width:400px}");
     document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
     styleSheet.current = sheet;
     return () => {
@@ -64,21 +73,16 @@ export function WorkspaceShell({ initialMobileView, showAgentPanel, showAgentErr
   }, [effectivePanelWidth]);
 
   useEffect(() => {
-    if (layout !== "desktop") drag.current = null;
-  }, [layout]);
-
-  useEffect(() => {
     if (panelWasOpen.current && !panelOpen) panelOpener.current?.focus();
     panelWasOpen.current = panelOpen;
   }, [panelOpen]);
 
   useEffect(() => {
-    if (agentsWereOpen.current && !agentsOpen) agentsOpener.current?.focus();
-    agentsWereOpen.current = agentsOpen;
-  }, [agentsOpen]);
+    if (agentsWasOpen.current && !agentsSheetOpen) agentsOpener.current?.focus();
+    agentsWasOpen.current = agentsSheetOpen;
+  }, [agentsSheetOpen]);
 
   const closePanel = () => setPanelOpen(false);
-  const closeAgents = () => setAgentsOpen(false);
   const onSeparatorKeyDown = (event: React.KeyboardEvent) => {
     let next = effectivePanelWidth;
     if (event.key === "ArrowLeft") next += 16;
@@ -96,119 +100,97 @@ export function WorkspaceShell({ initialMobileView, showAgentPanel, showAgentErr
     setPanelWidth(Math.min(Math.max(next, 380), maxPanelWidth));
   };
 
-  if (layout === null) {
-    return (
-      <main aria-label="Eclipse Crew workspace" aria-busy="true" className="flex h-dvh w-full flex-col overflow-hidden bg-background text-foreground">
-        <header className="flex h-12 shrink-0 items-center border-b border-border px-4">
-          <h1 className="text-lg font-semibold tracking-tight">Eclipse Crew</h1>
-        </header>
-        <div className="flex min-h-0 flex-1 items-center justify-center p-6">
-          <div className="h-24 w-full max-w-3xl animate-pulse rounded-lg bg-accent" />
-          <p className="sr-only">Loading workspace</p>
-        </div>
-      </main>
-    );
-  }
+  const center = (
+    <WorkspaceCenter agent={selectedAgent ?? undefined} initialTab={initialTab}>
+      {(tab) => (
+        <>
+          {tab === "chat" && chatPane}
+          {tab === "settings" && <div className="h-full min-h-0 overflow-y-auto p-6">{settings ?? <SettingsEmpty />}</div>}
+          {tab === "history" && <div className="h-full min-h-0 overflow-y-auto">{history}</div>}
+          {tab === "memory" && <div className="h-full min-h-0 overflow-y-auto">{memory}</div>}
+          {tab === "tools" && <ToolsTabEmpty />}
+          {tab === "routines" && <RoutinesTabEmpty />}
+        </>
+      )}
+    </WorkspaceCenter>
+  );
 
-  if (layout === "mobile") {
-    return (
-      <main aria-label="Eclipse Crew workspace" className="flex h-dvh w-full flex-col overflow-hidden bg-background text-foreground">
-        <header className="flex h-12 shrink-0 items-center justify-between border-b border-border px-4">
-          <h1 className="text-lg font-semibold tracking-tight">Eclipse Crew</h1>
-          <div className="flex items-center gap-1">
-            <Button asChild variant="ghost" size="sm">
-              <Link href="/security"><ShieldCheck aria-hidden="true" className="h-4 w-4" />Security</Link>
-            </Button>
-            <Button asChild variant="ghost" size="sm">
-              <Link href="/jobs"><ListChecks aria-hidden="true" className="h-4 w-4" />Jobs</Link>
-            </Button>
-          </div>
-        </header>
-        <div className="min-h-0 flex-1">
-          {mobileView === "agents" && <aside aria-label="Agents pane" className="h-full">{agentPane}</aside>}
-          {mobileView === "chat" && <section aria-label="Chat pane" className="h-full">{chatPane}</section>}
-          {mobileView === "panel" && <aside aria-label="Workspace panel" className="h-full">{panel}</aside>}
-        </div>
-        <MobileNav value={mobileView} onChange={setMobileView} />
-      </main>
-    );
-  }
-
-  if (layout === "tablet") {
-    return (
-      <main aria-label="Eclipse Crew workspace" className="flex h-dvh w-full overflow-hidden bg-background text-foreground">
-        <aside aria-label="Agents rail" className="flex w-14 shrink-0 flex-col items-center border-r border-border">
-          <div className="flex h-12 w-full items-center justify-center border-b border-border" aria-hidden="true">
-            <span className="text-xs font-semibold tracking-tight">EC</span>
-          </div>
-          <Button ref={agentsOpener} type="button" variant="ghost" size="sm" className="mt-3" aria-label="Open agents" title="Open agents"
-            onClick={() => setAgentsOpen(true)}>
-            <Bot aria-hidden="true" className="h-4 w-4" />
-          </Button>
-        </aside>
-        <div className="flex min-w-0 flex-1 flex-col">
-          <header className="flex h-12 shrink-0 items-center justify-between border-b border-border px-3">
-            <h1 className="text-lg font-semibold tracking-tight">Eclipse Crew</h1>
-            <div className="flex items-center gap-1">
-              <Button asChild variant="ghost" size="sm">
-                <Link href="/security"><ShieldCheck aria-hidden="true" className="h-4 w-4" />Security</Link>
-              </Button>
-              <Button asChild variant="ghost" size="sm">
-                <Link href="/jobs"><ListChecks aria-hidden="true" className="h-4 w-4" />Jobs</Link>
-              </Button>
-              <Button ref={panelOpener} type="button" variant="secondary" size="sm" aria-label="Open workspace panel"
-                onClick={() => setPanelOpen(true)}>
-                <PanelRight aria-hidden="true" className="h-4 w-4" />Panel
-              </Button>
-            </div>
-          </header>
-          <section aria-label="Chat pane" className="min-h-0 flex-1">{chatPane}</section>
-        </div>
-        {panelOpen && <Sheet label="Workspace panel" onClose={closePanel}>{panel}</Sheet>}
-        {agentsOpen && <Sheet label="Agents pane" onClose={closeAgents}>{agentPane}</Sheet>}
-      </main>
-    );
-  }
+  const pendingDesktop = desktop && (
+    <div className="relative aspect-[4/3] w-full bg-background">
+      <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center">
+        <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-hidden="true" />
+        <p className="text-sm text-muted-foreground">Connecting to agent desktop…</p>
+      </div>
+    </div>
+  );
+  const column = <DesktopColumn desktop={measured ? desktop : pendingDesktop} agentId={selectedAgent?.id} csrfToken={csrfToken} active={selectedAgent?.status === "active"} />;
 
   return (
-    <main aria-label="Eclipse Crew workspace" className="flex h-dvh w-full flex-col overflow-hidden bg-background text-foreground">
-        <header className="flex h-12 shrink-0 items-center justify-between gap-6 border-b border-border px-4">
-          <h1 className="whitespace-nowrap text-lg font-semibold tracking-tight">Eclipse Crew</h1>
-          <div className="flex items-center gap-1">
-            <Button asChild variant="ghost" size="sm">
-              <Link href="/security"><ShieldCheck aria-hidden="true" className="h-4 w-4" />Security</Link>
-            </Button>
-            <Button asChild variant="ghost" size="sm">
-              <Link href="/jobs"><ListChecks aria-hidden="true" className="h-4 w-4" />Jobs</Link>
-            </Button>
-          </div>
-        </header>
-      <div className="flex min-h-0 flex-1 overflow-hidden">
-      <aside aria-label="Agents pane" className="flex w-[260px] shrink-0 flex-col border-r border-border">
-        <div className="min-h-0 flex-1">{agentPane}</div>
-      </aside>
-      <section aria-label="Chat pane" className="min-w-0 flex-1">{chatPane}</section>
-      <div role="separator" aria-label="Resize workspace panel" aria-orientation="vertical" tabIndex={0}
-        aria-valuemin={380} aria-valuemax={maxPanelWidth} aria-valuenow={effectivePanelWidth} aria-valuetext={`${effectivePanelWidth} pixels`}
-        className="relative z-10 w-px shrink-0 cursor-col-resize touch-none bg-border focus-visible:outline-2 focus-visible:outline-ring after:absolute after:inset-y-0 after:-left-3 after:w-6"
-        onKeyDown={onSeparatorKeyDown}
-        onPointerDown={(event) => {
-          if (event.button !== 0) return;
-          drag.current = { startX: event.clientX, startWidth: effectivePanelWidth };
-          event.currentTarget.setPointerCapture(event.pointerId);
-        }}
-        onPointerMove={onPointerMove}
-        onPointerUp={(event) => {
-          drag.current = null;
-          if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
-        }}
-        onPointerCancel={() => { drag.current = null; }}
-        onLostPointerCapture={() => { drag.current = null; }} />
-      <aside aria-label="Workspace panel" className="workspace-panel flex min-h-0 shrink-0 flex-col">
-        {panel}
-      </aside>
+    <AppShell owner={owner} agents={agents} selectedAgentId={selectedAgent?.id} agentsSection={agentPane}
+      mobileNav={<MobileDock active={mobileView} onSelect={setMobileView} />}
+      headerAction={isDesktop ? undefined : (
+        <div className="flex items-center gap-2">
+          {!isMobile && <Button ref={agentsOpener} type="button" variant="secondary" size="sm" aria-label="Open agents"
+            onClick={() => setAgentsSheetOpen(true)}><UsersRound aria-hidden="true" className="size-4" />Agents</Button>}
+          <Button ref={panelOpener} type="button" variant="secondary" size="sm" aria-label="Open workspace panel"
+            onClick={() => setPanelOpen(true)}><PanelRight aria-hidden="true" className="size-4" />Panel</Button>
+        </div>
+      )}
+      pageTitle="Workspace"
+      csrfToken={csrfToken}>
+      {isMobile && mobileView === "agents" && <aside aria-label="Agents pane" className="h-full">{agentPane}</aside>}
+      {isMobile && mobileView === "chat" && <section aria-label="Chat pane" className="h-full">{center}</section>}
+      {isMobile && mobileView === "panel" && <aside aria-label="Workspace panel" className="h-full">{column}</aside>}
+      {!isDesktop && panelOpen && <Sheet label="Workspace panel" onClose={closePanel}>{column}</Sheet>}
+      {!isMobile && !isDesktop && agentsSheetOpen && <Sheet label="Agents" onClose={() => setAgentsSheetOpen(false)}>{agentPane}</Sheet>}
+      {!isMobile && isDesktop && (
+      <div className="h-full">
+        <div className="flex h-full min-h-0">
+          <section aria-label="Agent workspace" className="min-w-0 flex-1">{center}</section>
+          <div role="separator" aria-label="Resize workspace panel" aria-orientation="vertical" tabIndex={0}
+            aria-valuemin={380} aria-valuemax={maxPanelWidth} aria-valuenow={effectivePanelWidth} aria-valuetext={`${effectivePanelWidth} pixels`}
+            className="relative z-10 w-px shrink-0 cursor-col-resize touch-none bg-border focus-visible:outline-2 focus-visible:outline-ring after:absolute after:inset-y-0 after:-left-3 after:w-6"
+            onKeyDown={onSeparatorKeyDown}
+            onPointerDown={(event) => {
+              if (event.button !== 0) return;
+              drag.current = { startX: event.clientX, startWidth: effectivePanelWidth };
+              event.currentTarget.setPointerCapture(event.pointerId);
+            }}
+            onPointerMove={onPointerMove}
+            onPointerUp={(event) => {
+              drag.current = null;
+              if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+            }}
+            onPointerCancel={() => { drag.current = null; }}
+            onLostPointerCapture={() => { drag.current = null; }} />
+          <aside aria-label="Workspace panel" className="workspace-panel flex min-h-0 shrink-0 flex-col">
+            {column}
+          </aside>
+        </div>
       </div>
-    </main>
+      )}
+      {!isMobile && !isDesktop && (
+      <div aria-hidden={panelOpen} className={cn("h-full", panelOpen && "hidden")}>
+        <section aria-label="Agent workspace" className="h-full min-w-0">{center}</section>
+      </div>
+      )}
+    </AppShell>
+  );
+}
+
+function SettingsEmpty() {
+  return (
+    <div className="flex flex-col gap-4">
+      <div>
+        <h3 className="text-lg font-semibold tracking-tight">Settings</h3>
+        <p className="mt-1 text-sm text-muted-foreground">Select an agent to edit its persona, permissions and budget, or manage models and your owner account.</p>
+      </div>
+      <div className="flex flex-wrap gap-4">
+        <a href="/settings/models" className="text-sm underline underline-offset-4">Model settings</a>
+        <a href="/settings/connections" className="text-sm underline underline-offset-4">Connections</a>
+        <a href="/profile" className="text-sm underline underline-offset-4">Profile</a>
+      </div>
+    </div>
   );
 }
 
@@ -247,31 +229,11 @@ function Sheet({ label, onClose, children }: { label: string; onClose: () => voi
         <header className="flex h-12 shrink-0 items-center justify-between border-b border-border px-3">
           <h2 className="text-sm font-semibold">{label}</h2>
           <Button type="button" variant="ghost" size="sm" aria-label={`Close ${label.toLowerCase()}`} title={`Close ${label.toLowerCase()}`} onClick={onClose}>
-            <X aria-hidden="true" className="h-4 w-4" />
+            <X aria-hidden="true" className="size-4" />
           </Button>
         </header>
         <div className="min-h-0 flex-1 overflow-hidden">{children}</div>
       </div>
     </dialog>
-  );
-}
-
-function MobileNav({ value, onChange }: { value: MobileView; onChange: (value: MobileView) => void }) {
-  const items = [
-    { id: "agents", label: "Agents", Icon: UsersRound },
-    { id: "chat", label: "Chat", Icon: MessageSquare },
-    { id: "panel", label: "Panel", Icon: PanelRight },
-  ] as const;
-  return (
-    <nav aria-label="Workspace panes" className="grid h-14 shrink-0 grid-cols-3 border-t border-border bg-card">
-      {items.map(({ id, label, Icon }) => (
-        <button key={id} type="button" aria-pressed={value === id} onClick={() => onChange(id)}
-          className={cn("flex flex-col items-center justify-center gap-1 text-xs transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring",
-            value === id ? "text-foreground" : "text-muted-foreground hover:text-foreground")}>
-          <Icon aria-hidden="true" className="h-4 w-4" />
-          <span>{label}</span>
-        </button>
-      ))}
-    </nav>
   );
 }

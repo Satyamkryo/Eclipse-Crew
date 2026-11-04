@@ -7,7 +7,7 @@ import path from "node:path";
 import test from "node:test";
 
 import {
-  MAX_WINDOW_CHARS, deliverFile, docxXmlToText, listFiles, readDocument, windowText,
+  MAX_WINDOW_CHARS, deliverFile, docxXmlToText, indexDocument, listFiles, readDocument, searchDocument, windowText,
 } from "../docker/desktop/file-tools.mjs";
 import { createFileServer } from "../docker/desktop/file-server.mjs";
 
@@ -30,7 +30,7 @@ function makePdf(lines) {
   objects[2] = `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(" ")}] /Count ${lines.length} >>`;
   objects[3] = "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>";
   lines.forEach((line, index) => {
-    const stream = line === null ? "" : `BT /F1 18 Tf 72 700 Td (${line.replace(/[()\\]/g, "")}) Tj ET`;
+    const stream = line === null ? "" : `BT /F1 18 Tf 72 700 Td ${line.split("\n").map((part, row) => `${row ? "0 -20 Td " : ""}(${part.replace(/[()\\]/g, "")}) Tj`).join(" ")} ET`;
     objects[4 + index * 2] = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents ${5 + index * 2} 0 R /Resources << /Font << /F1 3 0 R >> >> >>`;
     objects[5 + index * 2] = `<< /Length ${stream.length} >>\nstream\n${stream}\nendstream`;
   });
@@ -68,13 +68,13 @@ test("text, markdown, CSV and JSON attachments read as text with the total lengt
   } finally { await cleanup(); }
 });
 
-test("long documents are read in exact windows of at most 60,000 characters", async () => {
+test("long documents are read in exact windows of at most 20,000 characters", async () => {
   const { layout, cleanup } = await layoutFor();
   try {
     const text = "abcdefghij".repeat(15_000) + "END"; // 150,003 characters
     await writeFile(path.join(layout.inbox.dir, "big.txt"), text);
     let offset = 0; const parts = [];
-    for (let guard = 0; guard < 10; guard++) {
+    for (let guard = 0; guard < 20; guard++) {
       const result = await readDocument({ home: "unused", name: "big.txt", offset, layout });
       assert.ok(result.text.length <= MAX_WINDOW_CHARS);
       assert.equal(result.offset, offset); assert.equal(result.totalChars, text.length);
@@ -82,7 +82,7 @@ test("long documents are read in exact windows of at most 60,000 characters", as
       if (result.nextOffset === null) break;
       assert.equal(result.nextOffset, offset + result.text.length); offset = result.nextOffset;
     }
-    assert.equal(parts.length, 3); assert.equal(parts.join(""), text);
+    assert.equal(parts.length, 8); assert.equal(parts.join(""), text);
     assert.equal(await code(readDocument({ home: "unused", name: "big.txt", offset: text.length, layout })), "invalid_offset");
     assert.equal(await code(readDocument({ home: "unused", name: "big.txt", offset: -1, layout })), "invalid_offset");
     // A window never splits a surrogate pair.
@@ -107,17 +107,120 @@ test("PDF with a text layer reads; a scan without text, and a corrupt PDF, give 
   } finally { await cleanup(); }
 });
 
-test("docx text is extracted; xlsx and a docx without word/document.xml are not readable", { skip: !HAS_UNZIP && "needs /usr/bin/unzip (runs in the desktop container)" }, async () => {
+test("docx, xlsx and pptx text is extracted with page, sheet and slide markers", { skip: !HAS_UNZIP && "needs /usr/bin/unzip (runs in the desktop container)" }, async () => {
   const { layout, cleanup } = await layoutFor();
   try {
     const xml = '<w:document><w:body><w:p><w:r><w:t>Budget &amp; plan</w:t></w:r></w:p><w:p><w:r><w:t>Second</w:t></w:r><w:tab/><w:r><w:t>line</w:t></w:r></w:p></w:body></w:document>';
     await writeFile(path.join(layout.inbox.dir, "r.docx"), makeZip({ "[Content_Types].xml": "<Types/>", "word/document.xml": xml }));
     const result = await readDocument({ home: "unused", name: "r.docx", layout });
     assert.equal(result.format, "docx"); assert.equal(result.text, "Budget & plan\nSecond\tline");
-    await writeFile(path.join(layout.inbox.dir, "s.xlsx"), makeZip({ "[Content_Types].xml": "<Types/>", "xl/workbook.xml": "<w/>" }));
-    assert.equal(await code(readDocument({ home: "unused", name: "s.xlsx", layout })), "unsupported_type");
+
+    const workbook = '<workbook><sheets><sheet name="Sales" sheetId="1" r:id="rId1"/><sheet name="Summary" sheetId="2" r:id="rId2"/></sheets></workbook>';
+    const shared = '<sst><si><t>Region</t></si><si><t>North</t></si></sst>';
+    const sheet1 = '<worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c></row><row r="2"><c r="A2"><v>42</v></c></row></sheetData></worksheet>';
+    const sheet2 = '<worksheet><sheetData><row r="1"><c r="A1" t="inlineStr"><is><t>Total revenue</t></is></c></row></sheetData></worksheet>';
+    await writeFile(path.join(layout.inbox.dir, "s.xlsx"), makeZip({ "[Content_Types].xml": "<Types/>", "xl/workbook.xml": workbook,
+      "xl/sharedStrings.xml": shared, "xl/worksheets/sheet1.xml": sheet1, "xl/worksheets/sheet2.xml": sheet2 }));
+    const book = await readDocument({ home: "unused", name: "s.xlsx", layout });
+    assert.equal(book.format, "xlsx");
+    assert.match(book.text, /--- sheet "Sales" ---/);
+    assert.match(book.text, /Region,North/);
+    assert.match(book.text, /42/);
+    assert.match(book.text, /--- sheet "Summary" ---/);
+    assert.match(book.text, /Total revenue/);
+    const sales = await searchDocument({ home: "unused", name: "s.xlsx", query: "North", layout });
+    assert.equal(sales.results[0].page, 1);
+    const summary = await searchDocument({ home: "unused", name: "s.xlsx", query: "revenue", layout });
+    assert.equal(summary.results[0].page, 2);
+
+    const slide1 = '<p:sld><p:cSld><p:spTree><a:t>Welcome</a:t></p:spTree></p:cSld></p:sld>';
+    const slide2 = '<p:sld><p:cSld><p:spTree><a:t>Quarterly numbers</a:t></p:spTree></p:cSld></p:sld>';
+    const slide3 = '<p:sld><p:cSld><p:spTree><a:t>Renewal deadline is September thirty</a:t></p:spTree></p:cSld></p:sld>';
+    await writeFile(path.join(layout.inbox.dir, "d.pptx"), makeZip({ "[Content_Types].xml": "<Types/>", "ppt/presentation.xml": "<p:presentation/>",
+      "ppt/slides/slide1.xml": slide1, "ppt/slides/slide2.xml": slide2, "ppt/slides/slide3.xml": slide3 }));
+    const deck = await readDocument({ home: "unused", name: "d.pptx", layout });
+    assert.equal(deck.format, "pptx");
+    assert.match(deck.text, /--- slide 1 ---\nWelcome/);
+    assert.match(deck.text, /--- slide 2 ---\nQuarterly numbers/);
+    const found = await searchDocument({ home: "unused", name: "d.pptx", query: "Quarterly", layout });
+    assert.equal(found.results[0].page, 2);
+    const renewal = await searchDocument({ home: "unused", name: "d.pptx", query: "Renewal deadline", layout });
+    assert.equal(renewal.results[0].page, 3);
+    assert.match(renewal.results[0].text, /September thirty/);
+
+    await writeFile(path.join(layout.inbox.dir, "empty.xlsx"), makeZip({ "[Content_Types].xml": "<Types/>", "xl/workbook.xml": "<w/>" }));
+    assert.equal(await code(readDocument({ home: "unused", name: "empty.xlsx", layout })), "document_unreadable");
     await writeFile(path.join(layout.inbox.dir, "corrupt.docx"), makeZip({ "[Content_Types].xml": "<Types/>", "other.xml": "<x/>" }));
     assert.equal(await code(readDocument({ home: "unused", name: "corrupt.docx", layout })), "document_unreadable");
+  } finally { await cleanup(); }
+});
+
+test("PDF pages carry page markers; search returns the right page and a usable read offset", async () => {
+  const { layout, cleanup } = await layoutFor();
+  try {
+    await writeFile(path.join(layout.inbox.dir, "long.pdf"), makePdf(["first page alpha", "termination clause applies here", "third page omega"]));
+    const read = await readDocument({ home: "unused", name: "long.pdf", layout });
+    assert.match(read.text, /--- page 1 ---/);
+    assert.match(read.text, /--- page 2 ---/);
+    const found = await searchDocument({ home: "unused", name: "long.pdf", query: "termination", layout });
+    assert.equal(found.results[0].page, 2);
+    const window = await readDocument({ home: "unused", name: "long.pdf", offset: found.results[0].offset, layout });
+    assert.ok(window.text.startsWith(found.results[0].text.slice(0, 20)));
+    assert.equal(await code(searchDocument({ home: "unused", name: "long.pdf", query: "zebra", layout })), "no_match");
+    assert.equal(await code(searchDocument({ home: "unused", name: "long.pdf", query: "the and of", layout })), "no_match");
+  } finally { await cleanup(); }
+});
+
+test("a 120-page PDF finds a deep clause beyond the initial read window with its page citation", async () => {
+  const { layout, cleanup } = await layoutFor();
+  try {
+    const lines = Array.from({ length: 120 }, (_, index) => index === 96
+      ? "Indemnity clause requires thirty days notice"
+      : `Routine background page ${index + 1}\n${"ordinary reference material\n".repeat(16)}`);
+    await writeFile(path.join(layout.inbox.dir, "contract.pdf"), makePdf(lines));
+    const initial = await readDocument({ home: "unused", name: "contract.pdf", layout });
+    assert.doesNotMatch(initial.text, /indemnity/);
+    const found = await searchDocument({ home: "unused", name: "contract.pdf", query: "indemnity", layout });
+    assert.equal(found.results[0].page, 97);
+    assert.ok(found.results[0].offset > MAX_WINDOW_CHARS);
+    assert.match(found.results[0].text, /thirty days notice/);
+    const window = await readDocument({ home: "unused", name: "contract.pdf", offset: found.results[0].offset, layout });
+    assert.match(window.text, /Indemnity clause/);
+  } finally { await cleanup(); }
+});
+
+test("search refuses images and the index cache is reused, rebuilt and capped at 20 files", async () => {
+  const { root, layout, cleanup } = await layoutFor();
+  const cacheDir = path.join(root, "cache");
+  try {
+    await writeFile(path.join(layout.inbox.dir, "p.png"), PNG);
+    assert.equal(await code(searchDocument({ home: "unused", name: "p.png", query: "pixel", layout, cacheDir })), "unsupported_type");
+
+    const notes = path.join(layout.inbox.dir, "notes.txt");
+    await writeFile(notes, "alpha beta");
+    assert.equal((await readDocument({ home: "unused", name: "notes.txt", layout, cacheDir })).text, "alpha beta");
+    const names = await readdir(cacheDir);
+    assert.equal(names.length, 1);
+    // A surviving cache is reused rather than re-extracted (the source is unchanged, so the stored text wins).
+    const cachedPath = path.join(cacheDir, names[0]);
+    const cached = JSON.parse(await readFile(cachedPath, "utf8"));
+    assert.equal(cached.text, "alpha beta");
+    cached.text = "alpha CACH";
+    await writeFile(cachedPath, JSON.stringify(cached));
+    assert.equal((await readDocument({ home: "unused", name: "notes.txt", layout, cacheDir })).text, "alpha CACH");
+    // A changed file gets a new digest and a fresh index.
+    await writeFile(notes, "alpha beta changed");
+    assert.match((await readDocument({ home: "unused", name: "notes.txt", layout, cacheDir })).text, /changed/);
+    assert.equal((await readdir(cacheDir)).length, 2);
+
+    for (let index = 0; index < 21; index++) {
+      await writeFile(path.join(layout.inbox.dir, `n${index}.txt`), `value ${index}`);
+      await indexDocument({ home: "unused", name: `n${index}.txt`, layout, cacheDir });
+    }
+    assert.equal((await readdir(cacheDir)).length, 20);
+    const listing = await listFiles({ home: "unused", layout });
+    assert.ok(listing.files.every((entry) => !entry.name.startsWith(".")), "the hidden cache is never listed");
+    assert.equal(await code(deliverFile({ home: "unused", from: "work", name: ".cache", layout })), "file_not_found");
   } finally { await cleanup(); }
 });
 
@@ -222,13 +325,19 @@ test("file tool requests are validated and unknown fields, paths and areas are r
     method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${secret}`, ...extra }, body: JSON.stringify(body) });
   try {
     for (const [action, body] of [["read", { name: "../etc/passwd" }], ["read", { name: "a.txt", extra: 1 }], ["read", { name: "a.txt", offset: -1 }],
-      ["deliver", { from: "inbox", name: "a.txt" }], ["deliver", { from: "work", name: "dir/a.txt" }], ["list", { all: true }]]) {
+      ["deliver", { from: "inbox", name: "a.txt" }], ["deliver", { from: "work", name: "dir/a.txt" }], ["list", { all: true }],
+      ["search", { name: "a.txt" }], ["search", { name: "a.txt", query: "" }], ["search", { name: "a.txt", query: "x".repeat(201) }],
+      ["search", { name: "a.txt", query: "bad\u0001query" }], ["search", { name: "a.txt", query: "ok", extra: 1 }],
+      ["search", { name: "../secret.txt", query: "ok" }]]) {
       const response = await post(action, body);
       assert.equal(response.status, 400, JSON.stringify(body));
       assert.deepEqual(await response.json(), { outcome: "error", code: "invalid_request" });
     }
     assert.equal((await post("list", {}, { Authorization: "Bearer wrong" })).status, 401);
     assert.equal((await fetch(`http://127.0.0.1:${port}/v1/owners/${OWNER}/agents/${AGENT}/files/format`, { method: "POST", headers: { Authorization: `Bearer ${secret}` } })).status, 404);
+    assert.equal((await fetch(`http://127.0.0.1:${port}/v1/owners/${OWNER}/agents/${AGENT}/files/index`, { method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${secret}` }, body: JSON.stringify({ name: "a.txt" }) })).status, 404,
+      "indexing is never reachable over HTTP");
     assert.equal(launches.length, 0);
   } finally { await new Promise((resolve) => server.close(resolve)); }
 });

@@ -34,15 +34,19 @@ test("SAM off makes no SAM calls; unsupported prose falls back to model once", a
   const prose = setup("Confirmation is visible");
   assert.equal((await verifyStep(prose.input)).status, "pass"); assert.deepEqual(prose.calls, ["shot", "model"]);
 });
+// A decoded SAM mask always has a box and image size; the verifier reads box for the History outline.
+const samMask = (confidence, box = { x1: 1, y1: 1, x2: 2, y2: 2 }) => ({
+  id: 0, box, confidence, width: 1, height: 1, area: 1, raster: new Uint8Array([1]),
+});
 test("SAM confidence and uniqueness are necessary; no match and errors fall back honestly", async () => {
-  for (const masks of [[], [{ confidence: null }], [{ confidence: .95 }, { confidence: .95 }]]) {
+  for (const masks of [[], [samMask(null)], [samMask(.95), samMask(.95)]]) {
     let samCalls = 0, modelCalls = 0;
     const { input } = setup("object_visible: button");
     const result = await verifyStep({ ...input, services: { samState: "on", sam: { masks: async () => { samCalls++; return masks; } }, visual: { verify: async () => { modelCalls++; return "unknown"; } } } });
     assert.equal(result.status, "unknown"); assert.equal(samCalls, 1); assert.equal(modelCalls, 1);
   }
   const { input } = setup("object_visible: button");
-  const result = await verifyStep({ ...input, services: { samState: "on", sam: { masks: async () => [{ confidence: .95 }] }, visual: { verify: async () => { assert.fail("unnecessary model request"); } } } });
+  const result = await verifyStep({ ...input, services: { samState: "on", sam: { masks: async () => [samMask(.95)] }, visual: { verify: async () => { assert.fail("unnecessary model request"); } } } });
   assert.equal(result.status, "pass"); assert.equal(result.evidence[0].method, "sam");
   const unavailable = await verifyStep({ ...input, services: { samState: "unavailable", visual: { verify: async () => "unknown" } } });
   assert.equal(unavailable.sam, "unavailable"); assert.equal(unavailable.status, "unknown");

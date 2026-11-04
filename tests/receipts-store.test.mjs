@@ -40,6 +40,7 @@ test.before(async () => {
   assert.ok(adminPool, "database became reachable");
   const migration = readFileSync(new URL("../drizzle/0009_receipts_runs_steps.sql", import.meta.url), "utf8").replaceAll("--> statement-breakpoint", "");
   await adminPool.query(migration);
+  await adminPool.query(`ALTER TABLE runs ADD COLUMN heartbeat_at timestamptz, ADD COLUMN cancel_requested_at timestamptz;`);
   await adminPool.query(`CREATE ROLE app_role LOGIN PASSWORD '${password}'; GRANT SELECT, INSERT, UPDATE ON runs TO app_role; GRANT SELECT, INSERT ON steps TO app_role;`);
   appPool = new pg.Pool({ host: "127.0.0.1", port, user: "app_role", password, database: "postgres" });
   app = drizzle({ client: appPool });

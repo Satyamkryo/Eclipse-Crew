@@ -565,3 +565,17 @@ test("routes: pause and resume a routine, and refuse a one-off whose time has pa
   });
   assert.equal(oversized.status, 413);
 });
+
+test("TASK-085 heartbeat-based running and interrupted label", () => {
+  const started = new Date("2026-11-02T11:00:00.000Z");
+  const live = outcomeOf({ status: "running", sealed: false, startedAt: started, endedAt: null, stepResults: [], now: NOW,
+    heartbeatAt: new Date(NOW.getTime() - 30_000) });
+  assert.equal(live.outcome, "running");
+  const stale = outcomeOf({ status: "running", sealed: false, startedAt: started, endedAt: null, stepResults: [], now: NOW,
+    heartbeatAt: new Date(NOW.getTime() - 4 * 60_000) });
+  assert.equal(stale.outcome, "not_sealed");
+  const oldNoBeat = outcomeOf({ status: "running", sealed: false, startedAt: NOW, endedAt: null, stepResults: [], now: NOW });
+  assert.equal(oldNoBeat.outcome, "running", "rows without a heartbeat keep the 15-minute rule");
+  assert.deepEqual(outcomeOf({ status: "interrupted", sealed: true, startedAt: started, endedAt: NOW, stepResults: ["pass"], now: NOW }),
+    { outcome: "interrupted", label: "Interrupted", tone: "warning" });
+});

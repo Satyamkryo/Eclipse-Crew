@@ -117,7 +117,7 @@ function localDateParts(now: Date, timezone: string) {
   const offsetName = parts.find((part) => part.type === "timeZoneName")?.value ?? "GMT";
   const match = /^GMT(?:([+-])(\d{2}):(\d{2}))?$/.exec(offsetName);
   const offset = match ? (match[1] === "-" ? -1 : 1) * (Number(match[2] ?? 0) * 60 + Number(match[3] ?? 0)) * 60_000 : null;
-  if (!offset && offsetName !== "GMT") throw new Error("invalid_timezone");
+  if (offset === null) throw new Error("invalid_timezone");
   return { year: get("year"), month: get("month"), day: get("day"), offset: offset ?? 0 };
 }
 

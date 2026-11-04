@@ -31,6 +31,10 @@ export type ConnectionView = {
   bindings: ConnectionBinding[];
   hasToken: true;
   tokenHint: string;
+  source: "pasted" | "github_app";
+  status: "active" | "expired";
+  tokenExpiresAt: string | null;
+  refreshExpiresAt: string | null;
   createdAt: string;
 };
 
@@ -48,6 +52,10 @@ function view(row: StoredConnection): ConnectionView {
     bindings: row.bindings,
     hasToken: true,
     tokenHint: row.tokenHint,
+    source: row.source,
+    status: row.status,
+    tokenExpiresAt: row.tokenExpiresAt?.toISOString() ?? null,
+    refreshExpiresAt: row.refreshExpiresAt?.toISOString() ?? null,
     createdAt: row.createdAt.toISOString(),
   };
 }
@@ -86,6 +94,11 @@ export async function createConnection(database: Database, ownerId: string, inpu
     label: value.label,
     bindings,
     ...secrets,
+    encryptedRefreshToken: null,
+    tokenExpiresAt: null,
+    refreshExpiresAt: null,
+    source: "pasted",
+    status: "active",
     createdAt: new Date(),
     updatedAt: new Date(),
   };
@@ -119,7 +132,7 @@ export async function updateConnectionForOwner(
     throw new ConnectionError("label_taken", 409);
   }
   const token = parsed.data.token || undefined;
-  const secrets = token ? encrypted(token) : {};
+  const secrets = token ? { ...encrypted(token), encryptedRefreshToken: null, tokenExpiresAt: null, refreshExpiresAt: null, source: "pasted" as const, status: "active" as const } : {};
 
   try {
     await database.transaction(async (transaction) => {

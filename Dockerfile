@@ -5,6 +5,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --no-audit --no-fund
 COPY app ./app
 COPY components ./components
+COPY public ./public
 COPY lib ./lib
 COPY db ./db
 COPY drizzle ./drizzle

@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import http from "node:http";
 import net from "node:net";
 import { PassThrough, Readable } from "node:stream";
-import { parseCommand, OperationSchema, TakeoverSchema, OwnerInputSchema, WorkerOperationSchema, StreamSchema, resultFor, validatePng, validKey } from "../docker/desktop/controller-schema.mjs";
+import { parseCommand, OperationSchema, TakeoverSchema, OwnerInputSchema, WorkerOperationSchema, StreamSchema, resultFor, validatePng, validKey, LIFECYCLE_OPERATIONS } from "../docker/desktop/controller-schema.mjs";
 import { MAX_MESSAGE_BYTES, writeFramed, readFramed, createChannel } from "../docker/desktop/controller-channel.mjs";
 import { createController } from "../docker/desktop/controller.mjs";
 import { SessionManager } from "../docker/desktop/session-manager.mjs";
@@ -73,14 +73,38 @@ test("operation results reject mismatched types, untagged data and invalid PNG d
   assert.throws(() => resultFor("capture.screenshot", { width:1024,height:768,base64:png.toString("base64"),source_tag:"tool",untrusted:true }, { crop:{width:100,height:100} }));
 });
 test("page snapshot results are strict, tagged, bounded and carry no field values", () => {
-  const good = { pageId: randomUUID(), href: "https://a.example/", title: "T", frames: 0, source_tag: "tool", untrusted: true,
-    elements: [{ ref: 1, role: "button", name: "Save", tag: "button", x: 10, y: 20, width: 50, height: 30 }] };
+  const good = { pageId: randomUUID(), href: "https://a.example/", title: "T", frames: 0, paymentFrames: 0, source_tag: "tool", untrusted: true,
+    elements: [{ ref: 1, role: "button", name: "Save", tag: "button", frame: "top", shadow: false, x: 10, y: 20, width: 50, height: 30 }] };
   assert.deepEqual(resultFor("page.snapshot", good), good);
   const bad = (patch) => () => resultFor("page.snapshot", { ...good, ...patch });
   assert.throws(bad({ untrusted: false })); assert.throws(bad({ source_tag: "user" })); assert.throws(bad({ frames: 65 }));
   assert.throws(bad({ elements: Array(151).fill(good.elements[0]) }));
-  for (const patch of [{ name: "x".repeat(81) }, { name: "a\u0007b" }, { x: 1000 }, { y: 760 }, { width: 0 }, { x: 1.5 }, { value: "secret" }, { role: "Button" }])
+  for (const patch of [{ name: "x".repeat(81) }, { name: "a\u0007b" }, { x: 1000 }, { y: 760 }, { width: 0 }, { x: 1.5 }, { value: "secret" }, { role: "Button" },
+    { frame: "middle" }, { shadow: "yes" }])
     assert.throws(bad({ elements: [{ ...good.elements[0], ...patch }] }), JSON.stringify(patch));
+  assert.throws(bad({ paymentFrames: 65 }));
+});
+test("TASK-084: select, navigate and find_text are strict, and find_text returns only a count", () => {
+  for (const operation of [
+    { operation: "input.select", x: 10, y: 20, option: "Germany" },
+    { operation: "browser.navigate", url: "https://a.example/settings" },
+    { operation: "page.find_text", text: "Hello\nworld" },
+  ]) assert.equal(parseCommand({ ...running(), ...operation }).operation, operation.operation);
+  for (const invalid of [
+    { operation: "input.select", x: 1024, y: 0, option: "x" }, { operation: "input.select", x: 0, y: 768, option: "x" },
+    { operation: "input.select", x: 0, y: 0, option: "" }, { operation: "input.select", x: 0, y: 0, option: "x".repeat(201) },
+    { operation: "input.select", x: 0, y: 0, option: "x\u0000" }, { operation: "input.select", x: 0, y: 0, option: "x", top: 1 },
+    { operation: "browser.navigate", url: "javascript:alert(1)" }, { operation: "browser.navigate", url: "file:///etc/passwd" },
+    { operation: "browser.navigate", url: "data:text/html,x" }, { operation: "browser.navigate", url: "https://u:p@a.example/" },
+    { operation: "browser.navigate", url: "https://a.example/", pageId: randomUUID() }, { operation: "browser.navigate", url: "https://a.example/" + "x".repeat(2048) },
+    { operation: "page.find_text", text: "" }, { operation: "page.find_text", text: "x".repeat(2001) },
+    { operation: "page.find_text", text: "bad\u0000text" }, { operation: "page.find_text", text: "hello", pageId: "not-a-uuid" },
+  ]) assert.throws(() => parseCommand({ ...running(), ...invalid }), JSON.stringify(invalid).slice(0, 90));
+  const found = { found: true, count: 2, source_tag: "tool", untrusted: true };
+  assert.deepEqual(resultFor("page.find_text", found), found);
+  assert.throws(() => resultFor("page.find_text", { ...found, text: "Hello" }), "only a count crosses the boundary");
+  assert.throws(() => resultFor("page.find_text", { ...found, count: 1001 }));
+  assert.throws(() => resultFor("page.find_text", { ...found, untrusted: false }));
 });
 test("framing reads fragmented/coalesced messages and rejects truncated/invalid/oversized frames", async () => {
   const packed = Buffer.concat([frame({ a:1 }),frame({ b:2 })]);
@@ -192,6 +216,30 @@ test("authenticated controller dispatches scoped agent create/delete without exp
     assert.equal(calls.length,2);
   },{manager});
 });
+test("authenticated controller dispatches lifecycle operations with the scoped owner, agent and generation", async () => {
+  const calls = [];
+  const result = (agentId) => ({ agentId, state: "running", sandbox: "running", graphics: "running", browser: "running", generation: GENERATION });
+  const manager = {
+    async ensureSandbox(ownerId, agentId) { calls.push({ operation: "sandbox.start", ownerId, agentId, generation: undefined }); return result(agentId); },
+    async startDesktop(ownerId, agentId, generation) { calls.push({ operation: "desktop.start", ownerId, agentId, generation }); return result(agentId); },
+    async stopDesktop(ownerId, agentId, generation) { calls.push({ operation: "desktop.stop", ownerId, agentId, generation }); return result(agentId); },
+    async startBrowser(ownerId, agentId, generation) { calls.push({ operation: "browser.start", ownerId, agentId, generation }); return result(agentId); },
+    async stopBrowser(ownerId, agentId, generation) { calls.push({ operation: "browser.stop", ownerId, agentId, generation }); return result(agentId); },
+  };
+  await withController(async (server) => {
+    const operations = [...LIFECYCLE_OPERATIONS, "desktop.start", "browser.stop"];
+    for (const operation of operations) {
+      const body = { ...base(), operation, ...(operation === "sandbox.start" ? {} : { generation: GENERATION }) };
+      const response = await request(server, { body });
+      assert.equal(response.status, 200, `${operation}: ${response.text}`);
+      assert.equal(response.body.outcome, "ok");
+      assert.equal(response.body.result.agentId, AGENT);
+    }
+    assert.deepEqual(calls.map(({ operation, ownerId, agentId }) => ({ operation, ownerId, agentId })), operations.map((operation) => ({ operation, ownerId: OWNER, agentId: AGENT })));
+    assert.ok(calls.filter((call) => call.operation !== "sandbox.start").every((call) => call.generation === GENERATION));
+  }, { manager });
+});
+
 test("HTTP dispatch preserves owner/generation/lease checks through the actual manager", async () => {  const manager=new SessionManager(),calls=[];
   manager.entries.set(AGENT,{record:{ownerId:OWNER,agentId:AGENT,uid:20000},state:"running",generation:GENERATION,channel:{async send(message){calls.push(message);return{ok:true};}}});
   await withController(async(server)=>{
@@ -231,7 +279,7 @@ test("authenticated WS rejects wrong owner/stale generation/unknown agent/query 
   const manager=new SessionManager();let lookups=0;
   const sockets=new Set(),vnc=net.createServer(socket=>{sockets.add(socket);socket.once("close",()=>sockets.delete(socket));socket.end();});
   await new Promise(resolve=>vnc.listen(0,"127.0.0.1",resolve));
-  manager.entries.set(AGENT,{record:{ownerId:OWNER,agentId:AGENT,uid:20000},state:"running",generation:GENERATION,vncReady:true,vncPassword:"SyntheT+",vncPort:vnc.address().port});
+  manager.entries.set(AGENT,{record:{ownerId:OWNER,agentId:AGENT,uid:20000},state:"running",graphics:"running",generation:GENERATION,vncReady:true,vncPassword:"SyntheT+",vncPort:vnc.address().port});
   const original=manager.streamInfo.bind(manager);manager.streamInfo=(...args)=>{lookups++;return original(...args);};
   try{await withController(async(server)=>{
     const {ownerId,generation,sessionRef,connectionId}=control();const query={ownerId,generation,sessionRef,connectionId};

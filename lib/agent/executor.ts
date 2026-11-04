@@ -1,6 +1,6 @@
 import "server-only";
 import type { DesktopPort, PageSnapshot, Screenshot } from "./desktop-port";
-import type { ClickIntent, Intent } from "./intent";
+import type { Intent } from "./intent";
 
 export interface GroundedPoint {
   x: number;
@@ -13,8 +13,10 @@ export interface GroundedPoint {
 
 // Turns a described target into a screen point (page structure first, see grounding.ts).
 // Coordinates only ever come from here, never from the model. `snapshot` is null when the page could not be read.
+// A click or a select: both name a control in words. Coordinates still come only from code.
+export interface GroundTarget { target: string }
 export interface Grounder {
-  ground(intent: ClickIntent, screenshot: Screenshot, snapshot: PageSnapshot | null): Promise<GroundedPoint | null>;
+  ground(intent: GroundTarget, screenshot: Screenshot, snapshot: PageSnapshot | null): Promise<GroundedPoint | null>;
 }
 
 export const unavailableGrounder: Grounder = { ground: async () => null };
@@ -37,6 +39,13 @@ export async function executeIntent(
     case "click":
       if (!point) throw new Error("ungrounded_click");
       return port.click(point.x, point.y);
+    case "select":
+      if (!point) throw new Error("ungrounded_select");
+      if (!port.select) throw new Error("select_unavailable");
+      return port.select(point, intent.option);
+    case "navigate":
+      if (!port.navigate) throw new Error("navigate_unavailable");
+      return port.navigate(intent.url);
     case "type": return port.type(intent.text);
     case "key": return port.key(intent.keys);
     case "scroll": return port.scroll(intent.direction, SCROLL_COUNT);

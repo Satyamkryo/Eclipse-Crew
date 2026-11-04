@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { Check, Download, LoaderCircle, ShieldAlert, ShieldCheck, Square } from "lucide-react";
 import { Button, buttonVariants } from "@/components/ui/button";
+import { PageHeader } from "@/components/ui/page-header";
+import { Select } from "@/components/ui/select";
 import { ModalDialog } from "@/components/workspace/modal-dialog";
 import { cn } from "@/lib/utils";
 
@@ -40,7 +42,7 @@ function formatTime(iso: string, timeZone: string): string {
   if (Number.isNaN(date.getTime())) return "";
   try {
     return new Intl.DateTimeFormat(undefined, {
-      timeZone, month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit",
+      timeZone, month: "short", day: "numeric", hour: "2-digit", minute: "2-digit",
     }).format(date);
   } catch {
     return date.toISOString();
@@ -62,6 +64,12 @@ export function SecurityCenter({ agents, csrfToken, timeZone }: { agents: AgentO
   const [confirmCrew, setConfirmCrew] = useState(false);
   const [stopping, setStopping] = useState<string | null>(null);
   const [notice, setNotice] = useState<{ tone: "ok" | "error"; text: string } | null>(null);
+  // Live: new security events appear within 30s. (Attention toasts stay on
+  // the 5s poll, so tripwires and approvals still shout immediately.)
+  useEffect(() => {
+    const timer = window.setInterval(() => { if (document.visibilityState === "visible") setVersion((value) => value + 1); }, 30000);
+    return () => window.clearInterval(timer);
+  }, []);
   const nameById = new Map(agents.map((item) => [item.id, item.name]));
   const firstRow = useRef<HTMLTableRowElement>(null);
   const activeTab = useRef(tab);
@@ -183,15 +191,12 @@ export function SecurityCenter({ agents, csrfToken, timeZone }: { agents: AgentO
 
   return (
     <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 px-4 py-6 sm:px-6">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="min-w-0">
-          <h1 className="text-2xl font-semibold tracking-tight">Security Center</h1>
-          <p className="mt-1 text-sm text-muted-foreground">Security events, the signed audit log and emergency controls.</p>
-        </div>
-        <a href="/api/audit/export" download className={cn(buttonVariants({ variant: "secondary", size: "sm" }))}>
-          <Download aria-hidden="true" className="size-4" strokeWidth={1.5} />Export audit log
-        </a>
-      </div>
+      <PageHeader icon={ShieldCheck} title="Security Center" subtitle="Security events, the signed audit log and emergency controls."
+        action={(
+          <a href="/api/audit/export" download className={cn(buttonVariants({ variant: "secondary", size: "sm" }))}>
+            <Download aria-hidden="true" className="size-4" strokeWidth={1.5} />Export audit log
+          </a>
+        )} />
 
       {status && !status.signing ? (
         <p role="alert" className="rounded-md border border-corona bg-corona/12 px-3 py-2 text-sm text-corona">
@@ -200,7 +205,7 @@ export function SecurityCenter({ agents, csrfToken, timeZone }: { agents: AgentO
         </p>
       ) : null}
 
-      <div className="flex flex-wrap items-center gap-3">
+      <div className="flex min-w-0 flex-wrap items-center gap-3">
         <div role="tablist" aria-label="Security views" className="flex rounded-md border border-border p-0.5">
           {(["events", "audit"] as const).map((id) => (
             <button key={id} type="button" role="tab" aria-selected={tab === id}
@@ -211,23 +216,21 @@ export function SecurityCenter({ agents, csrfToken, timeZone }: { agents: AgentO
             </button>
           ))}
         </div>
-        <label className="flex items-center gap-2 text-sm">
-          <span className="text-muted-foreground">Agent</span>
-          <select value={agent} onChange={(event) => setAgent(event.target.value)}
-            className="h-8 max-w-48 rounded-md border border-input bg-card px-2 text-sm focus-visible:outline-2 focus-visible:outline-ring">
+        <label className="flex min-w-0 max-w-full items-center gap-2 text-sm">
+          <span className="shrink-0 text-muted-foreground">Agent</span>
+          <Select label="Agent" value={agent} onChange={setAgent} className="w-48 max-w-full" selectClassName="w-full min-w-0">
             <option value="">All agents</option>
             {agents.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-          </select>
+          </Select>
         </label>
-        <label className="flex items-center gap-2 text-sm">
-          <span className="text-muted-foreground">Range</span>
-          <select value={range} onChange={(event) => setRange(event.target.value as typeof range)}
-            className="h-8 rounded-md border border-input bg-card px-2 text-sm focus-visible:outline-2 focus-visible:outline-ring">
+        <label className="flex min-w-0 max-w-full items-center gap-2 text-sm">
+          <span className="shrink-0 text-muted-foreground">Range</span>
+          <Select label="Range" value={range} onChange={(value) => setRange(value as typeof range)} className="max-w-full">
             <option value="24h">24 hours</option>
             <option value="7d">7 days</option>
             <option value="30d">30 days</option>
             <option value="all">All time</option>
-          </select>
+          </Select>
         </label>
         {status ? (
           <span className={cn("ml-auto inline-flex items-center gap-1 text-xs", status.verified ? "text-success" : "text-danger")}
@@ -262,7 +265,7 @@ export function SecurityCenter({ agents, csrfToken, timeZone }: { agents: AgentO
                 <table className="w-full table-fixed border-collapse text-sm">
                   <caption className="sr-only">{tab === "events" ? "Security events" : "Audit log"}, newest first</caption>
                   <colgroup>
-                    <col className="w-[17%]" /><col className="w-[19%]" /><col className="w-[16%]" /><col className="w-[30%]" /><col className="w-[18%]" />
+                    <col className="w-[22%]" /><col className="w-[22%]" /><col className="w-[16%]" /><col className="w-[22%]" /><col className="w-[18%]" />
                   </colgroup>
                   <thead className="sticky top-0 z-10 bg-card">
                     <tr className="border-b border-border text-left text-xs text-muted-foreground">
@@ -282,8 +285,8 @@ export function SecurityCenter({ agents, csrfToken, timeZone }: { agents: AgentO
                             selected?.id === entry.id && "bg-accent")}
                           onClick={() => setSelected(entry)}>
                           <td className="whitespace-nowrap px-3 py-1.5 font-mono text-xs tabular-nums text-muted-foreground">{formatTime(entry.createdAt, timeZone)}</td>
-                          <td className="truncate px-3 py-1.5">{KIND_LABEL[entry.kind] ?? entry.kind}</td>
-                          <td className="truncate px-3 py-1.5">{entry.agentId ? nameById.get(entry.agentId) ?? "Deleted agent" : "—"}</td>
+                          <td className="truncate px-3 py-1.5" title={KIND_LABEL[entry.kind] ?? entry.kind}>{KIND_LABEL[entry.kind] ?? entry.kind}</td>
+                          <td className="truncate px-3 py-1.5" title={entry.agentId ? nameById.get(entry.agentId) ?? "Deleted agent" : "Account"}>{entry.agentId ? nameById.get(entry.agentId) ?? "Deleted agent" : "—"}</td>
                           <td className="truncate px-3 py-1.5 text-muted-foreground" title={entry.host ?? entry.code ?? undefined}>
                             {entry.host ?? (entry.code ? entry.code.replaceAll("_", " ") : `#${entry.seq}`)}
                           </td>
@@ -355,11 +358,10 @@ export function SecurityCenter({ agents, csrfToken, timeZone }: { agents: AgentO
             <div className="mt-4 flex flex-col gap-3">
               <label className="flex flex-col gap-1 text-sm">
                 <span className="text-muted-foreground">Agent</span>
-                <select id="stop-agent" value={stopTarget} onChange={(event) => setStopTarget(event.target.value)}
-                  className="h-8 rounded-md border border-input bg-card px-2 text-sm focus-visible:outline-2 focus-visible:outline-ring">
+                <Select label="Agent to stop" value={stopTarget} onChange={setStopTarget} className="w-full [&>span]:w-full [&>select]:w-full">
                   <option value="">Select an agent</option>
                   {agents.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-                </select>
+                </Select>
               </label>
               <Button type="button" variant="destructive" disabled={!stopTarget || stopping !== null} onClick={() => void stopAgent(stopTarget)}>
                 {stopping === stopTarget && <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" />}

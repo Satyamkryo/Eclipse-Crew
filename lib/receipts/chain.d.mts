@@ -29,7 +29,10 @@ export function sha256Hex(data: string | Uint8Array): string;
 export function cleanText(value: unknown, max: number): string;
 export function keyIdOf(publicKeyRaw: Uint8Array): string;
 export function deriveKeys(seedHex: string): { privateKey: KeyObject; publicKey: string; keyId: string };
-export function buildHeader(input: { runId: string; agentId: string; agentName: string; task: string; startedAt: string; keyId: string }): { text: string; hash: string };
+export function buildHeader(input: {
+  runId: string; agentId: string; agentName: string; task: string; startedAt: string; keyId: string;
+  branchOf?: string; branchAt?: number; handoffOf?: string; parentRun?: string; parentStep?: number;
+}): { text: string; hash: string };
 export function buildReceipt(fields: Record<string, unknown>, prevHash: string): { text: string; hash: string };
 export function sealRun(privateKey: KeyObject, seal: SealFields): string;
 export function buildRunExport(

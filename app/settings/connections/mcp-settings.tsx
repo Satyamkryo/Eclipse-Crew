@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { LoaderCircle, Plus } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
 import { ModalDialog } from "@/components/workspace/modal-dialog";
 import type { McpDiscoveryView, McpServerView } from "@/lib/mcp/view";
 import { cn } from "@/lib/utils";
@@ -272,25 +273,28 @@ export function McpSettings({ initial, agents, connections, csrfToken }: {
           <form onSubmit={discover} className="flex flex-col gap-4">
             <div className="flex flex-col gap-2">
               <label htmlFor="mcp-agent" className="text-sm font-medium">Agent</label>
-              <select id="mcp-agent" name="agentId" required className={inputClass} value={agentId} onChange={(event) => setAgentId(event.target.value)}>
+              <Select label="Agent" id="mcp-agent" name="agentId" required value={agentId} onChange={setAgentId}
+                className="w-full [&>span]:w-full" selectClassName={cn(inputClass, "w-full")}>
                 {agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
-              </select>
+              </Select>
             </div>
             <div className="flex flex-col gap-2">
               <label htmlFor="mcp-connection" className="text-sm font-medium">Connection</label>
-              <select id="mcp-connection" name="connectionId" required className={inputClass} disabled={agentConnections.length === 0}>
+              <Select label="Connection" id="mcp-connection" name="connectionId" required disabled={agentConnections.length === 0}
+                className="w-full [&>span]:w-full" selectClassName={cn(inputClass, "w-full")}>
                 {agentConnections.map((connection) => (
                   <option key={connection.id} value={connection.id}>{connection.label} · {connection.preset}</option>
                 ))}
-              </select>
+              </Select>
               {agentConnections.length === 0 && <p className="text-xs text-muted-foreground">Add a connection for this agent first.</p>}
             </div>
             <div className="flex flex-col gap-2">
               <label htmlFor="mcp-preset" className="text-sm font-medium">Server</label>
-              <select id="mcp-preset" name="preset" defaultValue="github" className={inputClass}>
+              <Select label="Server" id="mcp-preset" name="preset" defaultValue="github"
+                className="w-full [&>span]:w-full" selectClassName={cn(inputClass, "w-full")}>
                 <option value="github">GitHub (hosted MCP server)</option>
                 <option value="custom">Custom HTTPS URL</option>
-              </select>
+              </Select>
             </div>
             <div className="flex flex-col gap-2">
               <label htmlFor="mcp-key" className="text-sm font-medium">Key</label>

@@ -7,13 +7,15 @@ import type { MemoryEntry } from "./memory-panel";
 
 const DOC_LABEL = { user: "USER.md", memory: "MEMORY.md", private: "Private notes" } as const;
 
-export function EntryForm({ agentId, csrfToken, doc, entry, onCancel, onSaved }: {
+export function EntryForm({ agentId, csrfToken, doc, entry, agents = [], onCancel, onSaved }: {
   agentId: string; csrfToken: string; doc: "user" | "memory" | "private"; entry?: MemoryEntry;
+  agents?: { id: string; name: string }[];
   onCancel: () => void; onSaved: () => void;
 }) {
   const [title, setTitle] = useState(entry?.title ?? "");
   const [body, setBody] = useState(entry?.body ?? "");
   const [pinned, setPinned] = useState(entry?.pinned ?? false);
+  const [visibleTo, setVisibleTo] = useState<string[]>(entry?.visibleTo ?? []);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -26,7 +28,7 @@ export function EntryForm({ agentId, csrfToken, doc, entry, onCancel, onSaved }:
       const response = await fetch(entry ? `/api/memory/entries/${entry.id}` : `/api/memory/${agentId}/entries`, {
         method: entry ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json", "x-csrf-token": csrfToken },
-        body: JSON.stringify({ ...(entry ? {} : { doc }), title, body, pinned }),
+        body: JSON.stringify({ ...(entry ? {} : { doc }), title, body, pinned, ...(doc === "private" ? { visibleTo } : {}) }),
       });
       if (!response.ok) {
         const data = await response.json().catch(() => ({})) as { error?: string };
@@ -62,6 +64,19 @@ export function EntryForm({ agentId, csrfToken, doc, entry, onCancel, onSaved }:
           <input type="checkbox" checked={pinned} onChange={(event) => setPinned(event.target.checked)} className="size-4 rounded border-input" />
           Pin this entry
         </label>
+        {doc === "private" ? (
+          <fieldset className="flex flex-col gap-1 text-sm">
+            <legend className="font-medium">Visible to</legend>
+            <p className="text-xs text-muted-foreground">Other agents never see this note unless you pick them here.</p>
+            {agents.length ? agents.map((agent) => (
+              <label key={agent.id} className="flex items-center gap-2">
+                <input type="checkbox" checked={visibleTo.includes(agent.id)} className="size-4 rounded border-input"
+                  onChange={(event) => setVisibleTo((current) => event.target.checked ? [...current, agent.id] : current.filter((id) => id !== agent.id))} />
+                {agent.name}
+              </label>
+            )) : <p className="text-xs text-muted-foreground">No other agents yet.</p>}
+          </fieldset>
+        ) : null}
         {error ? <p role="alert" className="text-sm text-danger">{error}</p> : null}
         <div className="flex flex-wrap justify-end gap-2">
           <Button type="button" variant="secondary" disabled={saving} onClick={onCancel}>Cancel</Button>

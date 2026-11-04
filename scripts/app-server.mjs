@@ -10,6 +10,8 @@ const authorizationSchema = z.object({
   agentId: z.string().uuid(), ownerId: z.string().uuid(),
   sessionRef: z.string().regex(/^[0-9a-f]{64}$/),
   generation: z.string().uuid(), state: z.literal("running"),
+  graphics: z.literal("running"),
+  browser: z.enum(["stopped", "starting", "running", "failed"]),
 }).strict();
 const MAX_FRAME = 8 * 1024 * 1024;
 const PROBE_TIMEOUT = 800;
@@ -52,10 +54,11 @@ export function probeAuthorization(port, target, cookie, origin) {
       });
       response.on("end", () => {
         try {
-          if (response.statusCode !== 200) throw new Error("authorization_denied");
-          const result = authorizationSchema.parse(JSON.parse(Buffer.concat(chunks).toString("utf8")));
-          if (result.agentId !== target.agentId) throw new Error("authorization_agent");
-          resolve(result);
+          if (response.statusCode !== 200) { reject(new Error(`authorization_status_${response.statusCode}`)); return; }
+          const parsed = authorizationSchema.safeParse(JSON.parse(Buffer.concat(chunks).toString("utf8")));
+          if (!parsed.success) { reject(new Error("authorization_schema")); return; }
+          if (parsed.data.agentId !== target.agentId) { reject(new Error("authorization_agent")); return; }
+          resolve(parsed.data);
         } catch { reject(new Error("authorization_denied")); }
       });
     });
@@ -68,6 +71,13 @@ function securityHeaders(origin) {
     "Referrer-Policy": "strict-origin-when-cross-origin", "X-Frame-Options": "DENY",
     "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
     ...(origin.protocol === "https:" && process.env.NODE_ENV !== "development" ? { "Strict-Transport-Security": "max-age=31536000" } : {}) };
+}
+
+// Fixed reason codes only: never cookies, secrets, URLs or upstream error text.
+const DENIAL_REASON = /^(origin_denied|invalid_stream|stream_denied|authorization_(status_\d{3}|schema|agent|timeout|size|denied)|desktop_closed)$/;
+export function denialReason(error) {
+  const message = error instanceof Error ? error.message : "";
+  return DENIAL_REASON.test(message) ? message : "desktop_unreachable";
 }
 
 function rejectUpgrade(socket, origin, status = 403) {
@@ -162,11 +172,11 @@ export function createAppServer({ handle, origin: originValue = process.env.APP_
             clientAlive = false; upstreamAlive = false;
             client.ping(); upstream.ping();
             if (!finished) timer = setTimeout(revalidate, 3000);
-          } catch { close(); }
+          } catch (error) { if (!finished) console.warn(JSON.stringify({ event: "desktop_stream_closed", reason: denialReason(error) })); close(); }
         };
         timer = setTimeout(revalidate, 3000);
       });
-    } catch { close(); }
+    } catch (error) { if (!finished) console.warn(JSON.stringify({ event: "desktop_stream_denied", reason: denialReason(error) })); close(); }
   };
   server.closeDesktopStreams = () => { for (const close of connections) close(); };
   server.on("close", () => { for (const client of bridge.clients) client.terminate(); bridge.close(); });

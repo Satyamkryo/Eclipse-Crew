@@ -16,6 +16,16 @@ BASE = "/opt/eclipse/desktop"
 INITIAL = 0x2001C3
 ADMIN = 0x1C3
 PROFILE_HASH = "fa1e603f170044c931a103bfbe3bac6cfc6c935bdc72408e01c4cf6425cde627"
+# AUDIT_ARCH_* from the pinned Linux v6.8 uapi header. A syscall from any other audit ABI
+# is killed, which also refuses 32-bit ARM and i386 compat calls.
+AUDIT_ARCH = {"x86_64": 0xC000003E, "aarch64": 0xC00000B7}
+IMAGE_ARCH = {"x86_64": "amd64", "aarch64": "arm64"}
+# Denied by number per ABI. Names and numbers are pinned to Linux v6.8 (syscall_64.tbl and
+# asm-generic/unistd.h); the same ABI is checked offline in tests/desktop-architectures.test.mjs.
+DENIED_SYSCALLS = {
+    "x86_64": [103, 165, 166, 170, 171, 179, 212, 298, 300, 303, 321, 428, 429, 430, 431, 432, 433, 442],
+    "aarch64": [18, 39, 40, 60, 116, 161, 162, 241, 262, 264, 280, 428, 429, 430, 431, 432, 433, 442],
+}
 ENV = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": "/tmp", "LANG": "C.UTF-8", "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD": "1", "DESKTOP_CONTROL_SECRET": os.environ.get("DESKTOP_CONTROL_SECRET", ""), "EGRESS_DESKTOP_SECRET": os.environ.get("EGRESS_DESKTOP_SECRET", ""), **({"ECLIPSE_FIXTURES": "1"} if os.environ.get("ECLIPSE_FIXTURES") == "1" else {})}
 
 
@@ -108,17 +118,25 @@ class CapData(ctypes.Structure):
     _fields_ = [("effective", ctypes.c_uint), ("permitted", ctypes.c_uint), ("inheritable", ctypes.c_uint)]
 
 
-def reduce_privileges():
-    libc = ctypes.CDLL(None, use_errno=True)
-    # x86-64 only; reject i386/x32 syscall ABI bypasses before the deny rules.
-    instructions = [(0x20, 0, 0, 4), (0x15, 1, 0, 0xC000003E), (0x06, 0, 0, 0x80000000),
-                    (0x20, 0, 0, 0), (0x35, 0, 1, 0x40000000), (0x06, 0, 0, 0x00050000 | errno.ENOSYS)]
+def filter_instructions(machine):
+    require(machine in AUDIT_ARCH, "unsupported_architecture")
+    # Verify the native audit ABI first; anything else is killed. x86-64 additionally
+    # refuses the x32 range, which does not exist on aarch64.
+    instructions = [(0x20, 0, 0, 4), (0x15, 1, 0, AUDIT_ARCH[machine]), (0x06, 0, 0, 0x80000000),
+                    (0x20, 0, 0, 0)]
+    if machine == "x86_64":
+        instructions.extend([(0x35, 0, 1, 0x40000000), (0x06, 0, 0, 0x00050000 | errno.ENOSYS)])
     # All extra privileged calls in the pinned profile's SYS_ADMIN group,
     # except clone/setns/unshare required by Chromium, plus newer mount APIs.
-    denied = [103, 165, 166, 170, 171, 179, 212, 298, 300, 303, 321, 428, 429, 430, 431, 432, 433, 442]
-    for number in denied:
+    for number in DENIED_SYSCALLS[machine]:
         instructions.extend([(0x15, 0, 1, number), (0x06, 0, 0, 0x00050000 | errno.EPERM)])
     instructions.append((0x06, 0, 0, 0x7FFF0000))
+    return instructions
+
+
+def reduce_privileges():
+    libc = ctypes.CDLL(None, use_errno=True)
+    instructions = filter_instructions(platform.machine())
     filters = (Filter * len(instructions))(*(Filter(*row) for row in instructions))
     program = Program(len(instructions), filters)
     require(libc.prctl(38, 1, 0, 0, 0) == 0, "no_new_privileges_failed")
@@ -135,14 +153,24 @@ def reduce_privileges():
 
 def main():
     os.umask(0o077)
-    require(platform.machine() == "x86_64" and os.getuid() == 0 and os.getgid() == 0, "setup_identity_invalid")
+    machine = platform.machine()
+    require(machine in IMAGE_ARCH, "unsupported_architecture")
+    try:
+        with open(BASE + "/image-arch", encoding="ascii") as source:
+            image_arch = source.read().strip()
+    except OSError:
+        raise RuntimeError("image_marker_missing")
+    # The image records the CPU it was built for; a mismatched image/CPU refuses to start.
+    require(image_arch == IMAGE_ARCH[machine], "image_arch_mismatch")
+    require(os.getuid() == 0 and os.getgid() == 0, "setup_identity_invalid")
     current = status()
     require(all(int(current[field].strip(), 16) == INITIAL for field in ("CapEff", "CapPrm", "CapBnd")) and current["NoNewPrivs"].strip() == "1", "setup_capabilities_invalid")
     with open(BASE + "/seccomp_profile.json", "rb") as source:
         require(hashlib.sha256(source.read().replace(b"\r\n", b"\n")).hexdigest() == PROFILE_HASH, "profile_pin_invalid")
     args = sys.argv[1:]
     if args:
-        require(args[0] == "--admin" and len(args) >= 2 and args[1] in ("create", "inspect", "exec", "health", "session-start", "session-status", "session-stop", "session-fixture", "session-fixture-cookie"), "invalid_admin_command")
+        require(args[0] == "--admin" and len(args) >= 2 and args[1] in ("create", "inspect", "exec", "health", "session-start", "session-status", "session-stop",
+            "session-sandbox", "session-desktop-start", "session-desktop-stop", "session-browser-start", "session-browser-stop", "session-fixture", "session-fixture-cookie", "session-fixture-page"), "invalid_admin_command")
         verify_setup()
         reduce_privileges()
         os.execve("/usr/local/bin/node", ["node", BASE + "/agent-admin.mjs"] + args[1:], ENV)
@@ -174,7 +202,8 @@ if __name__ == "__main__":
     except Exception as error:
         allowed = {"setup_command_failed", "unsafe_setup_directory", "unsafe_mount_state", "workspace_not_managed_volume", "unsafe_identity_view",
                    "supervisor_not_ready", "no_new_privileges_failed", "post_setup_filter_failed", "bounding_drop_failed", "capability_drop_failed",
-                   "setup_identity_invalid", "setup_capabilities_invalid", "profile_pin_invalid", "invalid_admin_command", "bootstrap_requires_pid_one"}
+                   "setup_identity_invalid", "setup_capabilities_invalid", "profile_pin_invalid", "invalid_admin_command", "bootstrap_requires_pid_one",
+                   "unsupported_architecture", "image_marker_missing", "image_arch_mismatch"}
         reason = str(error) if str(error) in allowed else "setup_refused"
         print(json.dumps({"outcome": "bootstrap_refused", "reason": reason}), file=sys.stderr)
         sys.exit(1)

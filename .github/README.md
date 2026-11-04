@@ -5,6 +5,8 @@
 Eclipse Crew gives you a crew of named AI agents that share one Linux desktop with a real browser, terminal and files. It runs on your own PC or VPS with your own model API key. You watch every agent live in a web workspace and can take over the mouse and keyboard at any moment.
 
 > **Status: pre-release, under active development.** Commands and screens below describe the intended v1 interface and may change as the code lands. Features marked *(coming)* are planned but not in the first release. See [Project status](#project-status).
+>
+> **Hackathon judges:** the live instance URL and login are in the submission form, not in this repository. Start with [Try it live (hackathon judges)](#try-it-live-hackathon-judges).
 
 ---
 
@@ -17,6 +19,7 @@ Eclipse Crew gives you a crew of named AI agents that share one Linux desktop wi
 - [Quickstart (your own PC)](#quickstart-your-own-pc)
 - [First-run setup](#first-run-setup)
 - [Deploy on a VPS](#deploy-on-a-vps)
+- [Try it live (hackathon judges)](#try-it-live-hackathon-judges)
 - [Models](#models)
 - [Using Eclipse Crew](#using-eclipse-crew)
 - [Running it safely](#running-it-safely)
@@ -67,12 +70,12 @@ Hosted agent products run your bots on someone else's computer. Every bot often 
 - **Approvals and permissions:** Allow once / Always allow / Deny, scoped per agent, site and action.
 - **Astra Mode:** a per-agent switch that removes approval prompts while keeping every other safety layer on.
 - **Budgets:** per agent, routine, day and month, with a cost receipt for every run.
-- **Jobs dashboard** for every run, retry and schedule.
+- **Mission Control** for runs and **Schedules** for routines.
 - **Security Center** with kill switches.
 - **Chat attachments** (button, drag-and-drop, paste) saved to the agent's `inbox/`, and **file cards** for files the agent writes to `outbox/` with Download and Open on the agent's desktop. A Files tab *(coming)*.
 - **Tools:** MCP servers, and Composio with your own key *(coming)*.
 - **Voice dictation and voice commands** *(coming)*, including fully offline with local Whisper.
-- **Multi-agent handoffs, sub-agents and parallel research** *(coming)*.
+- **Multi-agent handoffs and background helpers:** `handoff` passes your request to the teammate whose job it is; opt-in `spawn_subagent` runs screenless helpers (see [Crew handoff](#9b-crew-handoff-and-background-helpers)).
 - **Booking assistant** with per-site rules *(coming)*.
 - **Installable phone app (PWA)** with push notifications *(coming)*.
 
@@ -84,7 +87,7 @@ Hosted agent products run your bots on someone else's computer. Every bot often 
 Your browser ──► app (web UI + API + agent runtime + job workers)
                   │
                   ├── postgres          all structured data + job queue
-                  ├── desktop           Linux sandbox: one user, screen and Chromium per agent
+                  ├── desktop           Linux sandbox: one user, screen and Chrome per agent
                   │                     streamed to you live (noVNC)
                   └── egress-proxy      every outbound request: allowlists, key injection,
                                         leak tripwire, threat blocking
@@ -100,6 +103,12 @@ Each agent step goes through the same loop:
 6. Write a signed receipt and a checkpoint.
 
 The model never handles your API keys or passwords; the proxy and executor inject them.
+
+**The graphical desktop is optional for work.** Chat, memory, tools, shell and file actions run in the agent's sandbox without Xvfb, Chrome or VNC. The desktop and managed browser start lazily when a task needs the screen, and an agent can be asked to start them itself. Closing only the browser leaves the desktop running; stopping the desktop leaves background work running. Pause agent remains a separate, stronger stop that also ends the sandbox.
+
+The agent desktop keeps Openbox and adds a bottom dock (Browser focus, Files, Terminal and a clock), a pcmanfm desktop with Home, Trash, Downloads, outbox and work, and an xterm that opens in `~/work`. The dock auto-hides so it never covers page clicks. The background is a solid dark surface until you supply a wallpaper image; the fixed asset location is documented for the desktop build.
+
+Agents can listen to their own browser audio only when you add `hear_audio` to their **Actions**. A bounded sample (1-30 seconds, default 10) is captured from that agent's private speaker and transcribed with your Meta key using `muse-voice-transcribe-1.0`; the text reaches the agent as untrusted data. Each attempt is charged before it is sent, is never retried automatically, and is refused during takeover or a login/OTP/CAPTCHA handoff. Raw audio is never stored, and hearing requires Meta model configuration and an audio price. The owner does not hear the audio in the app.
 
 **Task scope.** The allowed sites and recipients come from your message, the agent's website list and the page the run starts on. If a step tries to type an address or email you did not name, it is refused before anything is typed and recorded as a blocked step. A second refusal stops the run. This check cannot see where a click or a form submit goes; the per-agent website allowlist is the network backstop.
 
@@ -128,7 +137,7 @@ These figures are estimates, to be confirmed by measurement.
 | Heavy | 8 vCPU / 16 GB / 160 GB | More |
 
 - No GPU is needed. The base stack uses about 1.5–2 GB RAM, and each active browser about 0.5–1.5 GB.
-- x86-64 is recommended. Apple Silicon support is community-tested.
+- x86-64 and 64-bit Linux ARM (arm64) are supported; Docker builds the native CPU and other CPUs stop with a clear message. The desktop image and standalone desktop smoke are verified natively on Oracle ARM; full application acceptance on ARM remains pending. Apple Silicon through a native ARM64 Linux VM is a separate, unverified target.
 - A GPU is only useful for optional local models or local SAM. See [Local models](#local-models).
 
 ### A model
@@ -168,7 +177,7 @@ npm run db:migrate
 
 `npm run egress:secret` creates two internal secrets, `EGRESS_PROXY_SECRET` and `EGRESS_DESKTOP_SECRET`. Run it again once on an existing install before upgrading; it only fills missing values and never prints them.
 
-Preserve `ENCRYPTION_KEY` with backups: changing or losing it makes existing encrypted credentials unreadable. Keep `DESKTOP_CONTROL_SECRET` private too. `RECEIPT_SIGNING_KEY` signs your proof receipts and is created by `npm run receipt-key`; agents refuse to run without it. Back it up with `.env`: if it is lost, new runs get a new key and fingerprint, and old runs still verify against the public key stored with them. `APP_ORIGIN` must exactly match the URL used in the browser, including scheme and port; the default is `http://127.0.0.1:3000`. Use this address consistently instead of switching to `localhost`. Configure the exact HTTPS origin for a TLS deployment.
+Preserve `ENCRYPTION_KEY` with backups: changing or losing it makes existing encrypted credentials unreadable. Keep `DESKTOP_CONTROL_SECRET` private too. `RECEIPT_SIGNING_KEY` signs your proof receipts and is created by `npm run receipt-key`; agents refuse to run without it. Back it up with `.env`: if it is lost, new runs get a new key and fingerprint, and old runs still verify against the public key stored with them. `APP_ORIGIN` must exactly match the URL used in the browser, including scheme and port; the default is `http://127.0.0.1:3000`. Use this address consistently instead of switching to `localhost`. Configure the exact HTTPS origin for a TLS deployment. For **Connect GitHub**, set `GITHUB_APP_CLIENT_ID` to your GitHub App's public client ID and `GITHUB_APP_SLUG` to its slug; both are public, and no client secret is stored. Restart Compose after changing them.
 
 Open `http://127.0.0.1:3000` and complete owner setup. To stop the containers while retaining their volumes, run `docker compose down`. The provisioning command checks the existing database and can be repeated; it supports the original owner schema and sessions schema plus the singleton-owner migration, preserving rows and existing LF/CRLF history. It refuses unknown state, multiple legacy owners or mismatched credentials and never deletes an account to repair a conflict. It does not rotate passwords. For an existing project volume, retain the original bootstrap password, back up the volume first, and supply the same role credentials on every run. If preflight refuses the volume, investigate the conflict instead of resetting it. Compose and the commands use shell settings in preference to `.env`; restart Compose after changing settings so its mounted secrets match. `.env` is ignored by Git and excluded from the build context.
 
@@ -188,7 +197,7 @@ Regression checks: `npm run test:db-client` tests retry recovery; `npm run test:
 
 The pinned noVNC 1.6.0 npm artifact has a CommonJS/top-level-await packaging incompatibility. `npm run dev` and `npm run build` automatically run `scripts/prepare-novnc.mjs`, which checks the package version and exact upstream file hash before normalizing only its browser utility module to ESM. It preserves the awaited feature probe and refuses unexpected bytes. `npm run test:novnc-compat` verifies that compatibility step; `npm run test:rfb-bridge` verifies the private view-only protocol.
 
-**TASK-010 desktop image:** `docker compose build desktop` builds the pinned Ubuntu toolchain. The approved lock contains 388 exact Ubuntu archives, verified by byte count/SHA256 before offline installation with networking disabled. Node 24.22.2, upstream Chromium 159.0.8134.0 (snapshot 1731633) and playwright-core 1.64.1 are separately pinned. The upstream browser is a development snapshot; updates require deliberate pinning and revalidation. No Chrome-for-Testing installer is used. The desktop now uses the owner-approved ADR-026 trusted setup role described below, with read-only root, bounded temporary storage and no published ports. Per-agent sessions are available through local administration; the agent runtime remains under development.
+**TASK-010 desktop image:** `docker compose build desktop` builds the pinned Ubuntu toolchain. The approved lock contains 445 exact Ubuntu archives, verified by byte count/SHA256 before offline installation with networking disabled. Node 24.22.2, Google Chrome for Testing 156.0.8078.80 (201329937 bytes, SHA-256 b711c720f774be355197f32edf37e0651418ba036d92446ee2da19ac017540a7) and playwright-core 1.64.1 are separately pinned. The browser archive is downloaded from Google at image build time and checked before extraction; updates require deliberate re-measurement, a revised lock and revalidation. The desktop now uses the owner-approved ADR-026 trusted setup role described below, with read-only root, bounded temporary storage and no published ports. Per-agent sessions are available through local administration; the agent runtime remains under development.
 
 `npm run test:desktop-image` runs offline guards and the disposable build/smoke, saving bounded evidence under ignored `data/spikes/task-010/<uuid>/`. Tool inventory, Compose health, Xauthority/Openbox, accepted/rejected VNC authentication, noVNC WebSocket and PNG/video checks pass. TASK-010 is complete: run c66f0dda-e890-428b-8f58-a1df20c978fa verifies genuine Playwright/xdotool clicks in graphical Chromium and confirms its namespace/PID/network and Seccomp-BPF sandboxes active. The desktop-only ADR-025 profile is pinned to the upstream Playwright policy plus Chromium’s required namespace-local chroot; the ordinary container process is still denied chroot. Run Compose from the project checkout so it can load docker/desktop/seccomp_profile.json. Keep this checked-in profile, cap-drop ALL and no-new-privileges; do not use seccomp=unconfined or --no-sandbox. The five-service `test:http-security` regression passes. No model calls or personal-browser data are used.
 
@@ -226,7 +235,7 @@ npm run desktop:agent -- session-status --owner 11111111-1111-4111-8111-11111111
 npm run desktop:agent -- session-stop --owner 11111111-1111-4111-8111-111111111111 --agent aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa --project main
 ```
 
-Each running session has its own authenticated Xvfb screen, Openbox window manager and sandboxed graphical Chromium profile. Repeat start/stop safely; stopping keeps the profile. Following container recreation, explicitly start the agent to reopen its saved profile. Browser control stays on private pipes inside the container; there is no CDP TCP endpoint to publish. Stale/conflicting locks fail safely unless ownership and staleness are verified. After logging in, open `/?agent=AGENT_UUID` to view an existing running agent owned by that account. UUIDs provisioned for a different/stub owner are not silently adopted. **Take over** enables clicks and keyboard text; **Hand back**, closing the view or disconnecting releases control. Agent input/capture is blocked during takeover. An uncertain operation stops the session; explicitly stop/start it before retrying. `npm run test:agent-sessions` and `npm run test:auth-desktop-e2e` use synthetic pages/accounts and disposable containers, with no model calls or personal browser profiles.
+Each running session has its own authenticated Xvfb screen, Openbox window manager and sandboxed graphical Chrome profile. Repeat start/stop safely; stopping keeps the profile. Following container recreation, explicitly start the agent to reopen its saved profile. Browser control stays on private pipes inside the container; there is no CDP TCP endpoint to publish. Stale/conflicting locks fail safely unless ownership and staleness are verified. After logging in, open `/?agent=AGENT_UUID` to view an existing running agent owned by that account. UUIDs provisioned for a different/stub owner are not silently adopted. **Take over** enables clicks and keyboard text; **Hand back**, closing the view or disconnecting releases control. Agent input/capture is blocked during takeover. An uncertain operation stops the session; explicitly stop/start it before retrying. `npm run test:agent-sessions` and `npm run test:auth-desktop-e2e` use synthetic pages/accounts and disposable containers, with no model calls or personal browser profiles.
 
 **TASK-009 volume feasibility spike:** Start Docker Desktop in Linux-container mode, then run `npm run test:volume-isolation` for offline guard tests and `npm run spike:volume-isolation` for the real disposable Docker fixture. The CLI recognizes the existing E-drive Docker installation on Windows, otherwise it uses Docker from PATH. No model calls, project `.env`, personal browser data or production volumes are used. The fixture uses the same pinned Ubuntu base as the desktop skeleton, two real Linux users and one fresh named volume; it tests own-file operations, cross-user denials, container-recreation persistence and three I/O rounds per user. Every workload has a 60-second deadline; the run budget is five minutes including reserved cleanup time.
 
@@ -275,7 +284,7 @@ Running it again is safe and is also how you update: it only fills in missing va
 The first visit to `http://127.0.0.1:3000` opens owner setup. It runs once. Current setup creates the owner and timezone; model setup, live agent replies, chat attachments and file cards remain upcoming.
 
 1. **Create the owner account.** Enter your email and a new **Eclipse Crew password**, not your Gmail or other password. There's only one account per install, and signup closes after this step.
-2. **Confirm your timezone.** It's detected from your browser and used for schedules and the clock every agent sees.
+2. **Confirm your timezone.** It's detected from your browser and used for schedules and the clock every agent sees. If you later open the app from a device in a different timezone (a trip, a VPN), a notice asks whether to switch: **Use** (for example `Use Asia/Dubai`) updates it, **Keep** leaves it and stops asking on that device. It never changes on its own, so your routines don't shift without you knowing.
 3. **Planned, not yet available:** Configure a model provider and save its key. See [Models](#models) for the planned settings.
 4. **Create an agent.** Use **Create agent** in the Agents pane and give it a name, role, persona, default-deny permissions and daily/monthly budgets. Starter templates remain planned.
 5. **Planned, not yet available:** Receive live agent replies in chat while the agent works.
@@ -291,10 +300,20 @@ The same compose file runs on a Linux VPS, so your crew keeps working while your
 ### 1. Prepare the server
 
 - Ubuntu 22.04/24.04 or similar, sized from [Requirements](#hardware).
-- Attach a block-storage volume for data if your provider offers it, since screenshots and checkpoints grow over time. Every step keeps its screenshots (about 0.1-0.4 MB each) and a checkpoint of the agent's files in the `artifacts` volume, and nothing is cleaned up automatically yet.
+- Attach a block-storage volume for data if your provider offers it, since screenshots and checkpoints grow over time. Every step keeps its screenshots (about 0.1-0.4 MB each) and a checkpoint of the agent's files in the `artifacts` volume; screenshots and checkpoints auto-delete after 32 days (receipts stay forever), and Mission Control warns at 80% of the cap.
 - Install Docker Engine, the Compose plugin and Git, then follow [Quickstart](#quickstart-your-own-pc) steps 1–3 on the server.
 
-The app listens on `127.0.0.1:3000` **only**. Nothing is reachable from the internet until you choose one of the options below.
+On an ARM64 server (for example Oracle Ampere A1), run `node scripts/acceptance/arm64.mjs --preflight` before building. It reports the host and Docker daemon CPU and refuses a non-ARM host. The repository includes the native ARM package lock, resolved on Oracle against signed Ubuntu archive metadata; a normal build uses it directly.
+
+To review a future package refresh, resolve a separate candidate on a native ARM server:
+
+```bash
+node scripts/resolve-package-lock.mjs --arch arm64 --output /tmp/ubuntu-packages.arm64.candidate.json
+```
+
+Review the candidate and update the ARM manifest digest/count/bytes in `docker/desktop/fetch-packages.mjs` together with the lock before building. The build verifies every archive's size and SHA-256, and refuses a missing or changed manifest instead of reusing amd64 packages. Interrupted socket downloads get at most three attempts within the existing overall download deadline; integrity failures are never retried.
+
+The app listens on `127.0.0.1:3000` **only**. Nothing is reachable from the internet until you choose one of the options below. For a quick private check without Tailscale, tunnel from your laptop with `ssh -L 3000:127.0.0.1:3000 ubuntu@<server>` and open `http://127.0.0.1:3000`. Never open port 3000 in the firewall or publish it in Compose.
 
 ### 2a. Remote access with Tailscale (recommended)
 
@@ -340,6 +359,45 @@ Use this if you need a public URL, e.g. for webhooks from outside services.
 ### 3. Move an existing install from PC to VPS
 
 Back up on the PC, copy the backup and your `.env` to the VPS, then restore. See [Backup, restore and migration](#backup-restore-and-migration).
+
+---
+
+## Try it live (hackathon judges)
+
+The judges' instance is a separate, throwaway install of this repository on its own VM. Its URL and login are written in the submission form, not in this repository. It is deleted after judging.
+
+> **Do not enter real credentials or personal data.** This instance is shared with other judges. Use only the mock site and fake text. Do not paste API keys, passwords or private documents.
+
+### Five-minute path
+
+1. **Log in** at `https://<live-url>` (the login is in the submission form). Only HTTPS is served; plain HTTP redirects.
+2. **Workspace → an agent.** The agent's screen streams live from its own Linux desktop. Click **Live** to enlarge it. You can watch without interrupting the agent, or take over the mouse and keyboard.
+3. **Send a chat task** such as "Download the October invoice." The agent works on the mock vendor portal on its desktop. Steps appear as they happen, and a risky step (such as a download) asks for approval first.
+4. **History.** Open the finished run to see each step with before/after screenshots, the verification result, and a receipt. Use **Export** and verify the file offline with the `eclipse-crew verify` command in the [CLI reference](#cli-reference).
+5. **Mission Control → Runs.** See the run, its outcome and cost. Open **Schedules** for routines and upcoming runs.
+6. **Memory.** The seeded agent already knows a few demo facts. Sections show where each fact came from.
+7. **Security Center.** The audit log and kill switches are visible. The canary tripwire and allowlists are on.
+
+### What each page proves
+
+| Page | What it shows |
+|---|---|
+| Live desktop and takeover | A real browser and Linux desktop, per agent, streamed to the web. Not a recording and not a screenshot loop. |
+| Chat with approval cards | The agent plans, then stops at risky actions and waits for the owner. |
+| History and Export | Every step has a receipt in a hash chain; a run can be verified offline. |
+| Runs | Runs are durable and inspectable; routines are managed in Schedules. |
+| Memory | Facts carry provenance, versions and Undo. |
+| Security Center | Audit, halt controls and the leak tripwire are visible, not just claimed. |
+
+### Honest limits of this instance
+
+- **One shared login.** There is one owner account and no guest role. Do not change the password, agent settings or budgets; other judges may be using the instance.
+- **Manual resets.** Data is not reset on a schedule. If a run gets stuck, reload the page.
+- **Runs die on restart.** An in-flight run stops if the app restarts.
+- **Live model calls can fail or be slow.** The instance uses a spend-capped model key. If a call fails, try again later.
+- **TLS is not intercepted.** The egress proxy controls destinations and sees plain-HTTP traffic, not HTTPS bodies.
+- **Agents hand off, never cheat.** CAPTCHAs, logins and OTPs are handed to the owner. Agents never solve CAPTCHAs or evade bot detection.
+- **The seeded run is real.** A completed run and its receipt are already in History so you can inspect proof without waiting for a model.
 
 ---
 
@@ -476,7 +534,8 @@ Each agent gets its own Linux user, screen, browser profile and home folder. Sel
   - **tool connection:** connect a tool inline.
   - **routine:** a schedule to confirm.
 - **Attach files** with the paperclip button, by dragging them onto the chat, or by pasting a screenshot. Images, PDF, Office documents without macros, text, CSV/JSON, source code, audio, video and archives are accepted; programs, shell and Windows scripts and macro documents are refused. The default limit is 250 MB per file (set `MAX_UPLOAD_MB` in `.env`, 1 to 1024, then restart Compose). Files are saved to that agent's `inbox/` and shown as a card. One file uploads at a time.
-- Files the agent writes to its `outbox/` appear as **file cards** within a few seconds (the chat checks while the tab is visible) with **Download** and **Open on desktop**. Open shows images, PDFs, audio, WebM/OGV video and plain text in a new tab of the agent's own browser (start its desktop first); every other kind is download-only. Checked in a real run: PNG images, PDFs (in Chromium's built-in viewer) and WebM video display. The agent's Chromium cannot decode H.264, so `.mp4`, `.mov` and `.mkv` files are download-only (they show **Download** and no Open button). Scripts and programs are never listed. **Show in Files** *(coming)* arrives with the Files tab.
+- **Copy text, open links and choose options.** An agent can lift the exact text it sees on a page (for example a headline) and type it somewhere else, open an address you named, and choose a dropdown option. It sees and clicks controls inside open shadow DOM and iframes, so embedded forms work. Closed shadow roots are not reachable: the agent hands those back to you. Payment frames are never listed or controlled.
+- Files the agent writes to its `outbox/` appear as **file cards** within a few seconds (the chat checks while the tab is visible) with **Download** and **Open on desktop**. Open shows images, PDFs, audio, WebM/OGV video and plain text in a new tab of the agent's own browser (start its desktop first); every other kind is download-only. Checked in a real run: PNG images, PDFs (in Chrome's built-in viewer) and WebM video display. Chrome for Testing decodes H.264/AAC, but the file-Open policy still keeps `.mp4`, `.mov` and `.mkv` files download-only (they show **Download** and no Open button). Scripts and programs are never listed. **Show in Files** *(coming)* arrives with the Files tab.
 
 ### 3. Watch and take over
 
@@ -487,6 +546,8 @@ Each agent gets its own Linux user, screen, browser profile and home folder. Sel
 **Action verification:** clicks, typing and key presses require agreement between page structure and an independent screenshot check. The agent checks the expected result after acting and stops for you if evidence is missing or conflicting. SAM is optional and off by default; when enabled its masks can support target and object-presence checks. Other visual checks use Main AI. Extra requests are capped per desktop step (up to two Main AI checks at 512 output tokens each and two SAM images, with no automatic retries); deterministic page checks avoid unnecessary postcondition calls. These checks do not prove every external side effect. Step receipts are hash-chained, completed runs are signed, and exported runs can be verified offline. The verification flow is tested with mocked providers; real-model acceptance remains pending.
 
 **Login handoff:** the agent stops at login walls, CAPTCHAs, one-time codes and payment checks and asks the owner. Current desktop primitives reject password/OTP text and fill targets; protected credential entry remains later work. Existing profile state persists across explicit session restarts. Agents never solve CAPTCHAs.
+
+**Desktop controls:** the Desktop panel shows the sandbox, graphics and browser as separate states. Use **Start desktop** / **Stop desktop** for the screen and **Start browser** / **Stop browser** for Chrome. If you close the Chrome window, the desktop and the agent's other work stay up and you can restart the browser; the profile and cookies persist. If you stop the desktop, chat, tools, shell and files keep working. **Pause agent** / **Resume agent** in Settings is separate: Pause also stops the sandbox. Starting a desktop never clears a security stop, resumes the crew or bypasses a budget.
 
 Nothing is recorded while you're in control, unless you press **Record** in teach mode.
 
@@ -508,7 +569,7 @@ Nothing is recorded while you're in control, unless you press **Record** in teac
 3. Choose the **catch-up policy** for missed runs: run once now, skip, or run all missed.
 4. Click **Confirm**. The validated schedule, IANA timezone and UTC next-run are saved once; reloading shows **Routine saved**. Use **Run now** to start it immediately and watch queued, retrying, the current step, elapsed time and recorded cost update beside the card.
 
-- Open **Jobs** from the workspace header to see every run across the crew: outcome, agent, trigger, start, duration and cost, with agent/outcome/date filters, search and paging. A run's page shows its task, final answer, delivered files, failed steps, retry attempts and the full receipt timeline. Cancel a running job, retry a sealed chat or routine run that is not verified, run a routine now with live step status, and pause or resume routines; **Upcoming runs** lists the next occurrences in your timezone.
+- Open **Mission Control** to see live agent frames plus **Runs**, the tracker of every run across the crew: outcome, agent, trigger, start, duration and cost, with agent/outcome/date filters, search and paging. A run's page shows its task, final answer, delivered files, failed steps, retry attempts and the full receipt timeline. Cancel a running job or retry a sealed chat or routine run that is not verified. Schedules live on the **Schedules** page, which lists upcoming runs in your timezone and lets you run a routine now with live step status or pause/resume routines.
 - Confirmed routines run once a minute on the app's pg-boss scheduler. A duplicate tick is a no-op, one agent runs at most one job at a time, and transient failures retry with backoff. After downtime, each routine follows its chosen catch-up policy. The scheduler starts with the app. If scheduler startup fails, the app logs that scheduled routines are paused and continues starting; restart the app after resolving the cause. On an existing install, rebuild the app image first, then run `npm run db:migrate` and `npm run db:provision` (or use the installer); the database helper runs inside the app image.
 - A verified routine replays without the model. A failed site check starts a bounded repair on the live screen and proposes a **replay update** for approval.
 - **Replay a verified run without the model.** Open **History**, pick a run that finished with every step verified, and press **Save as replay**. A replay is saved only when each step can be checked from the page itself (a control is present or absent, or the URL path), so a run whose check needed a model's judgement is refused with the step and the reason. Saved replays are listed at the top of **History**: press **Replay**, review the steps first, and fill in any text the replay must type (that text is used once and never saved). A replay makes no model call and costs nothing; it finds each control again by its exact role and name, checks the page, and stops with a "Needs you" card at the first step that doesn't match, for example after the site changed. It uses one check per step (the page's structure) instead of the two-method check of a normal run. Replays are limited to 20 steps.
@@ -563,6 +624,16 @@ Rewind restores the agent's state and files, not the world around it. It **can't
 
 Files are saved in the agent's own `inbox`, `work`, `downloads` and `outbox` before the first step and after every step. Files over 4 MiB are listed but cannot be restored, and a step whose checkpoint was incomplete says so and cannot be rewound to. Files that did not exist at the chosen step are moved to a hidden `.rewound/` folder in the same area, never deleted.
 
+**Continue after a restart.** If the app restarts during a run, the run is sealed `interrupted` within about three minutes. Its card offers **Continue**, which opens the same rewind dialog with the last complete checkpoint selected; add a correction and create the branch. A run with no complete checkpoint refuses to continue, and Continue still cannot undo external side effects.
+
+### 9b. Crew handoff and background helpers
+
+**Hand off to a teammate.** When an agent has the `handoff` permission (new agents start with it), it can pass your request to the teammate whose job it is with `handoff{agent, note}`. You see "Handed this to Scout" in the sender's chat; Scout receives your original message, tagged as yours, plus the sender's note as data. Scout uses only its own permissions, connections and budget, and a request never goes more than two hops or back to an agent that already had it. Existing agents keep their permissions; in **Settings → Crew handoff** press **Allow handoff for all agents** to enable them.
+
+**Address a teammate directly.** Start a chat message with `@Name ` (for example `@Scout check my calendar`). The message is stored in Scout's chat, Scout starts working, and the current chat shows "Sent to Scout." An unknown name sends nothing and shows an inline error; an `@` later in a sentence is ordinary text.
+
+**Background helpers (opt-in).** Add `spawn_subagent` to an agent's Actions (the form hint explains it). For screenless work such as document, history or pinned-tool lookups, the agent may start up to three helpers. Each helper runs as its own signed run with at most 20% of the parent's steps, time and weighted tokens, never takes the screen, and cannot borrow permissions or write memory. Its result comes back to the parent as untrusted data. Live chat shows helpers indented under the parent; **History** and **Mission Control → Runs** link and count them. Helpers are never rewound.
+
 ### 10. Approvals and permissions
 
 When an agent is about to download, send, post, delete, purchase or submit, it pauses and asks in chat:
@@ -571,7 +642,7 @@ When an agent is about to download, send, post, delete, purchase or submit, it p
 - **Always allow:** saved for this agent, this exact site and this action. It is limited to 20 uses per rolling 24 hours and is never global.
 - **Deny:** the run stops.
 
-A request waits up to 10 minutes. While it waits, the agent shows **Needs you** in the workspace and the Jobs page says **Waiting for approval**. If the page changes while you decide, the agent re-checks it and stops rather than acting on a stale screen. Saved approvals are listed under the agent's **Settings → Saved approvals**, where you can revoke one; the next risky action asks again. Saved replays never wait: a risky replay step runs only when a saved approval still has capacity.
+A request waits up to 10 minutes. While it waits, the agent shows **Needs you** in the workspace and Mission Control shows **Waiting for approval**. If the page changes while you decide, the agent re-checks it and stops rather than acting on a stale screen. Saved approvals are listed under the agent's **Settings → Saved approvals**, where you can revoke one; the next risky action asks again. Saved replays never wait: a risky replay step runs only when a saved approval still has capacity.
 
 The action is classified from the control's name and the agent's expected result, so treat this as a safety net rather than a guarantee. Pressing Enter to submit a form is not classified, and a page that labels a destructive button neutrally can still mislead it.
 
@@ -598,9 +669,13 @@ These stay on even in Astra Mode: receipts, audit log, rewind, budget caps, leak
 | `MEMORY.md` | The agent's notes: environment, conventions, lessons | That agent |
 
 - Every save has a scope: **global**, **agent** or **private** (only chosen agents).
-- New memories show as diffs, e.g. *"Daily Briefer learned: timezone is IST"*, with **Undo**. Releases are listed under **Memory → Change requests** and as a card in chat; nothing an agent asks to remember is saved until you approve it.
-- **Pin** facts so they're never rewritten. Edit entries and view version history in the **Memory** tab. Undo adds a new version; it never edits history.
-- Anything learned from websites, emails or documents needs your approval before it enters shared memory. A scanner rejects hidden characters, markup, standing instructions and secrets before you ever see a request.
+- **Memory learns what you tell it.** With **automatic memory** on (the default for new agents), a fact you stated can be saved at once, and updated or forgotten when you change your mind. Code checks the fact against your own stored message: it must quote at least 12 of your exact characters, and at least 90% of its words must come from that message. A card in chat says **Memory saved** with **Undo**. Anything that cannot be proven that way waits for your approval under **Memory → Change requests**, as before.
+- **Nightly tidy.** Memory merges duplicates, shortens wordy entries and archives stale ones at 03:00 in your timezone (or when a document is 85% full), at most every 6 hours. It may only use words already in the entries it touches, never changes pinned facts, and shows one card with one **Undo** for the whole batch.
+- **Pin** facts so they're never rewritten. Edit entries, choose who can see a private note, and view version history in the **Memory** tab. Undo adds a new version; it never edits history.
+- **Search earlier chats.** Agents can search their own conversation with you and answer "you said last week…" with a date.
+- **Follow-ups and live steps.** Chat remembers the last 10 messages from the last 24 hours (up to 6,000 characters), so "summarise it" or "post it on X" knows what "it" is; routines, replays and heal runs stay self-contained. While a run is live, chat shows its newest steps with elapsed time and cost; Cancel stops it and the final reply card replaces the live card.
+- Anything learned from websites, emails or documents always needs your approval: it can never satisfy the automatic gate. A scanner rejects hidden characters, markup, standing instructions and secrets before you see a request.
+- **Turn it off per agent** with "Turn off automatic memory" in the Memory tab; "Upgrade memory for all agents" applies automatic memory and the default scopes to every agent at once (audited).
 - A Markdown copy is kept in `./data/memory` on the host, so you can read it with any editor. Edits to those files are not read back. On a Linux host the folder must be writable by uid 1000; on Docker Desktop nothing extra is needed.
 
 ### 13. Files
@@ -616,6 +691,10 @@ Downloads/  alias to canonical noexec downloads (direct execution denied)
 
 Use the **Files** tab *(coming)* to browse, preview, download, upload to `inbox/`, or **Open on the agent's desktop**. Risky download types (executables, installers, macro Office files) are blocked by default.
 
+**Talking to documents.** Attach a file in chat and ask about it. The agent can read text, Markdown, CSV and JSON, `.docx`, PDFs with a text layer, `.xlsx` workbooks and `.pptx` decks (scanned PDFs need OCR, which is not built). For a long document it searches first instead of reading from the start: you get the best-matching passages with the page, sheet or slide number, and the agent can read around a passage. A question with no match is answered as "not in the document", not as a failure. Document and search text is data, never a new instruction, and a search writes a receipt with the file name, query length and hit count only.
+
+Limits: 50 MB per document, up to 5,000,000 characters indexed, 20,000 characters per read window, 50 sheets and 200,000 cells per workbook, 500 slides per deck, and 20 cached indexes (256 MB) per agent.
+
 ### 14. Tools and integrations
 
 - **MCP servers:** add allowlisted MCP servers (e.g. GitHub, Slack, filesystem) in the **Tools** tab, then grant them per agent.
@@ -626,19 +705,26 @@ Use the **Files** tab *(coming)* to browse, preview, download, upload to `inbox/
 
 - Daily and monthly agent budgets are checked against the live ledger before every model call. You're warned at 80%; at 100% the agent pauses, gets a gold **Needs you** ring and shows a chat card and toast. Resume works only after you raise the budget or the next period starts. Routine budgets follow when routines land.
 - Each run has a **cost receipt** at `GET /api/runs/<id>/cost`: tokens in/out/cached, the model per call and step, cost in whole micro-USD, and failed, invalid or cancelled calls. Signed step receipts also carry their cost.
-- Each run stops at 20 steps, 200,000 input + output tokens, 15 minutes, or the third identical step. The same limits apply in cost mode; a stopped run still seals its proof.
+- Each run stops at 60 steps, 400,000 weighted tokens (uncached input + output + one tenth of cached input), 30 minutes, or the third identical step. An agent whose Actions include `shell` gets the same 60 steps, 1,500,000 weighted tokens and 60 minutes, because a real fix needs clone, install, edit, test and push; a caller such as self-healing can still ask for fewer. The same cost limits apply in cost mode, and a stopped run still seals its proof.
 - Edit provider/model rates under **Settings → Models**. Changes affect later calls, never old receipts.
 - Routine cards show an estimate before saving *(coming)*, e.g. *"≈ $0.03/run, ≈ $0.90/month"*.
 - Local models count as $0.
 
 To keep costs down, let routines replay, use Spark for most steps, and use Sundance cheap checks instead of frequent full runs.
 
-### 16. Jobs dashboard
+### 16. Runs and schedules
 
-**Workspace → Jobs** lists every routine run, check, webhook and background job with its status, agent, trigger, duration and cost.
+**Mission Control → Runs** lists crew runs with their status, agent, trigger, duration and cost. **Schedules** lists routines and upcoming scheduled runs.
 - Open a run for its step timeline, receipts, errors and retry history.
 - Actions: **Run now**, **Cancel**, **Retry**, **Pause/Resume** a routine.
 - **Upcoming** shows the next scheduled runs in your local time.
+
+### 16b. Crew overview and Mission Control
+
+**Mission Control** and **Crew** are owner-only pages in the left navigation.
+- **Mission Control** shows every agent with its current run, step count, today's spend, current-run cost, model and any approval or budget alert. Up to four running desktops stream as view-only thumbnails; stopped desktops show a placeholder. Opening a card goes to that agent's workspace. The overview never starts a desktop.
+- **Starter crew** previews six roles (PR Reviewer, Dev Agent, Daily Briefer, Inbox Triage, Research Analyst, Travel & Booking Assistant) and creates them with their own policies. A repeat or a retry resumes the same six identities instead of creating more. It creates identities and setup checklists only: connect mail/calendar accounts yourself, and add the pinned server key under the agent's Tools. Draft routine examples are previews, not enabled routines.
+- For recurring work, use **Schedules**: ask an agent in chat to create a routine, confirm it there, and see upcoming runs on the Schedules page.
 
 ### 17. Security Center and kill switches
 
@@ -646,7 +732,7 @@ To keep costs down, let routines replay, use Spark for most steps, and use Sunda
 
 - **Security Center** lists security events and the signed audit log, with agent and time filters. **Export audit log** downloads the owner's full chain; check it offline with `node scripts/eclipse-crew.mjs verify-audit audit.json`. The header shows **Verified N entries** after the app runs the same verifier.
 - **Stop agent** halts one agent immediately: blocked egress, live runs cancelled, desktop stopped and the agent paused. **Stop crew** sets a crew-wide gate first, then halts every agent; new chat, scheduled, Run Now, retry, heal and replay runs are refused until you press **Resume crew**. Agents stay paused afterwards until you resume each one.
-- Blocked outbound requests appear as **Denied** rows. Stopped events link to the run in Jobs.
+- Blocked outbound requests appear as **Denied** rows. Stopped events link to the run in Mission Control.
 - Audit signing needs `RECEIPT_SIGNING_KEY`. Without it the Security Center shows a banner and entries from that period are not recorded; existing runs already refuse to start without the key.
 
 ### 18. Voice *(coming)*
@@ -788,13 +874,12 @@ Docker volumes:
 
 | Data | Kept |
 |---|---|
-| Working screenshots | 7 days |
-| Receipt thumbnails and hashes | Permanently |
-| Rewind checkpoints | 7 days |
-| Failed runs | 30 days |
-| Teaching recordings | Kept locally until you discard the capture or approve its skill; approval keeps one reference screenshot per step |
+| Step screenshots and checkpoint files | 32 days, then auto-deleted (receipts stay, so proof still verifies) |
+| Receipt text, hashes and audit log | Permanently (append-only) |
+| Teach recordings | Kept locally until you discard the capture or approve its skill; approval keeps one reference screenshot per step; leftovers auto-delete after 32 days |
+| Failed runs | Run rows stay; their screenshots follow the 32-day rule |
 
-You can delete any run or agent's data immediately from the UI. Each agent has a storage limit *(coming, default 10 GB)*.
+Download anything you want to keep first: every step screenshot has a Download link, and each run exports its signed `run.json`. Mission Control warns at 80% of the instance cap (`ARTIFACTS_CAP_BYTES`, default 20 GB); at 100%, the oldest evidence is purged early. Receipts are never purged.
 
 ---
 
@@ -835,8 +920,11 @@ The `eclipse-crew` command itself is installed by the one-command installer *(co
 | Routine didn't run while the PC was off | It runs according to its catch-up policy when the stack starts again. Use a VPS for always-on. |
 | Agent paused: budget reached | Raise the budget in agent or routine settings, or wait for the next period |
 | Agent says receipt signing is not set up | Run `npm run receipt-key`, then `docker compose up -d` so the app sees the new value, and send the message again |
-| Wrong times in schedules | Check your timezone in **Settings → Account**. Schedules store the timezone, so DST changes are handled. |
+| Wrong times in schedules | Check your timezone on your **Profile** (click your avatar), or use the timezone notice at the top of the app when it appears. Schedules store the timezone, so DST changes are handled. |
 | Forgot password | `npm run reset-password` on the host; see [Account and recovery](#account-and-recovery) |
+| `docker compose build` stops with `fs.read` / BuildKit policy | Build directly and recreate without building: `docker build -f Dockerfile -t main-app .` then `docker compose up -d --no-build app`. Do not relax the Docker policy. |
+| A run says Interrupted after a restart | That is the crash-safe seal. Open the card's **Continue** or History and branch from the last complete checkpoint. |
+| `@Name` sends nothing | The name must match an agent exactly (case-insensitive), and the teammate must be active. |
 
 ---
 
@@ -846,7 +934,7 @@ The `eclipse-crew` command itself is installed by the one-command installer *(co
 |---|---|---|
 | Core | Docker setup, owner login, agents and personas, chat cards, live desktop + takeover | Templates, Mission Control, PWA, Files tab |
 | Standouts | Teach from video, proof receipts + verifier, rewind and branch, self-healing, isolation + tripwire | Auto-rewind on security events |
-| Routines | Schedules, Run Now, catch-up, deterministic replay, Jobs dashboard | Sundance/Moondance, webhooks, live dashboard updates |
+| Routines | Schedules, Run Now, catch-up, deterministic replay, Mission Control runs | Sundance/Moondance, webhooks, live dashboard updates |
 | Models | Meta Model API, SAM 3.1 via API, role cards, saved keys, capability detection | Anthropic-compatible connector (Claude), local models, local SAM, model check, per-agent overrides |
 | Safety | Permissions, approvals, Astra Mode, budgets, egress allowlist, key injection, audit log, kill switches | Taint tracking, quarantined reader, threat feeds, download scanning, 2FA |
 | Other | Memory files with scopes and approval | Voice, multi-agent, booking assistant, backups, Composio |
@@ -864,14 +952,17 @@ Eclipse Crew was built from scratch during the **Meta Global AI Developer Hackat
 - **Architecture:** [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md)
 - **Security policy and development security requirements:** [`docs/SECURITY.md`](../docs/SECURITY.md)
 - **Contributing:** issues and pull requests are welcome. Read the contributor checklist in `docs/SECURITY.md` before submitting code.
-- **License:** Apache-2.0 (planned; final confirmation pending). Chromium is bundled under its own license. Google Chrome is never redistributed. SAM weights are never shipped; they're downloaded on your machine under Meta's SAM License.
+- **License:** Apache-2.0 (planned; final confirmation pending). The desktop downloads Chrome for Testing from Google at image build time under Google's Terms of Service and Chrome Additional Terms; the licence is personal and non-assignable, H.264 is licensed only for personal or unpaid use, and the archive is never committed, published or redistributed. The desktop image must never be published. SAM weights are never shipped; they're downloaded on your machine under Meta's SAM License.
 
 
 ## Tool connections, MCP and Composio
 
-- **Settings → Connections** saves a tool token per agent. It is encrypted on this machine; agents, models, logs and receipts never see it. The egress proxy adds it only for the exact hosts it belongs to. GitHub presets cover the hosted MCP server, the REST API and HTTPS git.
+- **Settings → Connections** saves a tool token per agent, or connects GitHub with a short code. Every token is encrypted on this machine; agents, models, logs and receipts never see it. The egress proxy adds it only for the exact hosts it belongs to. GitHub presets cover the hosted MCP server, the REST API and HTTPS git.
+- **Connect GitHub (no token to paste).** Press **Connect GitHub**, choose the agent, and press **Connect GitHub** in the dialog. Eclipse Crew shows a short code; open `https://github.com/login/device`, enter the code, and approve it. The first time, install the app on the repositories that agent may change (the dialog links the install page). The app's **Contents** and **Pull requests** read/write permissions are what a push or PR needs; **Metadata** read is added by GitHub. The token is stored encrypted and refreshed about 30 minutes before it expires. If the refresh token is revoked or reaches its 6-month life, the connection shows **Expired** and a **Reconnect** button. Disconnecting deletes the token here; to revoke it at GitHub too, use your app's authorizations page.
+  - This needs a GitHub App you register once. Enable device flow and token expiration; set `GITHUB_APP_CLIENT_ID` to its public client ID and `GITHUB_APP_SLUG` to its slug in `.env`, then restart Compose. No client secret is used or stored.
+  - Pasting a fine-grained token still works. Create it at `https://github.com/settings/personal-access-tokens/new`, choose only the repositories this agent may change, and grant **Contents** read/write and **Pull requests** read/write.
 - **MCP servers** (same screen) are pinned: Eclipse Crew records the exact tool list and its hash. A server that changes its tools blocks calls until you review and re-pin. Agents need `tool_call` in Actions and the server key under Tools.
 - **Composio (optional)** connects apps through Composio. Your Composio key is encrypted here; connected-app tokens are stored by Composio, not on this computer. Destructive tools are never pinnable. Use an MCP server if you want tokens to stay on your machine.
-- **Templates:** Create agent → PR Reviewer or Dev Agent prefills a least-privilege setup; a Setup checklist shows the missing connection or pin. `fixtures/demo-red-build` is a ready failing project for the Dev Agent flow.
-- **Shell** is opt-in. It runs as the agent inside its own network namespace: only the agent allowlist is reachable, no tool token is in its environment, and output/time are capped.
-- **Git** is in the pinned image. HTTPS git to `github.com` goes through the egress gateway: add `github.com` and `api.github.com` to Domains and a GitHub connection. Clone, fetch and pushes to a new or non-default branch work; pushes to the default branch, remote branch/tag deletes and tag moves are refused with 403. You cannot approve them yet; an approval card for them is planned (TASK-073c). Until then, have the agent push a branch and open a pull request, then merge it yourself. SSH remotes and GitHub Enterprise are unsupported, and pack data is not canary-scanned.
+- **Templates:** Create agent → PR Reviewer or Dev Agent prefills a least-privilege setup; a Setup checklist shows the missing connection or pin. The Dev Agent runs `shell` and starts with `github.com`, `githubusercontent.com`, `registry.npmjs.org`, `pypi.org` and `files.pythonhosted.org` in Domains. `fixtures/demo-red-build` is a ready failing project for the Dev Agent flow. The image includes Python `venv`/`pip`, `rg`, `jq`, `patch`, `ps`, `zip` and `file`; `pip` installs only inside a venv.
+- **Shell** is opt-in. It runs as the agent inside its own network namespace: only the agent allowlist is reachable, no tool token is in its environment, and output/time are capped. Every run stops at 60 steps; an agent whose Actions include `shell` gets the larger 1,500,000 weighted-token and 60-minute budgets (base is 400,000 weighted tokens and 30 minutes).
+- **Git** is in the pinned image. HTTPS git to `github.com` goes through the egress gateway: add `github.com` to Domains and, for private repos and pushes, a GitHub connection. Clone a repository with its root link, `https://github.com/<owner>/<repo>` (the same link copied from the browser address bar works, with or without `.git`); do not use a `/tree/` or `/blob/` link. A public repo clones without any connection. Clone, fetch and pushes to a new or non-default branch work without a prompt; a private repo or a push with no connection fails with 403, and the agent says a GitHub connection is needed. A push to the default branch, a remote branch/tag delete or a tag move creates one approval card per protected ref: **Allow once** authorizes one fresh push attempt, **Always allow** saves the permission for that agent, repo and action class (with the usual rolling limit; you can revoke it under Saved approvals), and **Deny** stops the run. A push with several protected refs needs every ref allowed, and the approval only authorizes that exact reviewed push — any changed commit or ref asks again. Astra Mode skips the prompt but still records the authorization and keeps every proxy check. The GitHub token never enters the shell's environment, arguments, `git config`, logs or receipts. SSH remotes and GitHub Enterprise are unsupported, and pack data is not canary-scanned.

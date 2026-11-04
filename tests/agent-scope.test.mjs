@@ -81,3 +81,12 @@ test("hostile input is bounded and never throws", () => {
   assert.deepEqual(checkTyped("x".repeat(100_000), derived, null), { ok: true });
   assert.deepEqual(checkTyped(42, derived, null), { ok: true });
 });
+
+test("TASK-083 earlier owner text extends scope; agent replies never do", () => {
+  const base = deriveScope({ task: "Open the page." });
+  const owner = deriveScope({ task: "Open the page.", extraOwnerTexts: ["mail priya@example.com at shop.example.org"] });
+  assert.equal(hostInScope("shop.example.org", owner), true);
+  assert.ok(owner.emails.includes("priya@example.com"));
+  assert.equal(hostInScope("shop.example.org", base), false);
+  assert.deepEqual(base.emails, []);
+});

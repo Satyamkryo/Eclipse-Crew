@@ -1,7 +1,7 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { z } from "zod";
+import { parseASR as parseAudioASR, validateWave as validateAudioWave } from "../audio/transcribe";
 import type { getDatabase } from "../../db/client";
 import { costEntries, teachRecordings } from "../../db/schema";
 import { createModelSettingsStore } from "../models/data";
@@ -13,39 +13,14 @@ import { priceFor, readBudgetStatus, setAgentAttention } from "../costs/store";
 export class NarrationError extends Error {
   constructor(public code: string) { super(code); this.name = "NarrationError"; }
 }
-const fail = (): never => { throw new NarrationError("invalid_audio"); };
+const asNarrationError = (error: unknown): NarrationError =>
+  error instanceof NarrationError ? error : new NarrationError((error as { code?: string } | null)?.code ?? "invalid_audio");
+// Teach keeps its own error name and limits; the validators live in lib/audio/transcribe.ts.
 export function validateWave(input: Uint8Array): { durationMs: number } {
-  const wav = Buffer.from(input);
-  if (wav.length < 44 || wav.length > 3 * 1024 * 1024 || wav.toString("ascii",0,4) !== "RIFF" || wav.toString("ascii",8,12) !== "WAVE" || wav.readUInt32LE(4) !== wav.length-8) return fail();
-  let fmt=false, bytes=0;
-  for(let offset=12;offset<wav.length;) {
-    if(offset+8>wav.length) return fail();
-    const name=wav.toString("ascii",offset,offset+4), size=wav.readUInt32LE(offset+4), end=offset+8+size;
-    if(end>wav.length) return fail();
-    if(name==="fmt ") {
-      if(fmt || size!==16 || wav.readUInt16LE(offset+8)!==1 || wav.readUInt16LE(offset+10)!==1 || wav.readUInt32LE(offset+12)!==24000 || wav.readUInt32LE(offset+16)!==48000 || wav.readUInt16LE(offset+20)!==2 || wav.readUInt16LE(offset+22)!==16) return fail();
-      fmt=true;
-    } else if(name==="data") { if(bytes || !size || size%2) return fail(); bytes=size; }
-    else if(name!=="JUNK") return fail();
-    offset=end+(size%2);
-    if(offset>wav.length) return fail();
-  }
-  if(!fmt || !bytes) return fail();
-  return { durationMs: Math.ceil(bytes/48) };
+  try { return validateAudioWave(input); } catch (error) { throw asNarrationError(error); }
 }
-const asrSchema=z.object({
-  audioDurationMs:z.number().int().nonnegative().max(120000),
-  turns:z.array(z.object({ startMs:z.number().int().nonnegative(), endMs:z.number().int().nonnegative(), transcript:z.string().max(16000) })).max(300),
-});
-export function parseASR(value: unknown, durationMs:number, offsetMs=0) {
-  const parsed=asrSchema.safeParse(value);
-  if(!parsed.success || parsed.data.audioDurationMs>durationMs || !Number.isSafeInteger(offsetMs) || offsetMs<0 || offsetMs+durationMs>120000) throw new NarrationError("invalid_transcript");
-  let last=0;
-  return parsed.data.turns.map(turn=>{
-    if(turn.startMs<last || turn.endMs<turn.startMs || turn.endMs>parsed.data.audioDurationMs || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(turn.transcript)) throw new NarrationError("invalid_transcript");
-    last=turn.startMs;
-    return { startMs:offsetMs+turn.startMs, endMs:offsetMs+turn.endMs, text:turn.transcript };
-  });
+export function parseASR(value: unknown, durationMs: number, offsetMs = 0) {
+  try { return parseAudioASR(value, durationMs, offsetMs); } catch (error) { throw asNarrationError(error); }
 }
 export async function transcribeNarration(options:{
   database:Awaited<ReturnType<typeof getDatabase>>; ownerId:string; agentId:string; captureId:string;

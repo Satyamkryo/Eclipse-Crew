@@ -14,8 +14,8 @@ export function JobDetail({ runId, timeZone, csrfToken }: { runId: string; timeZ
     `/api/jobs/${runId}`, (value) => (value.summary.outcome === "running" ? 5000 : null));
 
   const back = (
-    <Link href="/jobs" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring">
-      <ArrowLeft aria-hidden className="size-4" strokeWidth={1.5} />All jobs
+    <Link href="/mission-control" className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring">
+      <ArrowLeft aria-hidden className="size-4" strokeWidth={1.5} />Runs
     </Link>
   );
 

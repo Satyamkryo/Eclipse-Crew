@@ -20,6 +20,14 @@ const compose = (...args) => docker(["compose", ...args]);
 const checked = (result, description) => {
   const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
   for (const secret of [bootstrap, appPassword, migratorPassword, desktopSecret]) assert.ok(!output.includes(secret), `${description} leaked a synthetic password`);
+  if (result.status !== 0 && description === "restored exact teach/audio contracts") {
+    // Tail the log: a full `compose logs` exceeds spawnSync's 1 MiB buffer, which
+    // keeps the first megabyte, so slicing it would show stale early errors.
+    const logs = compose("logs", "--no-color", "--tail", "30", "postgres");
+    const errors = `${logs.stdout ?? ""}${logs.stderr ?? ""}`.split(/\r?\n/).filter((line) => line.includes("ERROR:")).slice(-3).join("\n");
+    assert.ok(![bootstrap, appPassword, migratorPassword, desktopSecret].some((secret) => errors.includes(secret)), "diagnostic excludes synthetic secrets");
+    console.error("[DEBUG-db-closeout]", errors);
+  }
   assert.equal(result.status, 0, `${description}: ${output}`);
   return result.stdout.trim();
 };
@@ -42,7 +50,11 @@ test.after(() => {
 
 test("isolated database provisioning and permissions", { timeout: 900000 }, async () => {
   try {
-    checked(compose("up", "-d", "--build", "app"), "start disposable services");
+    // Environment workaround (Docker policy unchanged): this Docker Desktop refuses compose-managed
+    // builds that request the fs.read entitlement, so the app image is built directly from its explicit
+    // context/Dockerfile first under this run's unique project tag; compose then starts with --no-build.
+    checked(docker(["build", "--file", "Dockerfile", "--tag", `${project}-app:latest`, "."]), "direct app image build");
+    checked(compose("up", "-d", "--no-build", "app"), "start disposable services");
     const provision = () => spawnSync(process.execPath, ["scripts/db-provision.mjs"], { env, encoding: "utf8", timeout: 60000 });
     const migrate = () => spawnSync(process.execPath, ["scripts/db-migrate.mjs"], { env, encoding: "utf8", timeout: 120000 });
     checked(provision(), "fresh provisioning");
@@ -81,7 +93,7 @@ test("isolated database provisioning and permissions", { timeout: 900000 }, asyn
     checked(sql("ALTER TABLE public.model_roles DROP CONSTRAINT model_roles_mode_check; ALTER TABLE public.model_roles ADD CONSTRAINT model_roles_mode_check CHECK (mode in ('active','off','meta'))"), "restore model role mode check");
     checked(sql("ALTER TABLE public.model_roles DROP CONSTRAINT model_roles_role_check; ALTER TABLE public.model_roles ADD CONSTRAINT model_roles_role_check CHECK (role in ('main','sam') AND role <> '')"), "alter model role check fixture");
     assert.notEqual(provision().status, 0, "altered model role definition fails preflight despite matching old substrings");
-    checked(sql("ALTER TABLE public.model_roles DROP CONSTRAINT model_roles_role_check; ALTER TABLE public.model_roles ADD CONSTRAINT model_roles_role_check CHECK (role in ('main','sam'))"), "restore model role check");
+    checked(sql("ALTER TABLE public.model_roles DROP CONSTRAINT model_roles_role_check; ALTER TABLE public.model_roles ADD CONSTRAINT model_roles_role_check CHECK (role in ('main','sam','background'))"), "restore model role check");
     checked(sql("ALTER TABLE public.model_roles DROP CONSTRAINT model_roles_main_shape_check; ALTER TABLE public.model_roles ADD CONSTRAINT model_roles_main_shape_check CHECK (role <> 'main' OR (mode = 'active' AND provider_id IS NOT NULL AND model IS NOT NULL AND use_main_key = false AND model <> ''))"), "alter main role shape fixture");
     assert.notEqual(provision().status, 0, "altered main role shape fails preflight despite matching old substrings");
     checked(sql("ALTER TABLE public.model_roles DROP CONSTRAINT model_roles_main_shape_check; ALTER TABLE public.model_roles ADD CONSTRAINT model_roles_main_shape_check CHECK (role <> 'main' OR (mode = 'active' AND provider_id IS NOT NULL AND model IS NOT NULL AND use_main_key = false))"), "restore main role shape check");
@@ -261,16 +273,19 @@ test("isolated database provisioning and permissions", { timeout: 900000 }, asyn
       try { assert.notEqual(provision().status, 0, description + " fails closed"); }
       finally { checked(sql(restore), "restore " + description); }
     }
-    for (const [table, constraint, weak] of [
-      ["teach_recordings", "teach_recordings_bounds_check", "active_ms >= 0"],
-      ["cost_entries", "cost_entries_source_check", "run_id IS NOT NULL OR capture_id IS NOT NULL"],
-      ["cost_entries", "cost_entries_audio_duration_check", "audio_duration_ms >= 0"],
-      ["model_prices", "model_prices_rates_check", "audio_micro_usd_per_hour >= 0"],
+    // Restores use the original migration DDL (BETWEEN form), not a pg_get_constraintdef
+    // round-trip: re-parsing the deparsed text left-flattens the first AND pair
+    // (e.g. rates/bounds checks), which is semantically identical but textually
+    // different from the migrated catalog form that provisioning pins.
+    for (const [table, constraint, weak, restore] of [
+      ["teach_recordings", "teach_recordings_bounds_check", "active_ms >= 0", "active_ms between 0 and 120000 and event_count between 0 and 300"],
+      ["cost_entries", "cost_entries_source_check", "run_id IS NOT NULL OR capture_id IS NOT NULL", "(run_id is not null)::integer + (capture_id is not null)::integer = 1"],
+      ["cost_entries", "cost_entries_audio_duration_check", "audio_duration_ms >= 0", "audio_duration_ms between 0 and 120000"],
+      ["model_prices", "model_prices_rates_check", "audio_micro_usd_per_hour >= 0", "input_micro_usd_per_million between 0 and 1000000000 and cached_micro_usd_per_million between 0 and 1000000000 and output_micro_usd_per_million between 0 and 1000000000 and image_micro_usd_per_thousand between 0 and 1000000000 and audio_micro_usd_per_hour between 0 and 1000000000"],
     ]) {
-      const original = checked(sql("SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid='public." + table + "'::regclass AND conname='" + constraint + "'"), "read exact constraint");
       checked(sql("ALTER TABLE public." + table + " DROP CONSTRAINT " + constraint + "; ALTER TABLE public." + table + " ADD CONSTRAINT " + constraint + " CHECK (" + weak + ")"), "weaken " + constraint);
       try { assert.notEqual(provision().status, 0, constraint + " definition fails closed"); }
-      finally { checked(sql("ALTER TABLE public." + table + " DROP CONSTRAINT " + constraint + "; ALTER TABLE public." + table + " ADD CONSTRAINT " + constraint + " " + original), "restore " + constraint); }
+      finally { checked(sql("ALTER TABLE public." + table + " DROP CONSTRAINT " + constraint + "; ALTER TABLE public." + table + " ADD CONSTRAINT " + constraint + " CHECK (" + restore + ")"), "restore " + constraint); }
     }
     checked(provision(), "restored exact teach/audio contracts");
     checked(sql("TRUNCATE public.cost_entries, public.model_prices, public.step_evidence, public.steps, public.runs CASCADE"), "clear synthetic receipts, prices and spend");

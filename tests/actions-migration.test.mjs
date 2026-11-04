@@ -11,7 +11,9 @@ const docker = (args, input) => spawnSync("docker", args, { input, encoding: "ut
 const dockerAvailable = docker(["version", "--format", "{{.Server.Version}}"]).status === 0;
 
 test("the known action list covers desktop and file actions and the stop text says where to change it", () => {
-  assert.deepEqual([...KNOWN_ACTIONS], ["click", "type", "key", "scroll", "wait", "read_document", "deliver_file", "remember"]);
+  // `handoff` joined the default-deny list in TASK-085; tool_call, shell and subagents stay opt-in and are never here.
+  assert.deepEqual([...KNOWN_ACTIONS], ["click", "type", "key", "scroll", "wait", "start_desktop", "start_browser", "read_document", "deliver_file", "remember", "handoff"]);
+  for (const optIn of ["tool_call", "shell", "spawn_subagent"]) assert.equal(KNOWN_ACTIONS.includes(optIn), false, optIn);
   const text = notAllowedText("read_document");
   assert.match(text, /"read_document" action/);
   assert.match(text, /Add "read_document" to this agent's Actions in its settings/);
