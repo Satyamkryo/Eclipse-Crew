@@ -16,7 +16,8 @@ export interface AgentTemplate {
   label: string;
   description: string;
   role: string;
-  soulMd: string;
+  // What the agent is expert in and how it works (Instructions). Persona starts empty.
+  instructions: string;
   actions: string[];
   tools: string[];
   domains: string[];
@@ -82,7 +83,7 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
     label: "PR Reviewer",
     description: "Reviews a pull request and posts comments through GitHub.",
     role: "Pull request reviewer",
-    soulMd: reviewerSoul,
+    instructions: reviewerSoul,
     actions: ["tool_call"],
     tools: ["github"],
     domains: [],
@@ -103,7 +104,7 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
     label: "Dev Agent",
     description: "Fixes a red build on a branch and opens a pull request.",
     role: "Software developer",
-    soulMd: devSoul,
+    instructions: devSoul,
     actions: ["tool_call", "shell", "read_document", "deliver_file"],
     tools: ["github"],
     domains: ["github.com", "githubusercontent.com", "registry.npmjs.org", "pypi.org", "files.pythonhosted.org"],
@@ -125,7 +126,7 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
     label: "Daily Briefer",
     description: "Summarises today's calendar and mail with a source for every item.",
     role: "Morning briefer",
-    soulMd: brieferSoul,
+    instructions: brieferSoul,
     actions: ["tool_call"],
     tools: [],
     domains: [],
@@ -146,7 +147,7 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
     label: "Inbox Triage",
     description: "Sorts the inbox and drafts replies, never sending automatically.",
     role: "Inbox assistant",
-    soulMd: triageSoul,
+    instructions: triageSoul,
     actions: ["tool_call"],
     tools: [],
     domains: [],
@@ -167,7 +168,7 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
     label: "Research Analyst",
     description: "Reads allowed sources and delivers a report with citations.",
     role: "Research analyst",
-    soulMd: researchSoul,
+    instructions: researchSoul,
     actions: [...browserActions],
     tools: [],
     domains: [],
@@ -188,7 +189,7 @@ export const AGENT_TEMPLATES: AgentTemplate[] = [
     label: "Travel & Booking Assistant",
     description: "Compares travel options and hands every payment or login to you.",
     role: "Travel researcher",
-    soulMd: travelSoul,
+    instructions: travelSoul,
     actions: [...browserActions],
     tools: [],
     domains: [],

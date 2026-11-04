@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { readFile } from "node:fs/promises";
-import { desktopConfig, desktopPaths, seedDesktop } from "../docker/desktop/desktop-config.mjs";
+import { desktopConfig, desktopPaths, legacyTint2rc, seedDesktop } from "../docker/desktop/desktop-config.mjs";
 
 const ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const HOME = `/workspace/homes/${ID}`;
@@ -18,7 +18,12 @@ test("desktop config seeds the dock, files, terminal, folders and hidden unsafe 
   assert.match(tint2, /launcher_icon_theme_override = 1/);
   assert.doesNotMatch(tint2, /^taskbar_font/m);
   assert.match(tint2, /time1_format = %H:%M/);
-  assert.match(tint2, /autohide = 1/);
+  // Takeover sends clicks but never hover, so the dock must stay visible.
+  assert.match(tint2, /^autohide = 0$/m);
+  assert.equal(legacyTint2rc(HOME, DOWNLOADS), tint2.replace("autohide = 0", "autohide = 1"));
+  const desktopBrowser = files.get(`${HOME}/Desktop/Browser.desktop`);
+  assert.match(desktopBrowser, /Exec=\/opt\/eclipse\/desktop\/desktop-config\/browser-focus\.sh/);
+  assert.doesNotMatch(desktopBrowser, /NoDisplay/);
   const desktop = files.get(`${HOME}/.config/pcmanfm/default/desktop-items-0.conf`);
   for (const setting of ["wallpaper_mode=0", "show_trash=1", "show_home=1", "show_computer=0", "show_mounts=0", "show_documents=0"])
     assert.match(desktop, new RegExp(setting));

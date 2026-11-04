@@ -1,6 +1,6 @@
 import "server-only";
 
-import { mkdir, rename, writeFile } from "node:fs/promises";
+import { mkdir, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { and, desc, eq } from "drizzle-orm";
 
@@ -53,17 +53,50 @@ async function entriesFor(database: Database, ownerId: string, doc: MemoryDocume
 }
 
 async function regenerate(database: Database, ownerId: string, agentId: string | null): Promise<void> {
-  const root = mirrorRoot();
+  // TASK-092. One workspace per account: every account mirrors under its own owner id.
+  // Single-account installs written before this change keep working: their files move in on first write.
+  const root = path.join(mirrorRoot(), ownerId);
   await mkdir(root, { recursive: true });
+  await claimLegacyMirror(mirrorRoot(), root);
   await writeAtomic(path.join(root, DOC_FILE.user), renderDocument("user", await entriesFor(database, ownerId, "user", null)));
   if (!agentId) return;
-  const agentRows = await database.select({ soulMd: agents.soulMd }).from(agents)
+  const agentRows = await database.select({ soulMd: agents.soulMd, instructions: agents.instructions }).from(agents)
     .where(and(eq(agents.ownerId, ownerId), eq(agents.id, agentId))).limit(1);
   if (!agentRows[0]) return;
   const folder = path.join(root, "agents", agentId);
-  await writeAtomic(path.join(folder, "SOUL.md"), `${HEADER.trimEnd()}\n\n# SOUL.md\n\n${agentRows[0].soulMd}\n`);
+  // ADR-036. The persona (agents.soul_md) is mirrored as PERSONA.md and the role instructions as INSTRUCTIONS.md.
+  await writeAtomic(path.join(folder, "PERSONA.md"), `${HEADER.trimEnd()}\n\n# PERSONA.md\n\n${agentRows[0].soulMd}\n`);
+  await writeAtomic(path.join(folder, "INSTRUCTIONS.md"), `${HEADER.trimEnd()}\n\n# INSTRUCTIONS.md\n\n${agentRows[0].instructions}\n`);
   await writeAtomic(path.join(folder, DOC_FILE.memory), renderDocument("memory", await entriesFor(database, ownerId, "memory", agentId)));
   await writeAtomic(path.join(folder, DOC_FILE.private), renderDocument("private", await entriesFor(database, ownerId, "private", agentId)));
+}
+
+async function exists(file: string): Promise<boolean> {
+  try {
+    const info = await stat(file);
+    return info.isFile() || info.isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+// Pre-TASK-092 mirrors wrote USER.md and agents/ at the shared root. The first account to write
+// claims them into its own folder; nothing is ever deleted, and a second account starts fresh.
+async function claimLegacyMirror(sharedRoot: string, ownerRoot: string): Promise<void> {
+  if (sharedRoot === ownerRoot) return;
+  if (await exists(path.join(ownerRoot, DOC_FILE.user))) return;
+  const legacyUser = path.join(sharedRoot, DOC_FILE.user);
+  if (!(await exists(legacyUser))) return;
+  try {
+    await rename(legacyUser, path.join(ownerRoot, DOC_FILE.user));
+    const legacyAgents = path.join(sharedRoot, "agents");
+    if (await exists(legacyAgents)) {
+      const ownerAgents = path.join(ownerRoot, "agents");
+      if (!(await exists(ownerAgents))) await rename(legacyAgents, ownerAgents);
+    }
+  } catch {
+    // A concurrent first write may have claimed the files; the next write repairs them.
+  }
 }
 
 // One rewrite per document key at a time: a late commit can never overwrite a newer one with older text. A mirror

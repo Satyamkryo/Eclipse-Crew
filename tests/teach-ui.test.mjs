@@ -12,8 +12,8 @@ const render = (p) => renderToStaticMarkup(React.createElement(TeachControls, { 
 
 test("ordinary takeover has opt-in Record and microphone remains unchecked", () => {
   const html = render({});
-  assert.match(html, />Record</); assert.match(html, /Include microphone narration/);
-  assert.doesNotMatch(html, /checked=""/); assert.match(html, /audio is sent to Meta/);
+  assert.match(html, />Record</); assert.doesNotMatch(html, /Include microphone narration/);
+  assert.doesNotMatch(html, /type="checkbox"/); assert.doesNotMatch(html, /audio is sent to Meta/);
   assert.doesNotMatch(html, />Pause</);
 });
 test("recording controls expose elapsed time, pause, stop and discard accessibly", () => {
@@ -26,9 +26,9 @@ test("privacy pause needs explicit resume and never renders an arbitrary server 
   assert.match(html, /Needs you/); assert.match(html, />Resume</); assert.doesNotMatch(html, /secret-sentinel/);
   assert.equal(privacyPauseText("untrusted page text"), "Recording paused for privacy. Check the managed browser before resuming.");
 });
-test("unavailable narration and view-only controls are disabled", () => {
+test("view-only controls are disabled", () => {
   const html = render({ narrationAllowed: false, canRecord: false });
-  assert.match(html, /native Meta Main provider/); assert.match(html, /type="checkbox" disabled=""/);
+  assert.doesNotMatch(html, /native Meta Main provider/);
   assert.match(html, /disabled=""[^>]*>Record</);
 });
 test("saved recordings are reopenable with bounded metadata and fail closed on malformed rows", () => {

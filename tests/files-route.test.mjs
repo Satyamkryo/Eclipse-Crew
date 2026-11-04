@@ -70,6 +70,10 @@ test("the browser helpers give early feedback and plain messages, and never echo
   assert.equal(precheckFile({ name: "a.txt", size: 100 }, 100), null);
   assert.equal(precheckFile({ name: "a.txt", size: 10 ** 12 }), null, "no limit known: the server decides");
   assert.equal(precheckFile({ name: "é".repeat(1500), size: 5 }, 100)?.code, "name_invalid");
+  for (const name of ["a.pdf", "a.docx", "a.png", "a.mp3", "a.mp4", "a.md", "a.csv"]) assert.equal(precheckFile({ name, size: 5 }, 100), null, name);
+  assert.equal(precheckFile({ name: "clip", type: "video/webm", size: 5 }, 100), null, "MIME type is enough");
+  for (const name of ["a.exe", "a.zip", "a.sh", "noext"]) assert.equal(precheckFile({ name, size: 5 }, 100)?.code, "type_unsupported", name);
+  assert.equal(precheckFile({ name: "a.exe", size: 101 }, 100)?.code, "file_too_large", "size warning wins");
   assert.match(uploadErrorMessage("file_too_large", 250 * 1024 * 1024), /250 MB limit/);
   assert.match(uploadErrorMessage("type_blocked"), /isn't accepted/);
   assert.equal(uploadErrorMessage("anything <b>else</b>"), "Couldn't upload this file. Try again.");

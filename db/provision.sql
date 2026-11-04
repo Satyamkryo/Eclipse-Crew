@@ -51,23 +51,23 @@ BEGIN
     RAISE EXCEPTION 'unrelated public function or type';
   END IF;
   IF EXISTS (SELECT FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-      WHERE n.nspname = 'public' AND c.relkind IN ('r','p','v','m','S','f') AND c.relname NOT IN ('owner','sessions','agents','agent_policies','agent_canaries','security_events','chat_sessions','messages','providers','model_roles','runs','steps','step_evidence','checkpoints','model_prices','cost_entries','teach_recordings','routines','replay_scripts','replay_script_versions','replay_script_proposals','run_meta','skills','skill_versions','approvals','permissions','permission_uses','audit_log','memory_entries','memory_versions','memory_changes','memory_review_state','connections','github_device_flows','mcp_servers','composio_keys','composio_accounts','starter_crew_setups','starter_crew_members','crew_report_settings','crew_report_deliveries','crews','crew_members')) THEN
+      WHERE n.nspname = 'public' AND c.relkind IN ('r','p','v','m','S','f') AND c.relname NOT IN ('owner','sessions','agents','agent_policies','agent_canaries','security_events','chat_sessions','messages','providers','model_roles','runs','steps','step_evidence','checkpoints','model_prices','cost_entries','teach_recordings','routines','replay_scripts','replay_script_versions','replay_script_proposals','run_meta','skills','skill_versions','approvals','permissions','permission_uses','audit_log','memory_entries','memory_versions','memory_changes','memory_review_state','connections','github_device_flows','mcp_servers','composio_keys','composio_accounts','starter_crew_setups','starter_crew_members','crew_report_settings','crew_report_deliveries','crews','crew_members','check_ins')) THEN
     RAISE EXCEPTION 'unrelated public object';
   END IF;
   IF EXISTS (SELECT FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-      WHERE n.nspname = 'public' AND c.relkind = 'i' AND c.relname NOT IN ('owner_pkey','owner_login_unique','owner_singleton_idx','sessions_pkey','sessions_token_hash_unique','sessions_owner_id_idx','sessions_expires_at_idx','agents_pkey','agents_owner_id_idx','agent_canaries_pkey','agent_canaries_owner_id_idx','agent_canaries_sha256_idx','security_events_pkey','security_events_owner_created_idx','security_events_source_ref_unique','agent_policies_pkey','agent_policies_owner_id_idx','chat_sessions_pkey','chat_sessions_owner_id_idx','chat_sessions_owner_agent_idx','messages_pkey','messages_owner_id_idx','messages_session_created_idx','messages_run_id_idx','providers_pkey','providers_owner_id_idx','model_roles_pkey','model_roles_owner_id_idx','model_roles_provider_id_idx','model_roles_owner_role_idx','runs_pkey','runs_owner_id_idx','runs_owner_started_idx','runs_heartbeat_idx','run_meta_pkey','run_meta_owner_id_idx','run_meta_owner_execution_idx','run_meta_retry_of_idx','run_meta_parent_run_idx','steps_pkey','steps_owner_id_idx','steps_run_idx_idx','step_evidence_pkey','step_evidence_owner_id_idx','step_evidence_run_idx_idx','checkpoints_pkey','checkpoints_owner_id_idx','checkpoints_run_idx_idx','model_prices_pkey','model_prices_owner_id_idx','model_prices_provider_id_idx','model_prices_owner_provider_model_idx','cost_entries_pkey','cost_entries_owner_id_idx','cost_entries_run_id_idx','cost_entries_run_call_idx','cost_entries_idempotency_key_idx','cost_entries_capture_call_idx','cost_entries_job_call_idx','teach_recordings_pkey','teach_recordings_owner_id_idx','teach_recordings_agent_id_idx','teach_recordings_active_agent_idx','routines_pkey','routines_source_message_id_unique','routines_owner_id_idx','routines_agent_id_idx','routines_owner_next_run_idx','replay_scripts_pkey','replay_scripts_owner_id_idx','replay_scripts_agent_id_idx','replay_scripts_source_run_idx','replay_script_versions_pkey','replay_script_versions_owner_id_idx','replay_script_versions_script_id_idx','replay_script_versions_script_version_idx','replay_script_proposals_pkey','replay_script_proposals_owner_id_idx','replay_script_proposals_script_id_idx','replay_script_proposals_heal_run_idx','replay_script_proposals_pending_script_idx','skills_pkey','skills_capture_id_unique','skills_owner_id_idx','skills_agent_id_idx','skills_owner_agent_name_idx','skill_versions_pkey','skill_versions_owner_id_idx','skill_versions_skill_version_idx','approvals_pkey','approvals_owner_id_idx','permissions_pkey','permissions_owner_id_idx','permissions_active_idx','permission_uses_pkey','permission_uses_permission_used_idx','audit_log_pkey','audit_log_owner_created_idx','audit_log_owner_seq_idx','audit_log_owner_source_ref_idx','memory_entries_pkey','memory_entries_owner_id_idx','memory_entries_owner_doc_idx','memory_entries_owner_agent_idx','memory_versions_pkey','memory_versions_owner_id_idx','memory_versions_owner_doc_idx','memory_versions_owner_doc_seq_idx','memory_changes_pkey','memory_changes_owner_id_idx','memory_changes_owner_agent_idx','memory_changes_owner_state_idx','memory_review_state_pkey','memory_review_state_owner_idx','memory_versions_batch_idx','messages_search_idx','connections_pkey','connections_owner_id_idx','connections_agent_label_idx','github_device_flows_pkey','github_device_flows_owner_idx','github_device_flows_agent_idx','github_device_flows_status_idx','mcp_servers_pkey','mcp_servers_owner_id_idx','mcp_servers_agent_key_idx','composio_keys_pkey','composio_keys_owner_idx','composio_accounts_pkey','composio_accounts_owner_id_idx','composio_accounts_owner_agent_idx','composio_accounts_agent_toolkit_idx','starter_crew_setups_pkey','starter_crew_setups_owner_idx','starter_crew_members_pkey','starter_crew_members_owner_id_idx','starter_crew_members_setup_template_idx','crew_report_settings_pkey','crew_report_deliveries_pkey','crew_report_deliveries_owner_id_idx','crew_report_deliveries_owner_scheduled_idx','crews_owner_id_idx','crews_pkey','crew_members_owner_id_idx','crew_members_crew_id_idx','crew_members_crew_agent_idx','crew_members_pkey')) OR
+      WHERE n.nspname = 'public' AND c.relkind = 'i' AND c.relname NOT IN ('owner_pkey','owner_login_unique','owner_singleton_idx','sessions_pkey','sessions_token_hash_unique','sessions_owner_id_idx','sessions_expires_at_idx','agents_pkey','agents_owner_id_idx','agent_canaries_pkey','agent_canaries_owner_id_idx','agent_canaries_sha256_idx','security_events_pkey','security_events_owner_created_idx','security_events_source_ref_unique','agent_policies_pkey','agent_policies_owner_id_idx','chat_sessions_pkey','chat_sessions_owner_id_idx','chat_sessions_owner_agent_idx','messages_pkey','messages_owner_id_idx','messages_session_created_idx','messages_run_id_idx','providers_pkey','providers_owner_id_idx','model_roles_pkey','model_roles_owner_id_idx','model_roles_provider_id_idx','model_roles_owner_role_idx','runs_pkey','runs_owner_id_idx','runs_owner_started_idx','runs_heartbeat_idx','run_meta_pkey','run_meta_owner_id_idx','run_meta_owner_execution_idx','run_meta_retry_of_idx','run_meta_parent_run_idx','steps_pkey','steps_owner_id_idx','steps_run_idx_idx','step_evidence_pkey','step_evidence_owner_id_idx','step_evidence_run_idx_idx','checkpoints_pkey','checkpoints_owner_id_idx','checkpoints_run_idx_idx','model_prices_pkey','model_prices_owner_id_idx','model_prices_provider_id_idx','model_prices_owner_provider_model_idx','cost_entries_pkey','cost_entries_owner_id_idx','cost_entries_run_id_idx','cost_entries_run_call_idx','cost_entries_idempotency_key_idx','cost_entries_capture_call_idx','cost_entries_job_call_idx','teach_recordings_pkey','teach_recordings_owner_id_idx','teach_recordings_agent_id_idx','teach_recordings_active_agent_idx','routines_pkey','routines_source_message_id_unique','routines_owner_id_idx','routines_agent_id_idx','routines_owner_next_run_idx','replay_scripts_pkey','replay_scripts_owner_id_idx','replay_scripts_agent_id_idx','replay_scripts_source_run_idx','replay_script_versions_pkey','replay_script_versions_owner_id_idx','replay_script_versions_script_id_idx','replay_script_versions_script_version_idx','replay_script_proposals_pkey','replay_script_proposals_owner_id_idx','replay_script_proposals_script_id_idx','replay_script_proposals_heal_run_idx','replay_script_proposals_pending_script_idx','skills_pkey','skills_capture_id_unique','skills_owner_id_idx','skills_agent_id_idx','skills_owner_agent_name_idx','skill_versions_pkey','skill_versions_owner_id_idx','skill_versions_skill_version_idx','approvals_pkey','approvals_owner_id_idx','permissions_pkey','permissions_owner_id_idx','permissions_active_idx','permission_uses_pkey','permission_uses_permission_used_idx','audit_log_pkey','audit_log_owner_created_idx','audit_log_owner_seq_idx','audit_log_owner_source_ref_idx','memory_entries_pkey','memory_entries_owner_id_idx','memory_entries_owner_doc_idx','memory_entries_owner_agent_idx','memory_versions_pkey','memory_versions_owner_id_idx','memory_versions_owner_doc_idx','memory_versions_owner_doc_seq_idx','memory_changes_pkey','memory_changes_owner_id_idx','memory_changes_owner_agent_idx','memory_changes_owner_state_idx','memory_review_state_pkey','memory_review_state_owner_idx','memory_versions_batch_idx','messages_search_idx','connections_pkey','connections_owner_id_idx','connections_agent_label_idx','github_device_flows_pkey','github_device_flows_owner_idx','github_device_flows_agent_idx','github_device_flows_status_idx','mcp_servers_pkey','mcp_servers_owner_id_idx','mcp_servers_agent_key_idx','composio_keys_pkey','composio_keys_owner_idx','composio_accounts_pkey','composio_accounts_owner_id_idx','composio_accounts_owner_agent_idx','composio_accounts_agent_toolkit_idx','starter_crew_setups_pkey','starter_crew_setups_owner_idx','starter_crew_members_pkey','starter_crew_members_owner_id_idx','starter_crew_members_setup_template_idx','crew_report_settings_pkey','crew_report_deliveries_pkey','crew_report_deliveries_owner_id_idx','crew_report_deliveries_owner_scheduled_idx','crews_owner_id_idx','crews_pkey','crew_members_owner_id_idx','crew_members_crew_id_idx','crew_members_crew_agent_idx','crew_members_pkey','check_ins_pkey','check_ins_owner_id_idx','check_ins_agent_id_idx','check_ins_owner_next_idx')) OR
      EXISTS (SELECT FROM pg_trigger t JOIN pg_class c ON c.oid = t.tgrelid
       JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname IN ('public','drizzle') AND NOT t.tgisinternal) THEN
     RAISE EXCEPTION 'unexpected index or trigger';
   END IF;
   IF EXISTS (SELECT FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
-      JOIN pg_roles o ON o.oid = c.relowner WHERE n.nspname = 'public' AND c.relname IN ('owner','sessions','agents','agent_policies','agent_canaries','security_events','chat_sessions','messages','providers','model_roles','runs','run_meta','steps','step_evidence','checkpoints','model_prices','cost_entries','teach_recordings','routines','replay_scripts','replay_script_versions','replay_script_proposals','skills','skill_versions','approvals','permissions','permission_uses','audit_log','memory_entries','memory_versions','memory_changes','memory_review_state','connections','github_device_flows','mcp_servers','composio_keys','composio_accounts','starter_crew_setups','starter_crew_members','crew_report_settings','crew_report_deliveries','crews','crew_members')
+      JOIN pg_roles o ON o.oid = c.relowner WHERE n.nspname = 'public' AND c.relname IN ('owner','sessions','agents','agent_policies','agent_canaries','security_events','chat_sessions','messages','providers','model_roles','runs','run_meta','steps','step_evidence','checkpoints','model_prices','cost_entries','teach_recordings','routines','replay_scripts','replay_script_versions','replay_script_proposals','skills','skill_versions','approvals','permissions','permission_uses','audit_log','memory_entries','memory_versions','memory_changes','memory_review_state','connections','github_device_flows','mcp_servers','composio_keys','composio_accounts','starter_crew_setups','starter_crew_members','crew_report_settings','crew_report_deliveries','crews','crew_members','check_ins')
       AND (c.relkind <> 'r' OR o.rolname NOT IN ('eclipse_bootstrap','eclipse_migrator'))) THEN
     RAISE EXCEPTION 'incompatible owner table';
   END IF;
   IF EXISTS (SELECT FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
       CROSS JOIN LATERAL aclexplode(COALESCE(c.relacl, acldefault('r', c.relowner))) a
-      WHERE n.nspname = 'public' AND c.relname IN ('owner','sessions','agents','agent_policies','agent_canaries','security_events','chat_sessions','messages','providers','model_roles','runs','run_meta','steps','step_evidence','checkpoints','model_prices','cost_entries','teach_recordings','routines','replay_scripts','replay_script_versions','replay_script_proposals','skills','skill_versions','approvals','permissions','permission_uses','audit_log','memory_entries','memory_versions','memory_changes','memory_review_state','connections','github_device_flows','mcp_servers','composio_keys','composio_accounts','starter_crew_setups','starter_crew_members','crew_report_settings','crew_report_deliveries','crews','crew_members') AND a.grantee <> c.relowner
+      WHERE n.nspname = 'public' AND c.relname IN ('owner','sessions','agents','agent_policies','agent_canaries','security_events','chat_sessions','messages','providers','model_roles','runs','run_meta','steps','step_evidence','checkpoints','model_prices','cost_entries','teach_recordings','routines','replay_scripts','replay_script_versions','replay_script_proposals','skills','skill_versions','approvals','permissions','permission_uses','audit_log','memory_entries','memory_versions','memory_changes','memory_review_state','connections','github_device_flows','mcp_servers','composio_keys','composio_accounts','starter_crew_setups','starter_crew_members','crew_report_settings','crew_report_deliveries','crews','crew_members','check_ins') AND a.grantee <> c.relowner
         AND NOT (COALESCE(a.grantee = (SELECT oid FROM pg_roles WHERE rolname = 'eclipse_app'), false)
                  AND ((c.relname IN ('owner','agent_policies','agent_canaries','model_roles') AND a.privilege_type IN ('SELECT','INSERT','UPDATE'))
                    OR (c.relname IN ('sessions','agents','providers','connections','github_device_flows','mcp_servers','composio_keys','composio_accounts') AND a.privilege_type IN ('SELECT','INSERT','UPDATE','DELETE'))
@@ -81,7 +81,8 @@ BEGIN
                     OR (c.relname = 'replay_script_versions' AND a.privilege_type IN ('SELECT','INSERT'))
                     OR (c.relname = 'replay_script_proposals' AND a.privilege_type IN ('SELECT','INSERT','UPDATE'))
                     OR (c.relname = 'skill_versions' AND a.privilege_type IN ('SELECT','INSERT'))
-                    OR (c.relname IN ('starter_crew_setups','starter_crew_members','crew_report_settings','crew_report_deliveries','crews','crew_members') AND a.privilege_type IN ('SELECT','INSERT','UPDATE')))
+                    OR (c.relname IN ('starter_crew_setups','starter_crew_members','crew_report_settings','crew_report_deliveries','crews','crew_members') AND a.privilege_type IN ('SELECT','INSERT','UPDATE'))
+                    OR (c.relname = 'check_ins' AND a.privilege_type IN ('SELECT','INSERT','UPDATE','DELETE')))
                  AND NOT a.is_grantable)) THEN
     RAISE EXCEPTION 'unexpected owner table grants';
   END IF;
@@ -310,21 +311,27 @@ BEGIN
   IF to_regclass('public.agents') IS NOT NULL AND (
       (SELECT array_agg(attname::text ORDER BY attnum) FROM pg_attribute
        WHERE attrelid = to_regclass('public.agents') AND attnum > 0 AND NOT attisdropped)
-        IS DISTINCT FROM (CASE WHEN EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agents') AND attname = 'avatar_variant' AND NOT attisdropped)
+        IS DISTINCT FROM (CASE WHEN EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agents') AND attname = 'instructions' AND NOT attisdropped)
+          THEN ARRAY['id','owner_id','name','role','soul_md','status','daily_budget_cents','monthly_budget_cents','created_at','updated_at','attention_reason','astra_mode','avatar_variant','instructions']
+          WHEN EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agents') AND attname = 'avatar_variant' AND NOT attisdropped)
           THEN ARRAY['id','owner_id','name','role','soul_md','status','daily_budget_cents','monthly_budget_cents','created_at','updated_at','attention_reason','astra_mode','avatar_variant']
           WHEN EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agents') AND attname = 'astra_mode' AND NOT attisdropped)
           THEN ARRAY['id','owner_id','name','role','soul_md','status','daily_budget_cents','monthly_budget_cents','created_at','updated_at','attention_reason','astra_mode']
           ELSE ARRAY['id','owner_id','name','role','soul_md','status','daily_budget_cents','monthly_budget_cents','created_at','updated_at','attention_reason'] END) OR
       (SELECT array_agg(format_type(atttypid, atttypmod) ORDER BY attnum) FROM pg_attribute
        WHERE attrelid = to_regclass('public.agents') AND attnum > 0 AND NOT attisdropped)
-        IS DISTINCT FROM (CASE WHEN EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agents') AND attname = 'avatar_variant' AND NOT attisdropped)
+        IS DISTINCT FROM (CASE WHEN EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agents') AND attname = 'instructions' AND NOT attisdropped)
+          THEN ARRAY['uuid','uuid','text','text','text','text','integer','integer','timestamp with time zone','timestamp with time zone','text','boolean','integer','text']
+          WHEN EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agents') AND attname = 'avatar_variant' AND NOT attisdropped)
           THEN ARRAY['uuid','uuid','text','text','text','text','integer','integer','timestamp with time zone','timestamp with time zone','text','boolean','integer']
           WHEN EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agents') AND attname = 'astra_mode' AND NOT attisdropped)
           THEN ARRAY['uuid','uuid','text','text','text','text','integer','integer','timestamp with time zone','timestamp with time zone','text','boolean']
           ELSE ARRAY['uuid','uuid','text','text','text','text','integer','integer','timestamp with time zone','timestamp with time zone','text'] END) OR
       (SELECT array_agg(attnotnull ORDER BY attnum) FROM pg_attribute
        WHERE attrelid = to_regclass('public.agents') AND attnum > 0 AND NOT attisdropped)
-        IS DISTINCT FROM (CASE WHEN EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agents') AND attname = 'avatar_variant' AND NOT attisdropped)
+        IS DISTINCT FROM (CASE WHEN EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agents') AND attname = 'instructions' AND NOT attisdropped)
+          THEN ARRAY[true,true,true,true,true,true,true,true,true,true,false,true,true,true]
+          WHEN EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agents') AND attname = 'avatar_variant' AND NOT attisdropped)
           THEN ARRAY[true,true,true,true,true,true,true,true,true,true,false,true,true]
           WHEN EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agents') AND attname = 'astra_mode' AND NOT attisdropped)
           THEN ARRAY[true,true,true,true,true,true,true,true,true,true,false,true]
@@ -334,23 +341,32 @@ BEGIN
           'agents_attention_reason_check=CHECK (((attention_reason IS NULL) OR (attention_reason = ANY (ARRAY[''budget_warning''::text, ''budget_paused''::text]))))',
           CASE WHEN EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agents') AND attname = 'avatar_variant' AND NOT attisdropped) THEN 'agents_avatar_variant_check=CHECK (((avatar_variant >= 0) AND (avatar_variant <= 11)))' END,
           'agents_daily_budget_check=CHECK (((daily_budget_cents >= 1) AND (daily_budget_cents <= 100000000)))',
+          CASE WHEN EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agents') AND attname = 'instructions' AND NOT attisdropped) THEN 'agents_instructions_length_check=CHECK ((char_length(instructions) <= 4000))' END,
           'agents_monthly_budget_check=CHECK (((monthly_budget_cents >= 1) AND (monthly_budget_cents <= 100000000)))',
           'agents_pkey=PRIMARY KEY (id)',
+          CASE WHEN EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agents') AND attname = 'instructions' AND NOT attisdropped) THEN 'agents_soul_md_length_check=CHECK ((char_length(soul_md) <= 2000))' END,
           'agents_status_check=CHECK ((status = ANY (ARRAY[''active''::text, ''paused''::text])))'], NULL) AND
        (SELECT array_agg(conname::text || '=' || pg_get_constraintdef(oid) ORDER BY conname) FROM pg_constraint WHERE conrelid = to_regclass('public.agents'))
         IS DISTINCT FROM array_remove(ARRAY[
           'agents_attention_reason_check=CHECK (((attention_reason IS NULL) OR (attention_reason = ANY (ARRAY[''budget_warning''::text, ''budget_paused''::text, ''security_stop''::text, ''approval_pending''::text]))))',
           CASE WHEN EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agents') AND attname = 'avatar_variant' AND NOT attisdropped) THEN 'agents_avatar_variant_check=CHECK (((avatar_variant >= 0) AND (avatar_variant <= 11)))' END,
           'agents_daily_budget_check=CHECK (((daily_budget_cents >= 1) AND (daily_budget_cents <= 100000000)))',
+          CASE WHEN EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agents') AND attname = 'instructions' AND NOT attisdropped) THEN 'agents_instructions_length_check=CHECK ((char_length(instructions) <= 4000))' END,
           'agents_monthly_budget_check=CHECK (((monthly_budget_cents >= 1) AND (monthly_budget_cents <= 100000000)))',
           'agents_pkey=PRIMARY KEY (id)',
+          CASE WHEN EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agents') AND attname = 'instructions' AND NOT attisdropped) THEN 'agents_soul_md_length_check=CHECK ((char_length(soul_md) <= 2000))' END,
           'agents_status_check=CHECK ((status = ANY (ARRAY[''active''::text, ''paused''::text])))'], NULL)) OR
       (SELECT array_agg(adnum::integer ORDER BY adnum) FROM pg_attrdef WHERE adrelid = to_regclass('public.agents'))
-        IS DISTINCT FROM (CASE WHEN EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agents') AND attname = 'avatar_variant' AND NOT attisdropped)
+        IS DISTINCT FROM (CASE WHEN EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agents') AND attname = 'instructions' AND NOT attisdropped)
+          THEN ARRAY[6,9,10,12,13,14]
+          WHEN EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agents') AND attname = 'avatar_variant' AND NOT attisdropped)
           THEN ARRAY[6,9,10,12,13]
           WHEN EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agents') AND attname = 'astra_mode' AND NOT attisdropped)
           THEN ARRAY[6,9,10,12] ELSE ARRAY[6,9,10] END) OR
-      EXISTS (SELECT FROM pg_attrdef WHERE adrelid = to_regclass('public.agents') AND pg_get_expr(adbin, adrelid) <> 'now()' AND adnum <> 6 AND adnum <> 12 AND adnum <> 13) OR
+      EXISTS (SELECT FROM pg_attrdef WHERE adrelid = to_regclass('public.agents') AND pg_get_expr(adbin, adrelid) <> 'now()' AND adnum <> 6 AND adnum <> 12 AND adnum <> 13 AND adnum <> 14) OR
+      (EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agents') AND attname = 'instructions' AND NOT attisdropped)
+        AND (SELECT pg_get_expr(adbin, adrelid) FROM pg_attrdef WHERE adrelid = to_regclass('public.agents') AND adnum = 14)
+          IS DISTINCT FROM '''''::text') OR
       (SELECT pg_get_expr(adbin, adrelid) FROM pg_attrdef WHERE adrelid = to_regclass('public.agents') AND adnum = 6)
         IS DISTINCT FROM '''paused''::text' OR
       (EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agents') AND attname = 'astra_mode' AND NOT attisdropped)
@@ -727,6 +743,42 @@ BEGIN
            'CREATE UNIQUE INDEX crew_members_pkey ON public.crew_members USING btree (id)']) THEN
      RAISE EXCEPTION 'unexpected crew members schema';
    END IF;
+  IF to_regclass('public.check_ins') IS NOT NULL AND (
+      (SELECT array_agg(attname::text ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid = to_regclass('public.check_ins') AND attnum > 0 AND NOT attisdropped)
+        IS DISTINCT FROM ARRAY['id','owner_id','agent_id','name','kind','url','via','goal','urgent','interval_minutes','window_start','window_end','timezone','active','fingerprint','snapshot','quiet_streak','pending_changes','last_status','next_check_at','last_checked_at','last_changed_at','created_at','updated_at'] OR
+      (SELECT array_agg(format_type(atttypid, atttypmod) ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid = to_regclass('public.check_ins') AND attnum > 0 AND NOT attisdropped)
+        IS DISTINCT FROM ARRAY['uuid','uuid','uuid','text','text','text','text','text','boolean','integer','integer','integer','text','boolean','text','text','integer','integer','text','timestamp with time zone','timestamp with time zone','timestamp with time zone','timestamp with time zone','timestamp with time zone'] OR
+      (SELECT array_agg(attnotnull ORDER BY attnum) FROM pg_attribute
+       WHERE attrelid = to_regclass('public.check_ins') AND attnum > 0 AND NOT attisdropped)
+        IS DISTINCT FROM ARRAY[true,true,true,true,true,true,true,false,true,true,true,true,true,true,false,false,true,true,false,true,false,false,true,true] OR
+      (SELECT array_agg(conname::text || '=' || pg_get_constraintdef(oid) ORDER BY conname) FROM pg_constraint WHERE conrelid = to_regclass('public.check_ins'))
+        IS DISTINCT FROM ARRAY[
+          'check_ins_agent_id_agents_id_fk=FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE',
+          'check_ins_interval_check=CHECK (((interval_minutes >= 5) AND (interval_minutes <= 720)))',
+          'check_ins_kind_check=CHECK (((kind = ANY (ARRAY[''sundance''::text, ''moondance''::text])) AND (via = ANY (ARRAY[''fetch''::text, ''browser''::text]))))',
+          'check_ins_pkey=PRIMARY KEY (id)',
+          'check_ins_state_check=CHECK ((((fingerprint IS NULL) OR (fingerprint ~ ''^[0-9a-f]{64}$''::text)) AND ((snapshot IS NULL) OR (char_length(snapshot) <= 12000)) AND ((quiet_streak >= 0) AND (quiet_streak <= 1000000)) AND ((pending_changes >= 0) AND (pending_changes <= 1000000))))',
+          'check_ins_status_check=CHECK (((last_status IS NULL) OR (last_status = ANY (ARRAY[''first''::text, ''unchanged''::text, ''changed''::text, ''failed''::text, ''skipped''::text, ''needs_login''::text]))))',
+          'check_ins_text_check=CHECK ((((char_length(name) >= 1) AND (char_length(name) <= 80)) AND ((char_length(url) >= 9) AND (char_length(url) <= 2000)) AND ((goal IS NULL) OR ((char_length(goal) >= 1) AND (char_length(goal) <= 2000))) AND ((char_length(timezone) >= 1) AND (char_length(timezone) <= 100))))',
+          'check_ins_window_check=CHECK ((((window_start >= 0) AND (window_start <= 23)) AND ((window_end >= 0) AND (window_end <= 23)) AND (window_start <> window_end)))'] OR
+      (SELECT array_agg(adnum::integer ORDER BY adnum) FROM pg_attrdef WHERE adrelid = to_regclass('public.check_ins'))
+        IS DISTINCT FROM ARRAY[7,9,14,17,18,23,24] OR
+      EXISTS (SELECT FROM pg_attrdef d WHERE d.adrelid = to_regclass('public.check_ins')
+        AND ((d.adnum = 7 AND pg_get_expr(d.adbin, d.adrelid) <> '''fetch''::text')
+          OR (d.adnum = 9 AND pg_get_expr(d.adbin, d.adrelid) <> 'false')
+          OR (d.adnum = 14 AND pg_get_expr(d.adbin, d.adrelid) <> 'true')
+          OR (d.adnum IN (17,18) AND pg_get_expr(d.adbin, d.adrelid) <> '0')
+          OR (d.adnum IN (23,24) AND pg_get_expr(d.adbin, d.adrelid) <> 'now()'))) OR
+      (SELECT array_agg(indexdef ORDER BY indexname) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'check_ins')
+        IS DISTINCT FROM ARRAY[
+          'CREATE INDEX check_ins_agent_id_idx ON public.check_ins USING btree (agent_id)',
+          'CREATE INDEX check_ins_owner_id_idx ON public.check_ins USING btree (owner_id)',
+          'CREATE INDEX check_ins_owner_next_idx ON public.check_ins USING btree (owner_id, next_check_at)',
+          'CREATE UNIQUE INDEX check_ins_pkey ON public.check_ins USING btree (id)']) THEN
+    RAISE EXCEPTION 'unexpected check ins schema';
+  END IF;
   IF to_regclass('public.crew_report_settings') IS NOT NULL AND (
       (SELECT array_agg(attname::text ORDER BY attnum) FROM pg_attribute
        WHERE attrelid = to_regclass('public.crew_report_settings') AND attnum > 0 AND NOT attisdropped)
@@ -803,10 +855,14 @@ BEGIN
       EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agent_policies') AND attname = 'memory_mode' AND NOT attisdropped) AND (
       (SELECT array_agg(attname::text ORDER BY attnum) FROM pg_attribute
        WHERE attrelid = to_regclass('public.agent_policies') AND attnum > 0 AND NOT attisdropped)
-        IS DISTINCT FROM ARRAY['agent_id','owner_id','tools','domains','actions','memory_scopes','updated_at','memory_mode'] OR
+        IS DISTINCT FROM (CASE WHEN EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agent_policies') AND attname = 'any_public_web' AND NOT attisdropped)
+          THEN ARRAY['agent_id','owner_id','tools','domains','actions','memory_scopes','updated_at','memory_mode','any_public_web']
+          ELSE ARRAY['agent_id','owner_id','tools','domains','actions','memory_scopes','updated_at','memory_mode'] END) OR
       (SELECT array_agg(format_type(atttypid, atttypmod) ORDER BY attnum) FROM pg_attribute
        WHERE attrelid = to_regclass('public.agent_policies') AND attnum > 0 AND NOT attisdropped)
-        IS DISTINCT FROM ARRAY['uuid','uuid','text[]','text[]','text[]','text[]','timestamp with time zone','text'] OR
+        IS DISTINCT FROM (CASE WHEN EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agent_policies') AND attname = 'any_public_web' AND NOT attisdropped)
+          THEN ARRAY['uuid','uuid','text[]','text[]','text[]','text[]','timestamp with time zone','text','boolean']
+          ELSE ARRAY['uuid','uuid','text[]','text[]','text[]','text[]','timestamp with time zone','text'] END) OR
       EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agent_policies')
         AND attnum > 0 AND NOT attisdropped AND NOT attnotnull) OR
       (SELECT array_agg(conname::text || '=' || pg_get_constraintdef(oid) ORDER BY conname) FROM pg_constraint WHERE conrelid = to_regclass('public.agent_policies'))
@@ -819,13 +875,16 @@ BEGIN
           'agent_policies_pkey=PRIMARY KEY (agent_id)',
           'agent_policies_tools_check=CHECK ((cardinality(tools) <= 64))'] OR
       (SELECT array_agg(adnum::integer ORDER BY adnum) FROM pg_attrdef WHERE adrelid = to_regclass('public.agent_policies'))
-        IS DISTINCT FROM ARRAY[3,4,5,6,7,8] OR
+        IS DISTINCT FROM (CASE WHEN EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agent_policies') AND attname = 'any_public_web' AND NOT attisdropped) THEN ARRAY[3,4,5,6,7,8,9] ELSE ARRAY[3,4,5,6,7,8] END) OR
       EXISTS (SELECT FROM pg_attrdef WHERE adrelid = to_regclass('public.agent_policies') AND adnum BETWEEN 3 AND 6
         AND pg_get_expr(adbin, adrelid) <> '''{}''::text[]') OR
       (SELECT pg_get_expr(adbin, adrelid) FROM pg_attrdef WHERE adrelid = to_regclass('public.agent_policies') AND adnum = 7)
         IS DISTINCT FROM 'now()' OR
       (SELECT pg_get_expr(adbin, adrelid) FROM pg_attrdef WHERE adrelid = to_regclass('public.agent_policies') AND adnum = 8)
         IS DISTINCT FROM '''auto''::text' OR
+      (EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agent_policies') AND attname = 'any_public_web' AND NOT attisdropped)
+        AND (SELECT pg_get_expr(adbin, adrelid) FROM pg_attrdef WHERE adrelid = to_regclass('public.agent_policies') AND adnum = 9)
+          IS DISTINCT FROM 'false') OR
       (SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE conrelid = to_regclass('public.agent_policies') AND conname = 'agent_policies_agent_id_agents_id_fk')
         IS DISTINCT FROM 'FOREIGN KEY (agent_id) REFERENCES agents(id) ON DELETE CASCADE' OR
       (SELECT array_agg(indexdef ORDER BY indexname) FROM pg_indexes WHERE schemaname = 'public' AND tablename = 'agent_policies')
@@ -1147,7 +1206,7 @@ BEGIN
     END IF;
     IF (migration_count >= 1) <> (to_regclass('public.owner') IS NOT NULL) OR
        (migration_count >= 2) <> (to_regclass('public.sessions') IS NOT NULL) OR
-       (migration_count >= 3) <> (to_regclass('public.owner_singleton_idx') IS NOT NULL) OR
+        (migration_count >= 3 AND migration_count <= 39) <> (to_regclass('public.owner_singleton_idx') IS NOT NULL) OR
        (migration_count >= 4) <> ((to_regclass('public.agents') IS NOT NULL) AND (to_regclass('public.agent_policies') IS NOT NULL)) OR
        (migration_count >= 5) <> ((to_regclass('public.chat_sessions') IS NOT NULL) AND (to_regclass('public.messages') IS NOT NULL)) OR
        (migration_count >= 6) <> ((to_regclass('public.providers') IS NOT NULL) AND (to_regclass('public.model_roles') IS NOT NULL)) OR
@@ -1182,7 +1241,9 @@ BEGIN
         (migration_count >= 35) <> (EXISTS (
           SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.cost_entries') AND attname = 'background_job_id' AND NOT attisdropped)) OR
         (migration_count >= 36) <> (to_regclass('public.crews') IS NOT NULL AND to_regclass('public.crew_members') IS NOT NULL) OR
-        (migration_count >= 37) <> (EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agents') AND attname = 'avatar_variant' AND NOT attisdropped)) THEN
+        (migration_count >= 37) <> (EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agents') AND attname = 'avatar_variant' AND NOT attisdropped)) OR
+        (migration_count >= 38) <> (EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agents') AND attname = 'instructions' AND NOT attisdropped) AND EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.agent_policies') AND attname = 'any_public_web' AND NOT attisdropped)) OR
+        (migration_count >= 39) <> (to_regclass('public.check_ins') IS NOT NULL) THEN
       RAISE EXCEPTION 'inconsistent migration history';
     END IF;
   ELSIF to_regclass('public.owner') IS NOT NULL OR to_regclass('public.sessions') IS NOT NULL OR
@@ -1207,6 +1268,7 @@ BEGIN
          to_regclass('public.starter_crew_setups') IS NOT NULL OR to_regclass('public.starter_crew_members') IS NOT NULL OR
          to_regclass('public.crew_report_settings') IS NOT NULL OR to_regclass('public.crew_report_deliveries') IS NOT NULL OR
          to_regclass('public.crews') IS NOT NULL OR to_regclass('public.crew_members') IS NOT NULL OR
+         to_regclass('public.check_ins') IS NOT NULL OR
          to_regclass('pgboss.version') IS NOT NULL THEN
     RAISE EXCEPTION 'missing migration history';
   END IF;
@@ -1355,6 +1417,11 @@ BEGIN
     ALTER TABLE public.starter_crew_members OWNER TO eclipse_migrator;
     REVOKE ALL ON public.starter_crew_members FROM PUBLIC, eclipse_app;
     GRANT SELECT, INSERT, UPDATE ON public.starter_crew_members TO eclipse_app;
+  END IF;
+  IF to_regclass('public.check_ins') IS NOT NULL THEN
+    ALTER TABLE public.check_ins OWNER TO eclipse_migrator;
+    REVOKE ALL ON public.check_ins FROM PUBLIC, eclipse_app;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON public.check_ins TO eclipse_app;
   END IF;
   IF to_regclass('public.crew_report_settings') IS NOT NULL THEN
     ALTER TABLE public.crew_report_settings OWNER TO eclipse_migrator;

@@ -21,6 +21,7 @@ import { subagentLimits } from "./subagents";
 import { confidenceGate } from "./confidence-gate";
 import { createVisualVerifier } from "./visual-verifier";
 import { createSamVerifier } from "./sam";
+import { createComputerLocator, groundVisually, isVisualMethod, MAX_REGROUND_DRIFT, supportsComputerUse, type VisualGrounders } from "./visual-grounding";
 import type { ProviderTransport } from "../providers/types";
 import { addUsage, checkCancelled, verifyStep, type Evidence, type Verification, type VerificationServices, type SamState } from "./verification";
 import { cleanText } from "../receipts/chain.mjs";
@@ -104,6 +105,8 @@ export interface RunDeps {
   skills?: AgentSkill[];
   desktop: DesktopPort;
   grounder?: Grounder;
+  // Rungs 3-4 (SAM masks, native computer use). Built from `verification`/`samConfig` and the Main model when left out.
+  visualGrounders?: VisualGrounders;
   verification?: VerificationServices;
   samConfig?: { state: SamState; transport?: ProviderTransport; provider?: { providerId: string; kind: "meta" | "openai-compatible"; baseUrl: string | null } };
   costs?: RunCostSink;
@@ -279,6 +282,7 @@ const HANDOFF_FAILURE_TEXT: Record<string, string> = {
   handoff_cycle: "That request already went to this teammate, so I did not send it again.",
   handoff_limit: "This request already passed through two agents, so I did not hand it on again.",
   different_crew: "That teammate is not in my crew, so I did not send it. Handoffs stay inside the crew.",
+  not_in_crew: "I'm not in a crew, so I can't hand this off myself. Start a message with @Name to send it to that teammate.",
   no_owner_message: "I can only hand off a request you sent in chat, so I did not send this one.",
   invalid_note: "The handoff note was not valid, so I did not send it.",
   start_failed: "The handoff could not be started, so I did not send it.",
@@ -355,6 +359,13 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
         usage: (value) => addUsage(usage, value), signal: runSignal,
         ...(deps.costs && deps.samConfig.provider ? { costs: deps.costs, provider: deps.samConfig.provider } : {}),
       }),
+    } : {}),
+  };
+  const visualGrounders: VisualGrounders = deps.visualGrounders ?? {
+    ...(services.samState === "on" && services.sam ? { sam: services.sam } : {}),
+    ...(supportsComputerUse(deps.provider, deps.model) ? {
+      computer: createComputerLocator({ provider: deps.provider, model: deps.model, task: deps.task, timezone: deps.timezone, now,
+        usage: (value) => addUsage(usage, value), signal: runSignal }),
     } : {}),
   };
   const allowed = new Set(deps.agent.actions.map((action) => action.toLowerCase()));
@@ -1247,6 +1258,16 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
             missedNames = suggestNames(snapshot, intent.target);
             continue;
           }
+          // Rungs 3-4: SAM masks, then native computer use, before handing off. Clicks only; never on a page that
+          // shows a payment frame. The confidence gate still needs a second, independent agreement.
+          if (intent.action === "click" && !((snapshot?.paymentFrames ?? 0) > 0) && (visualGrounders.sam || visualGrounders.computer)) {
+            let costStopped = false;
+            point = await withinDeadline(groundVisually(intent.target, shot, visualGrounders, runSignal))
+              .catch((error) => { if (stopForCost(error)) costStopped = true; return null; });
+            if (costStopped || stopIfStopped()) break;
+          }
+        }
+        if (!validPoint(point, shot)) {
           const hidden = snapshot ? " It may be inside a closed shadow root, which I can't reach." : "";
           stop("needs_owner", { type: "message", text: snapshot
             ? `I can't locate that control on the page, so I am handing this back to you.${hidden}`
@@ -1317,10 +1338,20 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
         }
         if (!freshShot) { stop("desktop_error"); break; }
         let freshPoint = point;
+        // A visually grounded click is located again the same way; it may drift a few pixels, never jump.
+        const visualPoint = intent.action === "click" && isVisualMethod(point?.method);
         if (intent.action === "click") {
-          freshPoint = await withinDeadline(grounder.ground(intent, freshShot, freshSnapshot)).catch(() => null);
+          let costStopped = false;
+          freshPoint = visualPoint
+            ? await withinDeadline(groundVisually(intent.target, freshShot, visualGrounders, runSignal))
+              .catch((error) => { if (stopForCost(error)) costStopped = true; return null; })
+            : await withinDeadline(grounder.ground(intent, freshShot, freshSnapshot)).catch(() => null);
+          if (costStopped || stopIfStopped()) break;
         }
-        const moved = intent.action === "click"
+        const moved = visualPoint
+          ? !validPoint(freshPoint, freshShot) || freshPoint.method !== point!.method ||
+            Math.hypot(freshPoint.x - point!.x, freshPoint.y - point!.y) > MAX_REGROUND_DRIFT
+          : intent.action === "click"
           ? !freshSnapshot || !validPoint(freshPoint, freshShot) || (record.grounded !== null &&
             (freshPoint?.role !== record.grounded.role || freshPoint?.name !== record.grounded.name))
           : !freshSnapshot;
@@ -1345,6 +1376,7 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
       try {
         const gate = await withinDeadline(confidenceGate({
           intent, point, before: shot, snapshot, desktop: deps.desktop, services, signal: runSignal,
+          visual: visualGrounders, irreversible: risky !== "none",
         }));
         record.gate = gate.evidence;
         if (!gate.allowed) {

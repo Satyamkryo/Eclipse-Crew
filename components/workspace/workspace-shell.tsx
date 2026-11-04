@@ -23,6 +23,7 @@ type Props = {
   desktop?: ReactNode;
   history: ReactNode;
   memory: ReactNode;
+  routines?: ReactNode;
 };
 
 // The workspace composes the shared reference shell: sidebar + header from AppShell, the
@@ -35,7 +36,7 @@ function subscribeViewport(onChange: () => void) {
 const readViewport = () => window.innerWidth;
 const readNoViewport = () => null;
 
-export function WorkspaceShell({ initialMobileView, initialTab, agents, selectedAgent, owner, csrfToken, agentPane, chatPane, settings, desktop, history, memory }: Props) {
+export function WorkspaceShell({ initialMobileView, initialTab, agents, selectedAgent, owner, csrfToken, agentPane, chatPane, settings, desktop, history, memory, routines }: Props) {
   const [mobileView, setMobileView] = useState<MobileView>(initialMobileView);
   const [panelOpen, setPanelOpen] = useState(false);
   const [agentsSheetOpen, setAgentsSheetOpen] = useState(initialMobileView === "agents");
@@ -101,7 +102,7 @@ export function WorkspaceShell({ initialMobileView, initialTab, agents, selected
   };
 
   const center = (
-    <WorkspaceCenter agent={selectedAgent ?? undefined} initialTab={initialTab}>
+    <WorkspaceCenter agent={selectedAgent ?? undefined} agents={agents} initialTab={initialTab}>
       {(tab) => (
         <>
           {tab === "chat" && chatPane}
@@ -109,7 +110,7 @@ export function WorkspaceShell({ initialMobileView, initialTab, agents, selected
           {tab === "history" && <div className="h-full min-h-0 overflow-y-auto">{history}</div>}
           {tab === "memory" && <div className="h-full min-h-0 overflow-y-auto">{memory}</div>}
           {tab === "tools" && <ToolsTabEmpty />}
-          {tab === "routines" && <RoutinesTabEmpty />}
+          {tab === "routines" && (routines ? <div className="h-full min-h-0 overflow-y-auto">{routines}</div> : <RoutinesTabEmpty />)}
         </>
       )}
     </WorkspaceCenter>
@@ -132,8 +133,10 @@ export function WorkspaceShell({ initialMobileView, initialTab, agents, selected
         <div className="flex items-center gap-2">
           {!isMobile && <Button ref={agentsOpener} type="button" variant="secondary" size="sm" aria-label="Open agents"
             onClick={() => setAgentsSheetOpen(true)}><UsersRound aria-hidden="true" className="size-4" />Agents</Button>}
+          {selectedAgent && (
           <Button ref={panelOpener} type="button" variant="secondary" size="sm" aria-label="Open workspace panel"
             onClick={() => setPanelOpen(true)}><PanelRight aria-hidden="true" className="size-4" />Panel</Button>
+          )}
         </div>
       )}
       pageTitle="Workspace"
@@ -143,7 +146,7 @@ export function WorkspaceShell({ initialMobileView, initialTab, agents, selected
       {isMobile && mobileView === "panel" && <aside aria-label="Workspace panel" className="h-full">{column}</aside>}
       {!isDesktop && panelOpen && <Sheet label="Workspace panel" onClose={closePanel}>{column}</Sheet>}
       {!isMobile && !isDesktop && agentsSheetOpen && <Sheet label="Agents" onClose={() => setAgentsSheetOpen(false)}>{agentPane}</Sheet>}
-      {!isMobile && isDesktop && (
+      {!isMobile && isDesktop && selectedAgent && (
       <div className="h-full">
         <div className="flex h-full min-h-0">
           <section aria-label="Agent workspace" className="min-w-0 flex-1">{center}</section>
@@ -168,6 +171,9 @@ export function WorkspaceShell({ initialMobileView, initialTab, agents, selected
           </aside>
         </div>
       </div>
+      )}
+      {!isMobile && isDesktop && !selectedAgent && (
+      <section aria-label="Agent workspace" className="h-full min-w-0">{center}</section>
       )}
       {!isMobile && !isDesktop && (
       <div aria-hidden={panelOpen} className={cn("h-full", panelOpen && "hidden")}>

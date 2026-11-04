@@ -55,7 +55,7 @@ const AGENT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0
 const CANARY_HASH = /^[0-9a-f]{64}$/;
 const GIT_SITE = /^github\.com\/[A-Za-z0-9._-]{1,100}\/[A-Za-z0-9._-]{1,100}$/;
 const ACTION_CLASS = new Set(["download", "send", "post", "delete", "purchase", "submit"]);
-const POLICY_KEYS = new Set(["agentId", "blocked", "canaryHashes", "clearTrip", "domains", "trip"]);
+const POLICY_KEYS = new Set(["agentId", "anyPublic", "blocked", "canaryHashes", "clearTrip", "domains", "trip"]);
 
 export function validatePolicy(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new ProxyError("invalid_policy", 400);
@@ -68,13 +68,15 @@ export function validatePolicy(value) {
   if (value.trip !== undefined && typeof value.trip !== "boolean") throw new ProxyError("invalid_policy", 400);
   if (value.clearTrip !== undefined && typeof value.clearTrip !== "boolean") throw new ProxyError("invalid_policy", 400);
   if (value.trip && value.clearTrip) throw new ProxyError("invalid_policy", 400);
+  // ADR-036. Any public host; isBlockedAddress still refuses internal, LAN and metadata targets on every connection.
+  if (value.anyPublic !== undefined && typeof value.anyPublic !== "boolean") throw new ProxyError("invalid_policy", 400);
   const domains = value.domains.map((domain) => {
     if (typeof domain !== "string") throw new ProxyError("invalid_policy", 400);
     const normalized = domain.trim().toLowerCase();
     if (normalized.length > 253 || !POLICY_DOMAIN.test(normalized)) throw new ProxyError("invalid_policy", 400);
     return normalized;
   });
-  return { agentId: value.agentId.toLowerCase(), domains, blocked: value.blocked,
+  return { agentId: value.agentId.toLowerCase(), domains, anyPublic: value.anyPublic === true, blocked: value.blocked,
     canaryHashes: canaryHashes.map((hash) => hash.toLowerCase()), trip: value.trip === true, clearTrip: value.clearTrip === true };
 }
 
@@ -356,7 +358,7 @@ export function createProxy({ secret, registry, credentials = null, events = cre
           try { body = JSON.parse(raw.toString("utf8")); } catch { throw new ProxyError("invalid_policy", 400); }
           const policy = validatePolicy(body);
           const result = registry.setPolicy(policy.agentId, policy.domains, policy.blocked,
-            { canaryHashes: policy.canaryHashes, trip: policy.trip, clearTrip: policy.clearTrip });
+            { canaryHashes: policy.canaryHashes, trip: policy.trip, clearTrip: policy.clearTrip, anyPublic: policy.anyPublic });
           return send(200, JSON.stringify({ ok: true, expiresInMs: POLICY_TTL_MS, tripped: result.tripped,
             credentialsVersion: credentials?.version(policy.agentId) ?? null }), { "Content-Type": "application/json", "X-Eclipse-Proxy": "ok" });
         }

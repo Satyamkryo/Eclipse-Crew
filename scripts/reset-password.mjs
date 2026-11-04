@@ -18,12 +18,27 @@ export async function readPassword(input) {
   return password;
 }
 
-export async function resetOwnerPassword(database, schema, hashPassword, password) {
+export function parseResetArgs(argv) {
+  const args = argv.filter((arg) => arg !== "--inside");
+  let login;
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === "--login") login = args[++i];
+    else throw new Error("Use `--login <email>`. Password arguments are refused; supply the password through private stdin.");
+  }
+  if (!login || login.length > 255) throw new Error("Use `--login <email>` to choose the account.");
+  return { login: login.toLowerCase() };
+}
+
+// TASK-092. Resets one account only and revokes only its sessions; other accounts keep working.
+export async function resetOwnerPassword(database, schema, hashPassword, login, password) {
+  const normalized = String(login).trim().toLowerCase();
+  if (!normalized || normalized.length > 255) throw new Error("Use `--login <email>` to choose the account.");
   const hash = await hashPassword(password);
   await database.transaction(async (transaction) => {
     await transaction.execute(sql`SELECT pg_advisory_xact_lock(691016)`);
-    const owners = await transaction.select({ id: schema.owner.id, ownerId: schema.owner.ownerId }).from(schema.owner).limit(2).for("update");
-    if (owners.length !== 1 || owners[0].id !== owners[0].ownerId) throw new Error("A single valid owner is required.");
+    const owners = await transaction.select({ id: schema.owner.id, ownerId: schema.owner.ownerId }).from(schema.owner)
+      .where(eq(schema.owner.login, normalized)).limit(2).for("update");
+    if (owners.length !== 1 || owners[0].id !== owners[0].ownerId) throw new Error("No matching valid owner for --login.");
     const ownerId = owners[0].ownerId;
     await transaction.update(schema.owner).set({ passwordHash: hash }).where(eq(schema.owner.ownerId, ownerId));
     await transaction.delete(schema.sessions).where(eq(schema.sessions.ownerId, ownerId));
@@ -31,10 +46,9 @@ export async function resetOwnerPassword(database, schema, hashPassword, passwor
 }
 
 export async function main() {
-  const args = process.argv.slice(2);
-  if (args.length > 1 || (args.length === 1 && args[0] !== "--inside")) throw new Error("Password arguments are refused. Use private stdin.");
+  const { login } = parseResetArgs(process.argv.slice(2));
   const password = await readPassword(process.stdin);
-  if (args[0] === "--inside") {
+  if (process.argv.includes("--inside")) {
     if (process.env.MIGRATION_DATABASE_URL || process.env.POSTGRES_BOOTSTRAP_PASSWORD) throw new Error("Invalid reset helper configuration.");
     const url = new URL(process.env.DATABASE_URL);
     if (!["postgres:", "postgresql:"].includes(url.protocol) || url.username !== "eclipse_app" || !url.password ||
@@ -45,14 +59,15 @@ export async function main() {
     const { getDatabase } = clientModule.getDatabase ? clientModule : clientModule.default;
     const schema = schemaModule.owner ? schemaModule : schemaModule.default;
     const { hashPassword } = passwordModule.hashPassword ? passwordModule : passwordModule.default;
-    await resetOwnerPassword(await getDatabase(), schema, hashPassword, password);
-    console.log("Owner password reset; all owner sessions revoked.");
+    await resetOwnerPassword(await getDatabase(), schema, hashPassword, login, password);
+    console.log(`Password reset for ${login}; that account's sessions revoked.`);
   } else {
     nextEnv.loadEnvConfig(process.cwd(), false, { info() {}, error() { throw new Error("Unable to load environment configuration."); } });
-    runDatabaseHelper("scripts/reset-password.mjs", ["DATABASE_URL"], { input: `${password}\n`, typed: true });
+    runDatabaseHelper("scripts/reset-password.mjs", ["DATABASE_URL"], { input: `${password}\n`, typed: true },
+      ["--login", login]);
   }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().then(() => process.exit(0), () => { console.error("Password reset failed. Use private stdin and verify the Compose runtime role and existing owner."); process.exit(1); });
+  main().then(() => process.exit(0), () => { console.error("Password reset failed. Use private stdin, `--login <email>`, and verify the Compose runtime role and existing owner."); process.exit(1); });
 }

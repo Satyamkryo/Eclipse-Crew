@@ -17,7 +17,6 @@ export const owner = pgTable(
   },
   (table) => [
     check("owner_id_matches_id", sql`${table.ownerId} = ${table.id}`),
-    uniqueIndex("owner_singleton_idx").on(sql`(true)`),
   ],
 );
 
@@ -45,7 +44,10 @@ export const agents = pgTable(
     ownerId: uuid("owner_id").notNull(),
     name: text("name").notNull(),
     role: text("role").notNull(),
+    // Persona (PERSONA.md): optional identity, backstory and voice. Never permissions or task instructions.
     soulMd: text("soul_md").notNull(),
+    // What the agent is expert in and how it works. Empty means the role-based default is used.
+    instructions: text("instructions").notNull().default(""),
     status: text("status").notNull().default("paused"),
     dailyBudgetCents: integer("daily_budget_cents").notNull(),
     monthlyBudgetCents: integer("monthly_budget_cents").notNull(),
@@ -64,6 +66,8 @@ export const agents = pgTable(
     check("agents_monthly_budget_check", sql`${table.monthlyBudgetCents} between 1 and 100000000`),
     check("agents_attention_reason_check", sql`${table.attentionReason} is null or ${table.attentionReason} in ('budget_warning', 'budget_paused', 'security_stop', 'approval_pending')`),
     check("agents_avatar_variant_check", sql`${table.avatarVariant} between 0 and 11`),
+    check("agents_soul_md_length_check", sql`char_length(${table.soulMd}) <= 2000`),
+    check("agents_instructions_length_check", sql`char_length(${table.instructions}) <= 4000`),
   ],
 );
 
@@ -74,6 +78,9 @@ export const agentPolicies = pgTable(
     ownerId: uuid("owner_id").notNull(),
     tools: text("tools").array().notNull().default(sql`'{}'::text[]`),
     domains: text("domains").array().notNull().default(sql`'{}'::text[]`),
+    // ADR-036. true: any public website (the proxy still blocks internal, LAN and metadata addresses); `domains` is
+    // ignored for egress. false: only `domains`. Existing agents stay false; new agents default to true.
+    anyPublicWeb: boolean("any_public_web").notNull().default(false),
     actions: text("actions").array().notNull().default(sql`'{}'::text[]`),
     memoryScopes: text("memory_scopes").array().notNull().default(sql`'{}'::text[]`),
     // TASK-086. auto: a change that quotes the owner's own message applies at once. ask: everything waits for approval.
@@ -369,6 +376,53 @@ export const routines = pgTable(
     check("routines_mode_check", sql`${table.mode} = 'cron'`),
     check("routines_budget_check", sql`${table.budgetCents} between 1 and 100000000`),
     check("routines_schedule_check", sql`char_length(${table.schedule}) between 1 and 200 and char_length(${table.timezone}) between 1 and 100 and jsonb_typeof(${table.steps}) = 'array'`),
+  ],
+);
+
+// Sundance / Moondance check-ins (ARCHITECTURE §12.3). A cheap, model-free probe fingerprints one owner-named page
+// inside the agent's own sandbox (its allowlist and the egress proxy apply). Only a changed fingerprint alerts the
+// owner or wakes the agent. `snapshot` is normalized page text kept only to count changed lines; it never reaches a
+// model or a chat card.
+export const checkIns = pgTable(
+  "check_ins",
+  {
+    id: uuid("id").primaryKey(),
+    ownerId: uuid("owner_id").notNull(),
+    agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    kind: text("kind").notNull(),
+    url: text("url").notNull(),
+    // `fetch`: a plain https request from the sandbox. `browser`: the agent's own Chromium, so a login the owner
+    // completed during takeover is used. A login wall seen by `fetch` switches the check-in to `browser`.
+    via: text("via").notNull().default("fetch"),
+    goal: text("goal"),
+    urgent: boolean("urgent").notNull().default(false),
+    intervalMinutes: integer("interval_minutes").notNull(),
+    windowStart: integer("window_start").notNull(),
+    windowEnd: integer("window_end").notNull(),
+    timezone: text("timezone").notNull(),
+    active: boolean("active").notNull().default(true),
+    fingerprint: text("fingerprint"),
+    snapshot: text("snapshot"),
+    quietStreak: integer("quiet_streak").notNull().default(0),
+    pendingChanges: integer("pending_changes").notNull().default(0),
+    lastStatus: text("last_status"),
+    nextCheckAt: timestamp("next_check_at", { withTimezone: true }).notNull(),
+    lastCheckedAt: timestamp("last_checked_at", { withTimezone: true }),
+    lastChangedAt: timestamp("last_changed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("check_ins_owner_id_idx").on(table.ownerId),
+    index("check_ins_agent_id_idx").on(table.agentId),
+    index("check_ins_owner_next_idx").on(table.ownerId, table.nextCheckAt),
+    check("check_ins_kind_check", sql`${table.kind} in ('sundance', 'moondance') and ${table.via} in ('fetch', 'browser')`),
+    check("check_ins_text_check", sql`char_length(${table.name}) between 1 and 80 and char_length(${table.url}) between 9 and 2000 and (${table.goal} is null or char_length(${table.goal}) between 1 and 2000) and char_length(${table.timezone}) between 1 and 100`),
+    check("check_ins_window_check", sql`${table.windowStart} between 0 and 23 and ${table.windowEnd} between 0 and 23 and ${table.windowStart} <> ${table.windowEnd}`),
+    check("check_ins_interval_check", sql`${table.intervalMinutes} between 5 and 720`),
+    check("check_ins_state_check", sql`(${table.fingerprint} is null or ${table.fingerprint} ~ '^[0-9a-f]{64}$') and (${table.snapshot} is null or char_length(${table.snapshot}) <= 12000) and ${table.quietStreak} between 0 and 1000000 and ${table.pendingChanges} between 0 and 1000000`),
+    check("check_ins_status_check", sql`${table.lastStatus} is null or ${table.lastStatus} in ('first', 'unchanged', 'changed', 'failed', 'skipped', 'needs_login')`),
   ],
 );
 

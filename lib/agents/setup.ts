@@ -13,6 +13,7 @@ export function setupNeedsRemote(actions: string[], tools: string[]): boolean {
 export function setupRows(
   actions: string[], tools: string[], domains: string[],
   state: { connections: SetupConnection[]; servers: SetupServer[] },
+  anyPublicWeb = false,
 ): SetupRow[] {
   const usesGithub = tools.includes("github");
   const usesTools = actions.includes("tool_call");
@@ -57,12 +58,16 @@ export function setupRows(
     );
   }
   if (usesShell || usesBrowser) {
-    rows.push({
-      label: usesShell && usesGithub ? "github.com in Domains" : "Domains allowed",
+    rows.push(anyPublicWeb ? {
+      label: "Websites allowed",
+      done: true,
+      detail: "Any public website. Narrow it in Agent settings → Advanced → Websites.",
+    } : {
+      label: usesShell && usesGithub ? "github.com in Websites" : "Websites allowed",
       done: domains.length > 0,
       detail: usesShell && usesGithub
-        ? "Agent settings → Domains"
-        : "Agent settings → Domains: add each site this role may read. Empty denies every site.",
+        ? "Agent settings → Advanced → Websites"
+        : "Agent settings → Advanced → Websites: choose Any public website, or add each site this role may read.",
     });
   }
   if (usesBrowser) {

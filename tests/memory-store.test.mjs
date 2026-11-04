@@ -50,7 +50,8 @@ test.before(async () => {
     GRANT SELECT ON agent_policies TO app_role;`);
   await adminPool.query(`ALTER TABLE "memory_entries" ADD COLUMN "last_confirmed_at" timestamp with time zone;
 ALTER TABLE "agent_policies" ADD COLUMN "memory_mode" text DEFAULT 'auto' NOT NULL;
-ALTER TABLE "memory_versions" ADD COLUMN "batch_id" uuid;`);
+ALTER TABLE "memory_versions" ADD COLUMN "batch_id" uuid;
+ALTER TABLE "agents" ADD COLUMN "instructions" text DEFAULT '' NOT NULL;`);
   await adminPool.query("INSERT INTO owner(id,owner_id,login,password_hash,timezone) VALUES ($1,$1,'owner','hash','UTC')", [OWNER]);
   for (const agentId of [AGENT_A, AGENT_B]) {
     await adminPool.query("INSERT INTO agents(id,owner_id,name,role,soul_md,status,daily_budget_cents,monthly_budget_cents) VALUES ($1,$2,'Ada','Researcher','Be careful.','active',100,1000)", [agentId, OWNER]);
@@ -154,13 +155,16 @@ test("TASK-053: SOUL.md edits are versioned and the Markdown mirror matches the 
   assert.equal(history[0].op, "soul_edit");
   const status = await mirror.scheduleMirror(app, OWNER, AGENT_A);
   assert.equal(status.ok, true);
-  const userFile = await readFile(path.join(mirrorDir, "USER.md"), "utf8");
+  const userFile = await readFile(path.join(mirrorDir, OWNER, "USER.md"), "utf8");
   assert.match(userFile, /Edits to this file are not read back/);
   assert.match(userFile, /Timezone/);
-  const memoryFile = await readFile(path.join(mirrorDir, "agents", AGENT_A, "MEMORY.md"), "utf8");
+  const memoryFile = await readFile(path.join(mirrorDir, OWNER, "agents", AGENT_A, "MEMORY.md"), "utf8");
   assert.match(memoryFile, /New fact/);
-  const privateFile = await readFile(path.join(mirrorDir, "agents", AGENT_A, "PRIVATE.md"), "utf8");
+  const privateFile = await readFile(path.join(mirrorDir, OWNER, "agents", AGENT_A, "PRIVATE.md"), "utf8");
   assert.doesNotMatch(privateFile, /Note 0/, "agent B's private notes are not in agent A's folder");
-  const soulFile = await readFile(path.join(mirrorDir, "agents", AGENT_A, "SOUL.md"), "utf8");
+  // ADR-036. The persona is mirrored as PERSONA.md and the role instructions as INSTRUCTIONS.md.
+  const soulFile = await readFile(path.join(mirrorDir, OWNER, "agents", AGENT_A, "PERSONA.md"), "utf8");
   assert.match(soulFile, /Be careful and brief/);
+  const instructionsFile = await readFile(path.join(mirrorDir, OWNER, "agents", AGENT_A, "INSTRUCTIONS.md"), "utf8");
+  assert.match(instructionsFile, /# INSTRUCTIONS\.md/);
 });

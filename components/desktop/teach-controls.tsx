@@ -1,5 +1,5 @@
 "use client";
-import { useState, useId, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { ModalDialog } from "@/components/workspace/modal-dialog";
 import { Circle, Loader2, Pause, Play, Square, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -11,8 +11,7 @@ type Props = {
   onAction: (action: TeachAction, narration?: boolean) => Promise<void>; onRetryTranscription: () => Promise<void>;
 };
 const utc = (value: string) => value.slice(0, 16).replace("T", " ") + " UTC";
-export function TeachControls({ capture, saved, busy, error, narrationAllowed, canRecord, onAction, onRetryTranscription }: Props) {
-  const hintId = useId();
+export function TeachControls({ capture, saved, busy, error, canRecord, onAction, onRetryTranscription }: Props) {
   const [review, setReview] = useState<Record<string, unknown> | null>(null);
   const [reviewError, setReviewError] = useState<string | null>(null);
   const [reviewId, setReviewId] = useState<string | null>(null);
@@ -38,7 +37,8 @@ export function TeachControls({ capture, saved, busy, error, narrationAllowed, c
     const timer = window.setInterval(() => { if (document.visibilityState === "visible") void read(); }, 2000);
     return () => { cancelled = true; controller.abort(); window.clearInterval(timer); };
   }, [reviewId]);
-  const [narration, setNarration] = useState(false);
+  // Voice narration isn't shipped yet, so recordings are always silent.
+  const narration = false;
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const active = capture && ["recording", "paused", "finalizing"].includes(capture.state);
   const seconds = Math.floor((capture?.activeMs ?? 0) / 1000);
@@ -59,10 +59,6 @@ export function TeachControls({ capture, saved, busy, error, narrationAllowed, c
       {capture?.state === "complete" && capture.narration && ["pending", "error"].includes(capture.narrationStatus ?? "pending") && <Button size="sm" variant="secondary" disabled={busy} onClick={() => void onRetryTranscription()}>Retry transcription</Button>}
       {capture?.state === "complete" && capture.narration && <span role="status" className="text-muted-foreground">{narrationStatusText(capture.narrationStatus)}</span>}
     </div>
-    {!active && <div className="mt-2">
-      <label className="flex items-center gap-2"><input type="checkbox" checked={narration} disabled={!narrationAllowed || busy || !canRecord} onChange={(event) => setNarration(event.target.checked)} aria-describedby={hintId} className="size-4 accent-primary" />Include microphone narration</label>
-      <p id={hintId} className="mt-1 text-muted-foreground">{narrationAllowed ? "Off by default. Record requests microphone access. After Stop, audio is sent to Meta for transcription." : "Silent capture is available. Narration needs a native Meta Main provider."}</p>
-    </div>}
     {capture?.state === "paused" && <p role="status" className="mt-2 text-corona">Needs you: {privacyPauseText(capture.reason)} Resume checks the page again.</p>}
     {error && <p role="alert" className="mt-2 text-danger">{error}</p>}
     {confirmDiscard && <ModalDialog title="Discard recording" description="Discard this recording and its private video, events, screenshots and narration? This cannot be undone." onClose={() => setConfirmDiscard(false)}>

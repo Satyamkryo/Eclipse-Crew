@@ -8,7 +8,8 @@ import { readBoundedJson, requestErrorResponse, requireNoQuery, requireOwnerRequ
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-const inputSchema = z.object({ enabled: z.boolean() }).strict();
+// ADR-036. `agentIds` scopes the switch to one crew's members; every id is checked against the owner's own agents.
+const inputSchema = z.object({ enabled: z.boolean(), agentIds: z.array(z.string().uuid()).min(1).max(64).optional() }).strict();
 
 // TASK-085. One explicit, owner-only switch. Existing agents are never changed by a new agent's defaults.
 export async function POST(request: Request) {
@@ -23,7 +24,9 @@ export async function POST(request: Request) {
       const rows = await transaction.select({ agentId: agentPolicies.agentId, actions: agentPolicies.actions })
         .from(agentPolicies).where(eq(agentPolicies.ownerId, session.ownerId));
       const changed: string[] = [];
+      const scope = parsed.data.agentIds ? new Set(parsed.data.agentIds.map((id) => id.toLowerCase())) : null;
       for (const row of rows) {
+        if (scope && !scope.has(row.agentId.toLowerCase())) continue;
         const has = row.actions.some((action) => action.toLowerCase() === "handoff");
         if (parsed.data.enabled === has) continue;
         const actions = parsed.data.enabled

@@ -25,7 +25,9 @@ export function templateCreateInput(template: AgentTemplate): AgentCreateInput {
   return {
     name: template.label,
     role: template.role,
-    soulMd: template.soulMd,
+    instructions: template.instructions,
+    soulMd: "",
+    anyPublicWeb: false,
     avatarVariant: randomInt(12),
     dailyBudgetCents: cents(template.dailyBudgetUsd),
     monthlyBudgetCents: cents(template.monthlyBudgetUsd),

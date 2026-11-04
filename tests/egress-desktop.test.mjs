@@ -221,6 +221,37 @@ test("private DNS answers, unknown agents and blocked agents are refused", async
   } finally { await close(proxy); }
 });
 
+// ADR-036. "Any public website" widens the hostname check only: private, metadata and rebinding answers stay refused.
+test("any-public policy allows public hosts but still refuses internal, metadata and rebinding targets", async () => {
+  const registry = createRegistry();
+  registry.setPolicy(AGENT, [], false, { anyPublic: true });
+  registry.setPolicy(PEER, [], false);
+  assert.equal(registry.allows(AGENT, "news.example.org"), true);
+  assert.equal(registry.allows(PEER, "news.example.org"), false, "an empty allowlist without anyPublic still denies");
+  assert.equal(registry.get(AGENT).anyPublic, true);
+  assert.deepEqual(validatePolicy({ agentId: AGENT, domains: [], blocked: false, anyPublic: true }).anyPublic, true);
+  assert.equal(validatePolicy({ agentId: AGENT, domains: [], blocked: false }).anyPublic, false);
+  assert.throws(() => validatePolicy({ agentId: AGENT, domains: [], blocked: false, anyPublic: "yes" }), /invalid_policy/);
+  const token = egressToken(DESKTOP_SECRET, AGENT);
+  let connects = 0;
+  const proxy = createDesktopProxy({ desktopSecret: DESKTOP_SECRET, registry,
+    resolve: async (host) => host === "rebind.example.org" ? [{ address: "10.0.0.5", family: 4 }]
+      : host === "meta.example.org" ? [{ address: "169.254.169.254", family: 4 }] : [{ address: "93.184.216.34", family: 4 }],
+    connect: () => { connects += 1; throw new Error("must not connect"); }, log: () => {} });
+  const port = await listen(proxy);
+  const connect = async (host) => (await rawRequest(port, [`CONNECT ${host}:443 HTTP/1.1`, `Host: ${host}:443`, authLine(AGENT, token)])).head;
+  try {
+    assert.match(await connect("10.0.0.1"), /^HTTP\/1\.1 403/);
+    assert.match(await connect("169.254.169.254"), /^HTTP\/1\.1 403/);
+    assert.match(await connect("rebind.example.org"), /^HTTP\/1\.1 403/);
+    assert.match(await connect("meta.example.org"), /^HTTP\/1\.1 403/);
+    assert.equal(connects, 0);
+  } finally { await close(proxy); }
+  // Turning anyPublic off is a policy change: the agent is back to its (empty) allowlist.
+  registry.setPolicy(AGENT, [], false, { anyPublic: false });
+  assert.equal(registry.allows(AGENT, "news.example.org"), false);
+});
+
 test("DNS is pinned to the first checked address and a mixed private answer is refused", async () => {
   const registry = createRegistry();
   registry.setPolicy(AGENT, ["example.com"], false);

@@ -13,10 +13,12 @@ import { AgentPane, type AgentSummary } from "@/components/workspace/agent-pane"
 import { AgentSettings } from "@/components/workspace/agent-settings";
 import { HistoryPanel } from "@/components/history/history-panel";
 import { MemoryPanel } from "@/components/memory/memory-panel";
+import { CheckInsPanel } from "@/components/routines/check-ins-panel";
 import { owner } from "@/db/schema";
 import { resolveTimezone } from "@/lib/time/clock";
 import { eq } from "drizzle-orm";
 import { WorkspaceShell } from "@/components/workspace/workspace-shell";
+import { listCrewGroups } from "@/lib/crew/groups";
 
 export const dynamic = "force-dynamic";
 
@@ -35,8 +37,11 @@ export default async function Home({ searchParams }: { searchParams: Promise<{
     ownerEmail = rows[0]?.email ?? "Owner";
   } catch { ownerTimeZone = "UTC"; }
   const storedAgents = await listAgentRecords(database, session.ownerId);
+  // ADR-036. Crew agents are grouped under their crew in the sidebar; a failed read just shows one plain list.
+  const crewGroups = await listCrewGroups(database, session.ownerId).catch(() => []);
+  const crewNameFor = (agentId: string) => crewGroups.find((group) => group.agentIds.includes(agentId))?.name ?? null;
   const agents: AgentSummary[] = storedAgents.map((agent) => ({
-    ...agent, status: agent.status === "active" ? "active" : "paused",
+    ...agent, crew: crewNameFor(agent.id), status: agent.status === "active" ? "active" : "paused",
     attention: agent.attentionReason === "budget_warning" || agent.attentionReason === "budget_paused" || agent.attentionReason === "security_stop" || agent.attentionReason === "approval_pending" ? agent.attentionReason : null,
   }));
   const { agent, panel, run, continue: continueFlag, view } = await searchParams;
@@ -63,7 +68,13 @@ export default async function Home({ searchParams }: { searchParams: Promise<{
       }
     }
   }
-  const graphicsRunning = Boolean(selectedAgent && selectedAgent.status === "active" && desktopStatus?.state === "running" && desktopStatus.graphics === "running");
+  // The crew handoff switch appears only for an agent in a crew; its state follows the selected agent's permission.
+  const selectedGroup = selectedAgent ? crewGroups.find((group) => group.agentIds.includes(selectedAgent.id)) : undefined;
+  const selectedCrew = selectedAgent && selectedGroup ? {
+    key: selectedGroup.key, name: selectedGroup.name, agentIds: selectedGroup.agentIds,
+    handoffOn: selectedAgent.actions.some((action) => action.toLowerCase() === "handoff"),
+  } : undefined;
+  const graphicsRunning =Boolean(selectedAgent && selectedAgent.status === "active" && desktopStatus?.state === "running" && desktopStatus.graphics === "running");
   if (selectedAgent && graphicsRunning) liveAgentId = selectedAgent.id;
   // Shown in the expanded desktop view; a failed read just hides it.
   let modelName: string | undefined;
@@ -98,16 +109,18 @@ export default async function Home({ searchParams }: { searchParams: Promise<{
       csrfToken={session.csrfToken}
       agentPane={<AgentPane variant="sidebar" agents={agents} selectedAgentId={selectedAgent?.id} error={error} csrfToken={session.csrfToken} />}
       chatPane={chatPane}
-      settings={selectedAgent ? <AgentSettings agent={selectedAgent} desktopStatus={desktopStatus} csrfToken={session.csrfToken} /> : undefined}
+      settings={selectedAgent ? <AgentSettings agent={selectedAgent} crew={selectedCrew} desktopStatus={desktopStatus} csrfToken={session.csrfToken} /> : undefined}
       desktop={selectedAgent && selectedAgent.status === "active" ? (
         <div className="flex flex-col gap-3">
           <DesktopLifecycle key={selectedAgent.id} agentId={selectedAgent.id} csrfToken={session.csrfToken} initial={desktopStatus} />
-          {liveAgentId ? <LiveView agentId={liveAgentId} agentName={selectedAgent.name} astraMode={selectedAgent.astraMode} avatarVariant={selectedAgent.avatarVariant} modelName={modelName} /> : null}
+          {liveAgentId ? <LiveView agentId={liveAgentId} agentName={selectedAgent.name} astraMode={selectedAgent.astraMode} avatarVariant={selectedAgent.avatarVariant} modelName={modelName}
+            controls={<DesktopLifecycle agentId={selectedAgent.id} csrfToken={session.csrfToken} initial={desktopStatus} />} /> : null}
         </div>
       ) : undefined}
       history={<HistoryPanel key={`${selectedAgent?.id ?? "no-agent"}:${initialRun.success ? initialRun.data : ""}`} agentId={selectedAgent?.id} agentName={selectedAgent?.name} astraMode={selectedAgent?.astraMode} timeZone={ownerTimeZone} csrfToken={session.csrfToken}
         initialRunId={initialRun.success ? initialRun.data : undefined} initialContinue={initialContinue} />}
       memory={<MemoryPanel key={`memory-${selectedAgent?.id ?? "no-agent"}`} agentId={selectedAgent?.id} timeZone={ownerTimeZone} csrfToken={session.csrfToken} />}
+      routines={selectedAgent ? <CheckInsPanel key={`check-ins-${selectedAgent.id}`} agentId={selectedAgent.id} agentName={selectedAgent.name} timeZone={ownerTimeZone} csrfToken={session.csrfToken} /> : undefined}
     />
   );
 }

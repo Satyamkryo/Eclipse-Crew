@@ -6,6 +6,8 @@ import { Plus, Search, Settings } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ModalDialog } from "@/components/workspace/modal-dialog";
 import { AgentForm } from "@/components/workspace/agent-form";
+import { CREATE_AGENT_EVENT } from "@/components/workspace/agent-gallery";
+import { AGENT_TEMPLATES, type AgentTemplateId } from "@/lib/agents/templates";
 import { AppNavList, SearchPalette } from "@/components/workspace/app-navigation";
 import { AgentAvatar, BoldPopAvatar } from "@/components/workspace/agent-avatar";
 import { MobileDock } from "@/components/workspace/mobile-dock";
@@ -59,6 +61,7 @@ export function AppShell({ owner, agents = [], selectedAgentId, agentsSection, m
   const layout = useSyncExternalStore(subscribeLayout, readLayout, () => "desktop" as Layout);
   const [searchOpen, setSearchOpen] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [pendingTemplate, setPendingTemplate] = useState<AgentTemplateId | null>(null);
   const router = useRouter();
 
   useEffect(() => {
@@ -71,6 +74,25 @@ export function AppShell({ owner, agents = [], selectedAgentId, agentsSection, m
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, []);
+
+  // The no-agent gallery opens this same dialog; a template card preselects
+  // that template in the form. An unknown id falls back to a blank agent.
+  useEffect(() => {
+    const onCreateAgent = (event: Event) => {
+      const templateId = (event as CustomEvent<{ templateId?: unknown }>).detail?.templateId;
+      setPendingTemplate(typeof templateId === "string" && AGENT_TEMPLATES.some((item) => item.id === templateId)
+        ? (templateId as AgentTemplateId)
+        : null);
+      setCreating(true);
+    };
+    window.addEventListener(CREATE_AGENT_EVENT, onCreateAgent);
+    return () => window.removeEventListener(CREATE_AGENT_EVENT, onCreateAgent);
+  }, []);
+
+  const closeCreating = () => {
+    setCreating(false);
+    setPendingTemplate(null);
+  };
 
   // Only for a signed-in owner with a CSRF token (the update is a mutation); every page shares this shell.
   const timezoneNotice = owner && csrfToken ? <TimezoneNotice savedZone={owner.timezone} csrfToken={csrfToken} /> : null;
@@ -98,7 +120,7 @@ export function AppShell({ owner, agents = [], selectedAgentId, agentsSection, m
         <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
         {mobileNav ?? <MobileDock active={null} links={{ agents: "/?view=agents", chat: "/?view=chat", panel: "/?view=panel" }} />}
         <SearchPalette agents={agents} open={searchOpen} onClose={() => setSearchOpen(false)} />
-        {creating && csrfToken && <CreateAgentDialog csrfToken={csrfToken} onClose={() => setCreating(false)} router={router} />}
+        {creating && csrfToken && <CreateAgentDialog csrfToken={csrfToken} initialTemplate={pendingTemplate} onClose={closeCreating} router={router} />}
       </main>
     );
   }
@@ -113,7 +135,7 @@ export function AppShell({ owner, agents = [], selectedAgentId, agentsSection, m
               <Link key={agent.id} href={`/?agent=${agent.id}`} aria-current={agent.id === selectedAgentId ? "page" : undefined}
                 aria-label={`Open ${agent.name}`}
                 title={`${agent.name}${agent.status === "paused" ? " · Paused" : ""}`}
-                className={cn("flex size-9 shrink-0 items-center justify-center rounded-full transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
+                className={cn("flex size-9 shrink-0 items-center justify-center rounded-md transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
                   agent.id === selectedAgentId ? "border border-border-strong" : "border border-transparent")}>
                 <AgentAvatar seed={agent.id} variant={agent.avatarVariant} size={32} label={`${agent.name} avatar`} />
               </Link>
@@ -139,7 +161,7 @@ export function AppShell({ owner, agents = [], selectedAgentId, agentsSection, m
           <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
         </div>
         <SearchPalette agents={agents} open={searchOpen} onClose={() => setSearchOpen(false)} />
-        {creating && csrfToken && <CreateAgentDialog csrfToken={csrfToken} onClose={() => setCreating(false)} router={router} />}
+        {creating && csrfToken && <CreateAgentDialog csrfToken={csrfToken} initialTemplate={pendingTemplate} onClose={closeCreating} router={router} />}
       </main>
     );
   }
@@ -185,7 +207,7 @@ export function AppShell({ owner, agents = [], selectedAgentId, agentsSection, m
         <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
       </div>
       <SearchPalette agents={agents} open={searchOpen} onClose={() => setSearchOpen(false)} />
-      {creating && csrfToken && <CreateAgentDialog csrfToken={csrfToken} onClose={() => setCreating(false)} router={router} />}
+      {creating && csrfToken && <CreateAgentDialog csrfToken={csrfToken} initialTemplate={pendingTemplate} onClose={closeCreating} router={router} />}
     </main>
   );
 }
@@ -218,7 +240,7 @@ function StaticAgentList({ agents, selectedAgentId }: { agents: AgentSummary[]; 
           <Link href={`/?agent=${agent.id}`} aria-current={agent.id === selectedAgentId ? "page" : undefined}
             className={cn("flex min-w-0 items-center gap-3 rounded-md px-2 py-2 transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring",
               agent.id === selectedAgentId ? "border border-border-strong bg-surface-hover" : "border border-transparent hover:bg-surface-hover")}>
-            <span className="shrink-0 rounded-full">
+            <span className="shrink-0 rounded-md">
               <AgentAvatar seed={agent.id} variant={agent.avatarVariant} size={36} label={`${agent.name} avatar`} />
             </span>
             <span className="min-w-0 flex-1">
@@ -233,10 +255,10 @@ function StaticAgentList({ agents, selectedAgentId }: { agents: AgentSummary[]; 
   );
 }
 
-function CreateAgentDialog({ csrfToken, onClose, router }: { csrfToken: string; onClose: () => void; router: ReturnType<typeof useRouter> }) {
+function CreateAgentDialog({ csrfToken, initialTemplate, onClose, router }: { csrfToken: string; initialTemplate?: AgentTemplateId | null; onClose: () => void; router: ReturnType<typeof useRouter> }) {
   return (
     <ModalDialog title="Create agent" description="The agent gets its own Linux user, desktop and Chromium profile." onClose={onClose}>
-      <AgentForm mode="create" csrfToken={csrfToken}
+      <AgentForm mode="create" csrfToken={csrfToken} initialTemplate={initialTemplate}
         onSaved={(agentId) => {
           onClose();
           if (agentId) router.push(`/?agent=${agentId}`);

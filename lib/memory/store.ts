@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { and, arrayContains, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 
 import type { getDatabase } from "../../db/client";
+import { RequestError } from "../auth/request";
 import { agentPolicies, agents, memoryEntries, memoryVersions } from "../../db/schema";
 import {
   capFor, docKeyFor, entryChars, scopeFor, soulDocKey,
@@ -84,7 +85,8 @@ function documentView(entries: MemoryEntryView[], doc: MemoryDocument): MemoryDo
 export async function listMemory(database: Database, ownerId: string, agentId: string): Promise<MemoryView> {
   const agentRows = await database.select({ soulMd: agents.soulMd, updatedAt: agents.updatedAt }).from(agents)
     .where(and(eq(agents.ownerId, ownerId), eq(agents.id, agentId))).limit(1);
-  if (!agentRows[0]) throw new Error("agent_not_found");
+  // TASK-092. Another account's agent looks exactly like a missing one: no entries, no names, no modes leak.
+  if (!agentRows[0]) throw new RequestError(403, "agent_not_found");
   const [user, memory, priv, policy, agentList] = await Promise.all([
     documentEntries(database, ownerId, "user", null),
     documentEntries(database, ownerId, "memory", agentId),
@@ -268,8 +270,8 @@ export async function updateSoul(
       .where(and(eq(agents.ownerId, ownerId), eq(agents.id, agentId)));
     const versionId = await appendVersion(transaction, ownerId, {
       docKey, entryId: null, agentId, op: "soul_edit",
-      before: { title: "SOUL.md", body: rows[0].soulMd, pinned: false, status: "active", scope: "agent", visibleTo: [] },
-      after: { title: "SOUL.md", body: soulMd, pinned: false, status: "active", scope: "agent", visibleTo: [] },
+      before: { title: "PERSONA.md", body: rows[0].soulMd, pinned: false, status: "active", scope: "agent", visibleTo: [] },
+      after: { title: "PERSONA.md", body: soulMd, pinned: false, status: "active", scope: "agent", visibleTo: [] },
       author: "owner",
     });
     return { ok: true as const, text: soulMd, versionId };
@@ -287,8 +289,8 @@ export async function appendSoulVersion(
   await lockDocument(transaction, ownerId, soulDocKey(agentId));
   return appendVersion(transaction, ownerId, {
     docKey: soulDocKey(agentId), entryId: null, agentId, op: "soul_edit",
-    before: { title: "SOUL.md", body: beforeText, pinned: false, status: "active", scope: "agent", visibleTo: [] },
-    after: { title: "SOUL.md", body: afterText, pinned: false, status: "active", scope: "agent", visibleTo: [] },
+    before: { title: "PERSONA.md", body: beforeText, pinned: false, status: "active", scope: "agent", visibleTo: [] },
+    after: { title: "PERSONA.md", body: afterText, pinned: false, status: "active", scope: "agent", visibleTo: [] },
     author: "owner",
   });
 }

@@ -1,0 +1,1 @@
+DROP INDEX "owner_singleton_idx";

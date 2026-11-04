@@ -90,7 +90,7 @@ const receiptSchema = z.object({
   cost_micro_usd: z.number().int().min(0).nullable().optional(),
 }).passthrough();
 
-const METHOD_NAME: Record<string, string> = { page_structure: "Page structure", sam: "SAM 3.1", model: "Model check" };
+const METHOD_NAME: Record<string, string> = { page_structure: "Page structure", sam: "SAM 3.1", computer_use: "Computer use", model: "Model check" };
 const SAM_NOTE: Record<string, string> = { off: "SAM off", unavailable: "SAM unavailable", on: "SAM on" };
 
 export function actionLabel(action: Record<string, unknown>): { text: string; target: string | null } {

@@ -119,29 +119,58 @@ export function AccountSettings({ login, timezone, sessions, csrfToken }: Props)
     }
   }
 
-  async function signOutEverywhere() {
-    const label = otherSessions === 1 ? "other browser session" : `other browser sessions (${otherSessions})`;
-    if (!window.confirm(`Sign out ${label}? This cannot be undone.`)) return;
+  // Ends this browser's session only.
+  async function signOutHere() {
     setSignOutLoading(true);
     setSignOutError(null);
     setSignOutStatus(null);
     try {
-      const response = await fetch("/api/auth/sessions/revoke-others", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-csrf-token": csrfToken },
-        body: "{}",
-      });
-      if (response.status === 401) {
-        router.push("/login");
+      const response = await fetch("/api/auth/logout", { method: "POST", headers: { "x-csrf-token": csrfToken } });
+      if (!response.ok && response.status !== 401) {
+        setSignOutError("Couldn't sign out. Try again.");
+        return;
+      }
+      router.push("/login");
+      router.refresh();
+    } catch {
+      setSignOutError("Unable to connect. Try again.");
+    } finally {
+      setSignOutLoading(false);
+    }
+  }
+
+  // Ends every session: the other browsers first, then this one.
+  async function signOutEverywhere() {
+    if (!window.confirm("Sign out of every browser, including this one?")) return;
+    setSignOutLoading(true);
+    setSignOutError(null);
+    setSignOutStatus(null);
+    try {
+      if (otherSessions > 0) {
+        const response = await fetch("/api/auth/sessions/revoke-others", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "x-csrf-token": csrfToken },
+          body: "{}",
+        });
+        if (response.status === 401) {
+          router.push("/login");
+          router.refresh();
+          return;
+        }
+        const result = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          setSignOutError(errorMessage(result, "Couldn't sign out the other sessions. Try again."));
+          return;
+        }
+      }
+      const response = await fetch("/api/auth/logout", { method: "POST", headers: { "x-csrf-token": csrfToken } });
+      if (!response.ok && response.status !== 401) {
+        setSignOutStatus("Other sessions signed out.");
+        setSignOutError("Couldn't sign out this browser. Use Sign out to try again.");
         router.refresh();
         return;
       }
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        setSignOutError(errorMessage(result, "Couldn't sign out other sessions. Try again."));
-        return;
-      }
-      setSignOutStatus("Other sessions signed out.");
+      router.push("/login");
       router.refresh();
     } catch {
       setSignOutError("Unable to connect. Try again.");
@@ -267,11 +296,13 @@ export function AccountSettings({ login, timezone, sessions, csrfToken }: Props)
         ) : <p className="mt-4 text-sm text-muted-foreground">No active sessions.</p>}
         {signOutError && <p role="alert" className="mt-4 text-sm text-danger">{signOutError}</p>}
         {signOutStatus && <p role="status" className="mt-4 text-sm text-success">{signOutStatus}</p>}
-        <div className="mt-4">
-          <Button type="button" variant="destructive" disabled={signOutLoading || otherSessions === 0} onClick={signOutEverywhere}>
-            {signOutLoading && <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" />}Sign out everywhere
+        <div className="mt-4 flex flex-wrap items-center gap-2">
+          <Button type="button" variant="secondary" disabled={signOutLoading} onClick={signOutHere}>
+            {signOutLoading && <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" />}Sign out
           </Button>
-          {otherSessions === 0 && <p className="mt-2 text-xs text-muted-foreground">No other sessions are active.</p>}
+          <Button type="button" variant="destructive" disabled={signOutLoading} onClick={signOutEverywhere}>
+            Sign out everywhere
+          </Button>
         </div>
       </section>
     </div>

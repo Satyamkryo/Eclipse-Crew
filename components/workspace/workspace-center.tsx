@@ -3,6 +3,7 @@ import { useRef, useState } from "react";
 import Link from "next/link";
 import { AstraBadge } from "@/components/ui/astra-badge";
 import { AgentAvatar } from "@/components/workspace/agent-avatar";
+import { AgentGallery } from "@/components/workspace/agent-gallery";
 import { StatusChip } from "@/components/ui/status-chip";
 import { cn } from "@/lib/utils";
 import type { ReactNode } from "react";
@@ -21,23 +22,19 @@ export type CenterAgent = { id: string; name: string; role: string; status: "act
 
 // Agent heading + central tabs (images 05/36/39): the tabs that used to live on the right
 // panel are now the center column's navigation, under the agent identity.
-export function WorkspaceCenter({ agent, initialTab, children }: {
+export function WorkspaceCenter({ agent, agents, initialTab, children }: {
   agent?: CenterAgent;
+  agents?: CenterAgent[];
   initialTab?: WorkspaceTabId;
   children: (tab: WorkspaceTabId) => ReactNode;
 }) {
   const [active, setActive] = useState<WorkspaceTabId>(initialTab ?? "chat");
   const buttons = useRef<Array<HTMLButtonElement | null>>([]);
 
+  // No agent selected: the gallery (owned agents, five random templates, the
+  // create card). The right desktop panel stays hidden until an agent is open.
   if (!agent) {
-    return (
-      <div className="flex h-full min-h-0 items-center justify-center overflow-y-auto p-6">
-        <div className="flex max-w-md flex-col items-center gap-2 text-center">
-          <p className="text-sm font-medium">No agent selected</p>
-          <p className="text-sm text-muted-foreground">Pick an agent from the list to open its chat, settings and tools.</p>
-        </div>
-      </div>
-    );
+    return <AgentGallery agents={agents ?? []} />;
   }
 
   const select = (index: number, focus: boolean) => {

@@ -260,6 +260,27 @@
       "when": 1793783316325,
       "tag": "0036_keen_ironclad",
       "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1793797692099,
+      "tag": "0037_agent_instructions_public_web",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1793801575462,
+      "tag": "0038_check_ins",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1793806415229,
+      "tag": "0039_multi_account",
+      "breakpoints": true
     }
   ]
 }

@@ -4,7 +4,7 @@ import { and, asc, eq, sql } from "drizzle-orm";
 import { getDatabase } from "../../db/client";
 import { agentPolicies, agents, teachRecordings } from "../../db/schema";
 import { appendSoulVersion } from "../memory/store";
-import { defaultSoul, type AgentCreateInput, type AgentUpdateInput } from "./schema";
+import { defaultInstructions, type AgentCreateInput, type AgentUpdateInput } from "./schema";
 
 type Database = Awaited<ReturnType<typeof getDatabase>>;
 type AgentStore = Pick<Database, "select" | "update" | "delete">;
@@ -17,6 +17,7 @@ const agentFields = {
   name: agents.name,
   role: agents.role,
   soulMd: agents.soulMd,
+  instructions: agents.instructions,
   status: agents.status,
   astraMode: agents.astraMode,
   avatarVariant: agents.avatarVariant,
@@ -28,6 +29,7 @@ const agentFields = {
 const policyFields = {
   tools: agentPolicies.tools,
   domains: agentPolicies.domains,
+  anyPublicWeb: agentPolicies.anyPublicWeb,
   actions: agentPolicies.actions,
   memoryScopes: agentPolicies.memoryScopes,
 };
@@ -84,7 +86,9 @@ export async function createAgentRecordIfAbsent(
       ownerId,
       name: input.name,
       role: input.role,
-      soulMd: input.soulMd ?? defaultSoul(input.name, input.role),
+      // Persona is optional. Blank instructions are saved as the role-based default so the owner can see and edit them.
+      soulMd: input.soulMd,
+      instructions: input.instructions.trim() || defaultInstructions(input.name, input.role),
       status: "paused",
       // A chosen avatar is kept; otherwise the server assigns a random voxel avatar.
       avatarVariant: input.avatarVariant ?? randomInt(12),
@@ -102,6 +106,7 @@ export async function createAgentRecordIfAbsent(
       ownerId,
       tools: input.tools,
       domains: input.domains,
+      anyPublicWeb: input.anyPublicWeb,
       actions: input.actions,
       // TASK-086. New agents read USER.md and their own MEMORY.md by default.
       memoryScopes: input.memoryScopes.length ? input.memoryScopes : ["global", "agent"],
@@ -132,6 +137,8 @@ export async function updateAgentRecord(
       name: input.name,
       role: input.role,
       soulMd: input.soulMd,
+      // Clearing Instructions restores the role-based default rather than leaving the agent without one.
+      instructions: input.instructions.trim() || defaultInstructions(input.name, input.role),
       // An omitted avatar keeps the stored one.
       ...(input.avatarVariant !== undefined ? { avatarVariant: input.avatarVariant } : {}),
       dailyBudgetCents: input.dailyBudgetCents,
@@ -142,6 +149,7 @@ export async function updateAgentRecord(
     const updatedPolicy = await transaction.update(agentPolicies).set({
       tools: input.tools,
       domains: input.domains,
+      anyPublicWeb: input.anyPublicWeb,
       actions: input.actions,
       memoryScopes: input.memoryScopes,
       updatedAt: new Date(),
@@ -153,12 +161,13 @@ export async function updateAgentRecord(
         ownerId,
         tools: input.tools,
         domains: input.domains,
+        anyPublicWeb: input.anyPublicWeb,
         actions: input.actions,
         memoryScopes: input.memoryScopes,
       }).returning({ agentId: agentPolicies.agentId });
     }
     const previous = before[0];
-    const permissionsChanged = !previous || !sameSet(previous.tools, input.tools) || !sameSet(previous.domains, input.domains) ||
+    const permissionsChanged = !previous || !sameSet(previous.tools, input.tools) || !sameSet(previous.domains, input.domains) || previous.anyPublicWeb !== input.anyPublicWeb ||
       !sameSet(previous.actions, input.actions) || !sameSet(previous.memoryScopes, input.memoryScopes);
     if (beforeAgent[0] && beforeAgent[0].soulMd !== input.soulMd) {
       await appendSoulVersion(transaction, ownerId, agentId, beforeAgent[0].soulMd, input.soulMd);

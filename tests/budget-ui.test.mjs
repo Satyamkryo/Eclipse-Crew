@@ -20,7 +20,8 @@ test("the price table shows exact rates, built-in/local labels and the unpriced 
   const html = render(React.createElement(PriceTable, { initial: rows, csrfToken: "csrf" }));
   assert.match(html, /muse-spark-1\.3/); assert.match(html, /value="1\.25"/); assert.match(html, /value="0\.15"/); assert.match(html, /value="4\.25"/);
   assert.match(html, /Input per 1M/); assert.match(html, /Images per 1K/); assert.match(html, /hosted-model/);
-  assert.match(html, /Needs price/); assert.match(html, /A hosted model without a price cannot start a run/);
+  assert.match(html, /Needs price/); assert.match(html, /until it has a price/);
+  assert.doesNotMatch(html, /Audio per hour/, "voice transcription isn't shipped, so no audio column");
 });
 
 test("an agent with budget attention gets the corona ring and the words Needs you", async () => {

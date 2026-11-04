@@ -1,12 +1,12 @@
 import "server-only";
 
-import { and, eq, gt, inArray, isNull } from "drizzle-orm";
+import { and, eq, gt, isNull } from "drizzle-orm";
 
 import type { getDatabase } from "../../db/client";
-import { agentPolicies, crewMembers, messages, runMeta, runs } from "../../db/schema";
+import { agentPolicies, messages, runMeta, runs } from "../../db/schema";
 import { appendUserMessage } from "../chat/data";
 import { listAgentRecords } from "../agents/data";
-import { crewIdsForAgent } from "../crew/custom";
+import { crewmateIds } from "../crew/groups";
 import { isAgentBusy } from "./step-loop";
 import { recordAuditBestEffort } from "../security/audit";
 
@@ -15,7 +15,7 @@ type Database = Awaited<ReturnType<typeof getDatabase>>;
 // TASK-085. Fixed refusal codes. The sender's run continues after a refusal, so it can do the work itself or ask.
 export type HandoffCode =
   | "teammate_unavailable" | "handoff_to_self" | "handoff_cycle" | "handoff_limit"
-  | "different_crew" | "no_owner_message" | "invalid_note" | "start_failed";
+  | "different_crew" | "not_in_crew" | "no_owner_message" | "invalid_note" | "start_failed";
 
 export interface HandoffInput {
   database: Database;
@@ -95,13 +95,11 @@ export async function performHandoff(
   if (!receiver) return { ok: false, code: "teammate_unavailable" };
   if (receiver.id === input.senderAgentId) return { ok: false, code: "handoff_to_self" };
   if (receiver.status !== "active") return { ok: false, code: "teammate_unavailable" };
-  // Handoffs stay inside a shared custom crew. A sender in no crew keeps the
-  // legacy open behaviour, so individual and starter-crew agents are untouched.
-  const senderCrews = await crewIdsForAgent(input.database, input.ownerId, input.senderAgentId);
-  if (senderCrews.length > 0) {
-    const shared = await crewIdsForAgent(input.database, input.ownerId, receiver.id);
-    if (!shared.some((crewId) => senderCrews.includes(crewId))) return { ok: false, code: "different_crew" };
-  }
+  // ADR-036. Agent-initiated handoff exists only inside a crew (the starter crew or an owner-created one). A standard
+  // agent never hands off on its own; the owner can still route a message with @Name.
+  const mates = await crewmateIds(input.database, input.ownerId, input.senderAgentId);
+  if (mates.size === 0) return { ok: false, code: "not_in_crew" };
+  if (!mates.has(receiver.id)) return { ok: false, code: "different_crew" };
 
   const chain = await handoffChain(input.database, input.ownerId, input.senderRunId);
   if (chain.hops >= MAX_HOPS) return { ok: false, code: "handoff_limit" };
@@ -143,14 +141,9 @@ export async function loadTeammates(database: Database, ownerId: string, exceptA
   const policies = await database.select({ agentId: agentPolicies.agentId, tools: agentPolicies.tools }).from(agentPolicies)
     .where(eq(agentPolicies.ownerId, ownerId));
   const toolsByAgent = new Map(policies.map((policy) => [policy.agentId, policy.tools as string[]]));
-  let visible = rows.filter((row) => row.id !== exceptAgentId);
-  const senderCrews = await crewIdsForAgent(database, ownerId, exceptAgentId);
-  if (senderCrews.length > 0) {
-    const mates = await database.select({ agentId: crewMembers.agentId }).from(crewMembers)
-      .where(and(eq(crewMembers.ownerId, ownerId), inArray(crewMembers.crewId, senderCrews)));
-    const mateIds = new Set(mates.map((mate) => mate.agentId));
-    visible = visible.filter((row) => mateIds.has(row.id));
-  }
+  // ADR-036. Only crewmates are listed; a standard agent sees nobody, so it is never offered handoff.
+  const mateIds = await crewmateIds(database, ownerId, exceptAgentId);
+  const visible = rows.filter((row) => row.id !== exceptAgentId && mateIds.has(row.id));
   return visible
     .map((row) => ({ name: row.name, role: row.role, status: row.status, tools: toolsByAgent.get(row.id) ?? [] }));
 }

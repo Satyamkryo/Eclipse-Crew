@@ -3,6 +3,7 @@ import type { DesktopPort, PageControl, PageSnapshot, Screenshot } from "./deskt
 import type { GroundedPoint } from "./executor";
 import type { Intent } from "./intent";
 import { checkCancelled, type Evidence, type VerificationServices } from "./verification";
+import { crossCheck, isVisualMethod, type VisualGrounders, type VisualPoint } from "./visual-grounding";
 
 export interface GateResult { allowed: boolean; evidence: Evidence[] }
 const same = (a: PageControl, b: PageControl) =>
@@ -13,12 +14,34 @@ const normalize = (text: string) => text.trim().replace(/\s+/g, " ").toLowerCase
 export async function confidenceGate(input: {
   intent: Intent; point: GroundedPoint | null; before: Screenshot; snapshot: PageSnapshot | null;
   desktop: DesktopPort; services: VerificationServices; signal?: AbortSignal;
+  // Visual grounding (rungs 3-4). `irreversible` is the code-made risk class (send, delete, purchase, ...).
+  visual?: VisualGrounders; irreversible?: boolean;
 }): Promise<GateResult> {
   const { intent, point, before, snapshot, desktop, services, signal } = input;
   const evidence: Evidence[] = [];
   const deny = (code: string): GateResult => ({ allowed: false, evidence: [...evidence, { method: "page_structure", status: "unknown", code }] });
   checkCancelled(signal);
   if (!["click", "select", "type", "key"].includes(intent.action)) return { allowed: true, evidence };
+  if (intent.action === "click" && point && isVisualMethod(point.method)) {
+    // A pixel click needs a second, independent agreement. Irreversible actions need two agreeing location methods
+    // (SAM mask + native computer use); anything else may use the model's pixel check as the second method.
+    if (snapshot && (snapshot.paymentFrames ?? 0) > 0) return deny("payment_frame_present");
+    evidence.push({ method: point.method as Evidence["method"], status: "pass", code: "visual_target" });
+    const second = await crossCheck(point as VisualPoint, intent.target, before, input.visual ?? {});
+    if (second) evidence.push(second);
+    let agreed = second?.status === "pass";
+    if (!agreed && !input.irreversible && services.visual.confirmPoint) {
+      const status = await services.visual.confirmPoint(before, intent.target, point);
+      agreed = status === "pass";
+      evidence.push({ method: "model", status, code: agreed ? "target_point_confirmed" : "target_point_unconfirmed" });
+    }
+    if (!agreed) return { allowed: false, evidence: input.irreversible && !second ? [...evidence, { method: "model", status: "unknown", code: "second_method_unavailable" }] : evidence };
+    checkCancelled(signal);
+    const fresh = await desktop.snapshot();
+    if (snapshot && (!fresh || fresh.href !== snapshot.href)) return deny("target_changed");
+    checkCancelled(signal);
+    return { allowed: true, evidence };
+  }
   if (!snapshot) return deny("unreadable_page");
   const targeted = intent.action === "click" || intent.action === "select";
   const targets = snapshot.controls.filter((item) => targeted ? point && contains(item, point) && item.name === point.name && item.role === point.role : item.focused === true);

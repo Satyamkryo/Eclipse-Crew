@@ -57,8 +57,10 @@ function tidyDatabase(agentId = AGENT) {
       const value = index === 0
         ? [{ id: OWNER, timezone: "Asia/Kolkata", crewStoppedAt: null }]
         : [{ id: agentId }];
+      // TASK-092. The tick reads every owner without a row cap: from() is awaited directly, like real drizzle.
       const q = {
         from() { return q; }, where() { return Promise.resolve(value); }, limit() { return Promise.resolve(value); },
+        then(resolve, reject) { return Promise.resolve(value).then(resolve, reject); },
       };
       return q;
     },

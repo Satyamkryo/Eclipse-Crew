@@ -28,7 +28,10 @@ export async function proxy(request: NextRequest) {
   }
   // API answers are data or downloads, never pages: nothing in them may run script or load anything in the app origin.
   response.headers.set("Content-Security-Policy", pathname.startsWith("/api/") ? "default-src 'none'; frame-ancestors 'none'; sandbox" : csp);
-  response.headers.set("Cache-Control", "private, no-store");
+  // The voxel avatars are static, content-hashed files. Without a cache every render re-downloaded them, so avatars
+  // blinked in and out. Still owner-only (private); all other responses stay no-store.
+  const cacheableAsset = response.ok && /^\/avatars\/voxel\/[0-9a-f]{10}\.svg$/.test(pathname);
+  response.headers.set("Cache-Control", cacheableAsset ? "private, max-age=31536000, immutable" : "private, no-store");
   response.headers.set("X-Content-Type-Options", "nosniff");
   response.headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
   response.headers.set("X-Frame-Options", "DENY");

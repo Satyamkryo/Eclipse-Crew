@@ -38,7 +38,7 @@ test("the starter preview is the six server-side roles, not caller input", () =>
     ["pr-reviewer", "dev-agent", "daily-briefer", "inbox-triage", "research-analyst", "travel-assistant"]);
   for (const template of AGENT_TEMPLATES) {
     assert.ok(template.routineExamples.length > 0, template.id);
-    assert.ok(template.soulMd.length <= 2000, template.id);
+    assert.ok(template.instructions.length <= 2000, template.id);
   }
 });
 

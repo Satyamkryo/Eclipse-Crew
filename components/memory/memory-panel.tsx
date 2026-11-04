@@ -29,7 +29,7 @@ const DOC_TABS: { id: Doc; label: string }[] = [
   { id: "user", label: "USER.md" },
   { id: "memory", label: "MEMORY.md" },
   { id: "private", label: "Private notes" },
-  { id: "soul", label: "SOUL.md" },
+  { id: "soul", label: "PERSONA.md" },
 ];
 
 function docKey(agentId: string, doc: Doc): string {

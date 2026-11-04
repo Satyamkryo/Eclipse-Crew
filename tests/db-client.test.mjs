@@ -59,19 +59,35 @@ test("reset imports are inert and password input is bounded private stdin", asyn
   await assert.rejects(readPassword(tty), /private stdin/);
 });
 
-test("reset refuses zero/multiple/mismatched owners before changing data", async () => {
+test("reset refuses unknown logins and zero/multiple/mismatched owners before changing data", async () => {
   for (const rows of [[], [{ id: "a", ownerId: "a" }, { id: "b", ownerId: "b" }], [{ id: "a", ownerId: "b" }]]) {
     let mutations = 0;
     let locks = 0;
     const transaction = {
       execute: async () => { locks++; },
-      select: () => ({ from: () => ({ limit: () => ({ for: async () => rows }) }) }),
-      update: () => { mutations++; }, delete: () => { mutations++; },
+      select: () => ({ from: () => ({ where: () => ({ limit: () => ({ for: async () => rows }) }) }) }),
+      update: () => ({ set: () => ({ where: async () => { mutations++; } }) }),
+      delete: () => ({ where: async () => { mutations++; } }),
     };
     const db = { transaction: async (callback) => callback(transaction) };
-    const schema = { owner: { id: "id", ownerId: "ownerId" } };
-    await assert.rejects(resetOwnerPassword(db, schema, async () => "synthetic hash", "synthetic password"), /single valid owner/);
+    const schema = { owner: { id: "id", ownerId: "ownerId", login: "login" }, sessions: { ownerId: "ownerId" } };
+    await assert.rejects(resetOwnerPassword(db, schema, async () => "synthetic hash", "owner@example.test", "synthetic password"), /No matching valid owner/);
     assert.equal(locks, 1);
     assert.equal(mutations, 0);
   }
+});
+
+test("reset changes one matching login and revokes only its sessions", async () => {
+  let mutations = 0;
+  const seen = [];
+  const transaction = {
+    execute: async () => {},
+    select: () => ({ from: () => ({ where: () => ({ limit: () => ({ for: async () => [{ id: "a", ownerId: "a" }] }) }) }) }),
+    update: (table) => ({ set: (values) => ({ where: async (condition) => { mutations++; seen.push({ table, values, condition }); } }) }),
+    delete: (table) => ({ where: async (condition) => { mutations++; seen.push({ table, condition }); } }),
+  };
+  const db = { transaction: async (callback) => callback(transaction) };
+  const schema = { owner: { id: "id", ownerId: "ownerId", login: "login" }, sessions: { ownerId: "sessions.ownerId" } };
+  await resetOwnerPassword(db, schema, async () => "synthetic hash", "Owner@Example.Test", "synthetic password");
+  assert.equal(mutations, 2);
 });

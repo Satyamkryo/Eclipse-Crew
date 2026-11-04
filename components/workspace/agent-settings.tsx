@@ -1,6 +1,5 @@
 "use client";
 import { useRef, useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { LoaderCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -21,6 +20,7 @@ export type AgentSettingsData = {
   name: string;
   role: string;
   soulMd: string;
+  instructions: string;
   status: "active" | "paused";
   astraMode: boolean;
   avatarVariant: number;
@@ -28,11 +28,14 @@ export type AgentSettingsData = {
   monthlyBudgetCents: number;
   tools: string[];
   domains: string[];
+  anyPublicWeb: boolean;
   actions: string[];
   memoryScopes: string[];
 };
 
-export function AgentSettings({ agent, desktopStatus, csrfToken }: { agent: AgentSettingsData; desktopStatus?: DesktopStatus; csrfToken: string }) {
+export type AgentCrew = { key: string; name: string; agentIds: string[]; handoffOn: boolean };
+
+export function AgentSettings({ agent, crew, desktopStatus, csrfToken }: { agent: AgentSettingsData; crew?: AgentCrew; desktopStatus?: DesktopStatus; csrfToken: string }) {
   const router = useRouter();
   const [loading, setLoading] = useState<"pause" | "resume" | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -100,19 +103,14 @@ export function AgentSettings({ agent, desktopStatus, csrfToken }: { agent: Agen
       </section>
       <DesktopLifecycle key={agent.id} agentId={agent.id} csrfToken={csrfToken} initial={desktopStatus} />
       <AstraSettings agentId={agent.id} agentName={agent.name} astraMode={agent.astraMode} csrfToken={csrfToken} />
-      <AgentSetup agentId={agent.id} actions={agent.actions} tools={agent.tools} domains={agent.domains} />
-      <CrewHandoffSetting csrfToken={csrfToken} />
+      <AgentSetup agentId={agent.id} actions={agent.actions} tools={agent.tools} domains={agent.domains} anyPublicWeb={agent.anyPublicWeb} />
+      {crew && <CrewHandoffSetting key={crew.key} crew={crew} csrfToken={csrfToken} />}
       <SavedApprovals agentId={agent.id} csrfToken={csrfToken} />
       <section className="rounded-lg border border-border bg-card p-4">
         <h3 className="text-sm font-semibold">Delete agent</h3>
         <p className="mt-1 text-sm text-muted-foreground">Permanently removes this agent&apos;s desktop, browser profile, files and configuration.</p>
         <Button type="button" variant="destructive" className="mt-3" onClick={() => setConfirmingDelete(true)}>Delete agent</Button>
       </section>
-      <div className="flex flex-wrap gap-4">
-        <Link href="/settings/models" className="text-sm underline underline-offset-4">Model settings</Link>
-        <Link href="/settings/connections" className="text-sm underline underline-offset-4">Connections</Link>
-        <Link href="/profile" className="text-sm underline underline-offset-4">Profile</Link>
-      </div>
       {confirmingDelete && <DeleteAgentDialog agent={agent} csrfToken={csrfToken} onClose={() => setConfirmingDelete(false)} />}
     </div>
   );

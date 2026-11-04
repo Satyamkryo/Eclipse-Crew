@@ -13,15 +13,15 @@ type ServerRow = { id: string; key: string; status: "pinned" | "changed" | "disa
 // TASK-074/058. A checklist that reflects stored state, never a claim: each row is read from the same routes the dialogs
 // use. Roles that are not on GitHub get only the generic rows their real policy can satisfy; no mail or calendar tool
 // name is invented here.
-export function AgentSetup({ agentId, actions, tools, domains }: {
-  agentId: string; actions: string[]; tools: string[]; domains: string[];
+export function AgentSetup({ agentId, actions, tools, domains, anyPublicWeb = false }: {
+  agentId: string; actions: string[]; tools: string[]; domains: string[]; anyPublicWeb?: boolean;
 }) {
   const connections = useRemote<{ connections: ConnectionRow[] }>(`/api/connections?agentId=${agentId}`, () => null);
   const servers = useRemote<{ servers: ServerRow[] }>(`/api/mcp-servers?agentId=${agentId}`, () => null);
   const rows = setupRows(actions, tools, domains, {
     connections: connections.data?.connections ?? [],
     servers: servers.data?.servers ?? [],
-  });
+  }, anyPublicWeb);
   if (rows.length === 0) return null;
   const needsRemote = setupNeedsRemote(actions, tools);
   const loading = needsRemote && (connections.loading || servers.loading);

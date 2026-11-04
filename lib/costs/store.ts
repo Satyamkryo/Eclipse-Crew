@@ -11,6 +11,8 @@ import {
 } from "./pricing";
 import { CostStopError, type AudioCallContext, type AudioReservation, type BudgetCard, type RunCostSink } from "./types";
 
+const VOICE_TRANSCRIBE_MODEL = "muse-voice-transcribe-1.0";
+
 type Database = Awaited<ReturnType<typeof getDatabase>>;
 type ReadStore = Pick<Database, "select">;
 type UpdateStore = Pick<Database, "update">;
@@ -323,14 +325,13 @@ export async function loadPriceRows(database: Database, ownerId: string): Promis
     }
   }
   for (const row of overrides) {
+    // Voice transcription isn't a shipped feature yet, so its price stays out of Settings.
+    if (row.model === VOICE_TRANSCRIBE_MODEL) continue;
     const found = roleRows.find((role) => role.providerId === row.providerId);
     entries.push({
       providerId: row.providerId, kind: found?.kind as PriceProviderKind ?? "openai-compatible",
       baseUrl: found?.baseUrl ?? null, model: row.model, role: "custom",
     });
-  }
-  for (const role of roleRows) {
-    if (role.role === "main" && role.kind === "meta" && role.providerId) entries.push({ providerId: role.providerId, kind: "meta", baseUrl: null, model: "muse-voice-transcribe-1.0", role: null });
   }
   const seen = new Set<string>();
   return entries.flatMap((entry) => {

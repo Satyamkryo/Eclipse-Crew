@@ -113,9 +113,11 @@ test("isolated database provisioning and permissions", { timeout: 900000 }, asyn
       child.on("error", () => resolve(-1));
     });
     const inserts = await Promise.all([concurrentInsert(1), concurrentInsert(2)]);
-    assert.equal(inserts.filter((status) => status === 0).length, 1, "exactly one concurrent owner insert succeeds");
-    assert.equal(checked(sql("SELECT count(*) FROM public.owner"), "singleton invariant"), "1");
-    checked(sql("UPDATE public.owner SET login = 'owner'", "eclipse_app"), "normalize synthetic login");
+    assert.equal(inserts.filter((status) => status === 0).length, 2, "concurrent owner inserts with distinct logins both succeed");
+    assert.equal(checked(sql("SELECT count(*) FROM public.owner"), "multi-account invariant"), "2");
+    // The rest of this test exercises the runtime as one account: drop the second synthetic owner again.
+    checked(sql("DELETE FROM public.owner WHERE id='00000000-0000-0000-0000-000000000002'"), "restore single synthetic owner");
+    checked(sql("UPDATE public.owner SET login = 'owner' WHERE id='00000000-0000-0000-0000-000000000001'", "eclipse_app"), "normalize synthetic login");
     checked(sql("UPDATE public.owner SET timezone = 'Asia/Kolkata'", "eclipse_app"), "runtime update");
     assert.equal(checked(sql("SELECT login FROM public.owner", "eclipse_app"), "runtime select"), "owner");
     checked(sql("INSERT INTO public.sessions(id,owner_id,token_hash,csrf_token,expires_at) SELECT '00000000-0000-0000-0000-000000000010',id,'synthetic-token-hash','synthetic-csrf',now() + interval '1 hour' FROM public.owner", "eclipse_app"), "create synthetic session");
@@ -279,7 +281,7 @@ test("isolated database provisioning and permissions", { timeout: 900000 }, asyn
     // different from the migrated catalog form that provisioning pins.
     for (const [table, constraint, weak, restore] of [
       ["teach_recordings", "teach_recordings_bounds_check", "active_ms >= 0", "active_ms between 0 and 120000 and event_count between 0 and 300"],
-      ["cost_entries", "cost_entries_source_check", "run_id IS NOT NULL OR capture_id IS NOT NULL", "(run_id is not null)::integer + (capture_id is not null)::integer = 1"],
+      ["cost_entries", "cost_entries_source_check", "run_id IS NOT NULL OR capture_id IS NOT NULL", "(run_id is not null)::integer + (capture_id is not null)::integer + (background_job_id is not null)::integer = 1"],
       ["cost_entries", "cost_entries_audio_duration_check", "audio_duration_ms >= 0", "audio_duration_ms between 0 and 120000"],
       ["model_prices", "model_prices_rates_check", "audio_micro_usd_per_hour >= 0", "input_micro_usd_per_million between 0 and 1000000000 and cached_micro_usd_per_million between 0 and 1000000000 and output_micro_usd_per_million between 0 and 1000000000 and image_micro_usd_per_thousand between 0 and 1000000000 and audio_micro_usd_per_hour between 0 and 1000000000"],
     ]) {
@@ -289,7 +291,7 @@ test("isolated database provisioning and permissions", { timeout: 900000 }, asyn
     }
     checked(provision(), "restored exact teach/audio contracts");
     checked(sql("TRUNCATE public.cost_entries, public.model_prices, public.step_evidence, public.steps, public.runs CASCADE"), "clear synthetic receipts, prices and spend");
-    checked(provision(), "populated sessions and singleton provisioning");
+    checked(provision(), "populated sessions and multi-account provisioning");
     assert.equal(checked(sql("SELECT count(*) FROM public.sessions"), "preserve sessions"), "1");
     checked(sql("ALTER TABLE public.sessions ADD COLUMN unexpected text"), "unknown sessions schema fixture");
     assert.notEqual(provision().status, 0, "unknown sessions columns fail closed");
@@ -298,7 +300,7 @@ test("isolated database provisioning and permissions", { timeout: 900000 }, asyn
     assert.notEqual(provision().status, 0, "wrong known-name index fails closed");
     checked(sql("DROP INDEX public.sessions_owner_id_idx; CREATE INDEX sessions_owner_id_idx ON public.sessions(owner_id)"), "restore supported index");
     const resetPassword = "SYNTHETIC reset fixture 2026";
-    const reset = () => spawnSync(process.execPath, ["--conditions=react-server", "--import", "tsx", "scripts/reset-password.mjs"], { env, input: `${resetPassword}\n`, encoding: "utf8", timeout: 120000 });
+    const reset = () => spawnSync(process.execPath, ["--conditions=react-server", "--import", "tsx", "scripts/reset-password.mjs", "--login", "owner"], { env, input: `${resetPassword}\n`, encoding: "utf8", timeout: 120000 });
     checked(sql("REVOKE DELETE ON public.sessions FROM eclipse_app"), "deny reset revocation fixture");
     try {
       assert.notEqual(reset().status, 0, "failed revocation rejects reset");
