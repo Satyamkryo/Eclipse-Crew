@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import test from "node:test";
 
-import { AGENT_TEMPLATES } from "../lib/agents/templates.ts";
+import { AGENT_TEMPLATES, STARTER_TEMPLATE_IDS } from "../lib/agents/templates.ts";
 import { createOrResumeStarterCrew, getStarterCrew } from "../lib/crew/starter.ts";
 import { cleanupCrewDatabase, createCrewDatabase, insertAgent, insertOwner } from "./crew-db.mjs";
 
@@ -33,10 +33,11 @@ function fakeDesktop({ fail = new Set(), delayMs = 0 } = {}) {
 }
 
 test("the starter preview is the six server-side roles, not caller input", () => {
-  assert.equal(AGENT_TEMPLATES.length, 6);
-  assert.deepEqual(AGENT_TEMPLATES.map((template) => template.id),
+  assert.deepEqual(STARTER_TEMPLATE_IDS,
     ["pr-reviewer", "dev-agent", "daily-briefer", "inbox-triage", "research-analyst", "travel-assistant"]);
-  for (const template of AGENT_TEMPLATES) {
+  assert.ok(AGENT_TEMPLATES.length > STARTER_TEMPLATE_IDS.length, "the gallery offers more than the starter crew");
+  for (const id of STARTER_TEMPLATE_IDS) {
+    const template = AGENT_TEMPLATES.find((item) => item.id === id);
     assert.ok(template.routineExamples.length > 0, template.id);
     assert.ok(template.instructions.length <= 2000, template.id);
   }
@@ -50,7 +51,7 @@ test("one action creates six unique identities and a repeat resumes the same set
 
   const first = await createOrResumeStarterCrew(handle.app, owner, desktop);
   assert.equal(first.setup?.state, "complete");
-  assert.deepEqual(first.members.map((member) => member.templateId), AGENT_TEMPLATES.map((template) => template.id));
+  assert.deepEqual(first.members.map((member) => member.templateId), STARTER_TEMPLATE_IDS);
   assert.equal(first.summary.created, 6);
   assert.equal(new Set(first.members.map((member) => member.agentId)).size, 6);
   assert.equal(first.members.some((member) => member.agentId === unrelated), false);
@@ -65,7 +66,8 @@ test("one action creates six unique identities and a repeat resumes the same set
   const after = await handle.adminPool.query("SELECT count(*)::int AS count FROM agents WHERE owner_id=$1", [owner]);
   assert.equal(after.rows[0].count, 7, "a repeat creates no second crew");
 
-  for (const template of AGENT_TEMPLATES) {
+  for (const id of STARTER_TEMPLATE_IDS) {
+    const template = AGENT_TEMPLATES.find((item) => item.id === id);
     const member = second.members.find((item) => item.templateId === template.id);
     const policy = await handle.adminPool.query("SELECT tools, domains, actions, memory_scopes FROM agent_policies WHERE owner_id=$1 AND agent_id=$2", [owner, member.agentId]);
     assert.deepEqual(policy.rows[0].tools, template.tools, template.id);
