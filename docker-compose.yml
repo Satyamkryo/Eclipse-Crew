@@ -62,7 +62,7 @@ services:
     read_only: true
     cap_drop: ["ALL"]
     cap_add: ["CHOWN", "DAC_OVERRIDE", "SETUID", "SETGID", "SETPCAP", "SYS_ADMIN"]
-    security_opt: ["no-new-privileges:true", "seccomp=./docker/desktop/seccomp_profile.json"]
+    security_opt: ["no-new-privileges:true", "seccomp=./docker/desktop/seccomp_profile.json", "apparmor=eclipse-desktop"]
     # bootstrap.py is PID 1 and drops SYS_ADMIN before supervising/reaping children.
     init: false
     shm_size: 128m

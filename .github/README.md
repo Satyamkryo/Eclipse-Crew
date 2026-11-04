@@ -100,6 +100,23 @@ Each account signs in separately and starts empty; add its model key in Settings
 
 ## Deploy on a VPS
 
+An image-only deployment builds the tested release for the VM's CPU architecture
+on a separate builder, then pulls pinned image digests onto the VM. Host-specific
+deployment files and credentials are kept outside the public repository.
+
+**Linux hosts with AppArmor (Ubuntu, Debian):** load the desktop's AppArmor
+profile once before `docker compose up`, or the desktop exits with
+`bootstrap_refused`:
+
+```sh
+sudo install -m 644 docker/desktop/apparmor/eclipse-desktop /etc/apparmor.d/
+sudo apparmor_parser -r -W /etc/apparmor.d/eclipse-desktop
+```
+
+It is Docker's default profile plus only the desktop's setup bind mounts, and it
+persists across reboots. Never use `apparmor=unconfined`. Docker Desktop
+(Windows/macOS) needs nothing.
+
 The same compose file runs on any Linux VPS so your crew works while your laptop is closed. The app only listens on `127.0.0.1:3000`; pick one way in:
 
 - **Tailscale (recommended, private):** install Tailscale, enable MagicDNS + HTTPS, run `sudo tailscale serve --bg 3000`, open `https://<vps>.<tailnet>.ts.net`. Use `serve`, never `funnel`.

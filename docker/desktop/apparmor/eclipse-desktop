@@ -1,0 +1,37 @@
+#include <tunables/global>
+# Loaded on the host: sudo install -m 644 docker/desktop/apparmor/eclipse-desktop /etc/apparmor.d/ && sudo apparmor_parser -r -W /etc/apparmor.d/eclipse-desktop (ADR-038).
+
+# docker-default, plus only the bind mounts docker/desktop/bootstrap.py performs.
+profile eclipse-desktop flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  network,
+  capability,
+  file,
+  umount,
+  userns,
+  signal (receive) peer=unconfined,
+  signal (send,receive) peer=eclipse-desktop,
+
+  mount options=(rw,bind) /workspace/.system/downloads/ -> /downloads/,
+  mount options=(rw,remount,bind,noexec,nosuid,nodev,relatime) -> /downloads/,
+  mount options=(rw,bind) /run/eclipse/* -> /etc/*,
+  mount options=(ro,remount,bind,noexec,nosuid,nodev,relatime) -> /etc/*,
+
+  deny @{PROC}/* w,
+  deny @{PROC}/{[^1-9],[^1-9][^0-9],[^1-9s][^0-9y][^0-9s],[^1-9][^0-9][^0-9][^0-9/]*}/** w,
+  deny @{PROC}/sys/[^k]** w,
+  deny @{PROC}/sys/kernel/{?,??,[^s][^h][^m]**} w,
+  deny @{PROC}/sysrq-trigger rwklx,
+  deny @{PROC}/kcore rwklx,
+  deny /sys/[^f]*/** wklx,
+  deny /sys/f[^s]*/** wklx,
+  deny /sys/fs/[^c]*/** wklx,
+  deny /sys/fs/c[^g]*/** wklx,
+  deny /sys/fs/cg[^r]*/** wklx,
+  deny /sys/firmware/** rwklx,
+  deny /sys/devices/virtual/powercap/** rwklx,
+  deny /sys/kernel/security/** rwklx,
+
+  ptrace (trace,read,tracedby,readby) peer=eclipse-desktop,
+}

@@ -98,7 +98,7 @@ if (process.argv.includes("--inside")) {
     // TASK-038: owner confirmation inserts and updates routine schedules; the scheduler reads them later.
     await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.routines TO eclipse_app`);
     // TASK-090: Sundance/Moondance check-ins are owner-managed; the minute tick reads, claims and reschedules them.
-    await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.check_ins TO eclipse_app`);
+    await database.execute(sql`GRANT SELECT, INSERT, UPDATE, DELETE ON public.check_ins TO eclipse_app`);
     // TASK-039: pg-boss schemas are migrated in advance; runtime gets queue DML only, never DDL or ownership.
     await database.execute(sql`GRANT USAGE ON SCHEMA pgboss TO eclipse_app`);
     await database.execute(sql`GRANT USAGE ON TYPE pgboss.job_state TO eclipse_app`);

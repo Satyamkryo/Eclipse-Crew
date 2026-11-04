@@ -33,7 +33,7 @@ export function LoginForm() {
   }
 
   return (
-    <form onSubmit={onSubmit} className="mt-6 flex flex-col gap-4">
+    <form method="post" onSubmit={onSubmit} className="mt-6 flex flex-col gap-4">
       <div className="flex flex-col gap-2">
         <label htmlFor="login" className="text-sm font-medium">Email</label>
         <input id="login" name="login" type="email" required autoComplete="email" className="h-8 rounded-md border border-input bg-surface px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring" />
