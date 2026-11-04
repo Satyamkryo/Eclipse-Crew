@@ -198,7 +198,7 @@ export function ChatCard({ message, agentId, csrfToken }: { message: ChatMessage
             </>
           )}
           <p className="mt-3 text-xs text-muted-foreground">
-            System-generated local summary, not a signed receipt. <Link href="/jobs?range=24h" className="underline underline-offset-4">Open Jobs for this window</Link>.
+            System-generated local summary, not a signed receipt. <Link href="/mission-control?range=24h" className="underline underline-offset-4">Open Runs for this window</Link>.
           </p>
         </>
       )}

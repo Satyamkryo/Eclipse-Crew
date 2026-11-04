@@ -115,6 +115,43 @@ test("package downloader preserves verified bytes and rejects corruption, size m
   }
 });
 
+test("package downloads restart interrupted archives, bound socket retries and never retry corruption", async () => {
+  const root = await realpath(tmpdir()); const directory = await mkdtemp(path.join(root, "eclipse010-package-test-"));
+  const bytes = Buffer.from("verified after a dropped socket");
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  const entry = { name: "test-package", version: "1.0", architecture: "all", filename: "test-package_1.0_all.deb",
+    url: "https://archive.ubuntu.com/ubuntu/pool/main/t/test-package/test-package_1.0_all.deb", bytes: bytes.length, sha256 };
+  const socketError = () => new TypeError("terminated", { cause: Object.assign(new Error("socket closed"), { code: "UND_ERR_SOCKET" }) });
+  let calls = 0;
+  try {
+    await fetchPackage(entry, directory, { fetchImpl: async () => {
+      calls++;
+      if (calls === 1) return new Response(new ReadableStream({ start(controller) {
+        controller.enqueue(bytes.subarray(0, 4)); setTimeout(() => controller.error(socketError()), 0);
+      } }));
+      assert.deepEqual(await readdir(directory), [], "partial archive is removed before retry");
+      if (calls === 2) throw socketError();
+      return new Response(bytes);
+    } });
+    assert.equal(calls, 3);
+    assert.deepEqual(await readFile(path.join(directory, `${sha256}.deb`)), bytes);
+    await rm(path.join(directory, `${sha256}.deb`));
+    calls = 0;
+    await assert.rejects(fetchPackage(entry, directory, { fetchImpl: async () => { calls++; throw socketError(); } }));
+    assert.equal(calls, 3, "socket retries are bounded");
+    calls = 0;
+    await assert.rejects(fetchPackage(entry, directory, { fetchImpl: async () => { calls++; return new Response(Buffer.alloc(bytes.length)); } }), /package_integrity_mismatch/);
+    assert.equal(calls, 1, "checksum failures are never retried");
+    assert.deepEqual(await readdir(directory), []);
+    const abort = new AbortController(); calls = 0;
+    await assert.rejects(fetchPackage(entry, directory, { signal: abort.signal, fetchImpl: async () => { calls++; abort.abort(); throw socketError(); } }));
+    assert.equal(calls, 1, "cancellation stops retries");
+  } finally {
+    const resolved = await realpath(directory); assert.equal(path.dirname(resolved), root);
+    assert.ok(path.basename(resolved).startsWith("eclipse010-package-test-")); await rm(resolved, { recursive: true, force: true });
+  }
+});
+
 test("parallel package accounting includes every verified archive when completions arrive out of order", async () => {
   const root = await realpath(tmpdir()); const directory = await mkdtemp(path.join(root, "eclipse010-package-test-"));
   const entries = Array.from({ length: 8 }, (_, i) => {

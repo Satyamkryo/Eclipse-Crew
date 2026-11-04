@@ -3,6 +3,7 @@ import { and, desc, eq, gt, ne, sql } from "drizzle-orm";
 import { getDatabase } from "../../db/client";
 import { owner, sessions } from "../../db/schema";
 import { hashPassword, verifyPassword } from "./password";
+import { resolveTimezone } from "../time/clock";
 import { recordAudit, type AuditExecutor } from "../security/audit";
 
 type Database = Awaited<ReturnType<typeof getDatabase>>;
@@ -38,6 +39,19 @@ export async function changeOwnerEmail(
     if (!current || !(await verifyPassword(current.passwordHash, currentPassword))) return false;
     await transaction.update(owner).set({ login: login.toLowerCase() }).where(eq(owner.ownerId, ownerId));
     await recordAudit(transaction as unknown as AuditExecutor, ownerId, { kind: "email_changed" });
+    return true;
+  });
+}
+
+export async function changeOwnerTimezone(
+  database: Database, ownerId: string, timezone: string,
+): Promise<boolean> {
+  const resolved = resolveTimezone(timezone);
+  if (!resolved) return false;
+  return database.transaction(async (transaction) => {
+    const current = await lockedOwner(transaction, ownerId);
+    if (!current) return false;
+    await transaction.update(owner).set({ timezone: resolved }).where(eq(owner.ownerId, ownerId));
     return true;
   });
 }

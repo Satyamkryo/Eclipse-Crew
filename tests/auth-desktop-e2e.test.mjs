@@ -26,6 +26,14 @@ const benignHint=/was preloaded using link preload but not used within a few sec
 page.on('console',message=>{if(['error','warning'].includes(message.type())&&!benignHint.test(message.text()))console.error(JSON.stringify({browserConsole:message.type(),message:message.text().slice(0,500)}));});
   let desktopSocketConnections=0;
   page.on('websocket',ws=>{if(ws.url().includes('/api/desktop/')&&ws.url().includes('/stream'))desktopSocketConnections++;let received=0,sent=0;ws.on('framereceived',event=>{if(++received<=8)console.error(JSON.stringify({rfbReceiveBytes:event.payload.length,firstByte:event.payload[0]}));});ws.on('framesent',event=>{if(++sent<=8)console.error(JSON.stringify({rfbSendBytes:event.payload.length,firstByte:event.payload[0]}));});ws.on('socketerror',()=>console.error('desktop_websocket_error'));ws.on('close',()=>console.error('desktop_websocket_closed'));});
+  // Request lifecycle tracker for lifecycle diagnostics: method, path and timing only (no headers or bodies).
+  const t0=Date.now();const tracked=new Map();globalThis.requestTrack=tracked;
+  const pathOf=request=>{try{const u=new URL(request.url());return u.pathname;}catch{return 'invalid';}};
+  page.on('request',request=>{if(['fetch','xhr','document'].includes(request.resourceType()))tracked.set(request,{m:request.method(),p:pathOf(request),sent:Date.now()-t0});});
+  page.on('response',response=>{const e=tracked.get(response.request());if(e){e.status=response.status();e.headers=Date.now()-t0;}});
+  page.on('requestfinished',request=>{const e=tracked.get(request);if(e)e.done=Date.now()-t0;});
+  page.on('requestfailed',request=>{const e=tracked.get(request);if(e){e.failed=Date.now()-t0;e.error=(request.failure()?.errorText??'').slice(0,80);}});
+  globalThis.requestSnapshot=()=>{const now=Date.now()-t0;const all=[...tracked.values()];return{now,pending:all.filter(e=>e.done===undefined&&e.failed===undefined),desktop:all.filter(e=>e.p.endsWith('/desktop')).slice(-8)};};
   page.setDefaultTimeout(20000);
   if(input.phase==='setup') {
     console.error('setup:start');
@@ -47,7 +55,8 @@ page.on('console',message=>{if(['error','warning'].includes(message.type())&&!be
     await page.getByLabel('Password',{exact:true}).fill(input.password);
     await page.getByRole('button',{name:'Sign in',exact:true}).click();
     await page.waitForURL(base+'/');
-    await page.getByRole('heading',{name:'Eclipse Crew',exact:true}).waitFor();
+    await page.getByRole('main',{name:'Eclipse Crew',exact:true}).waitFor();
+    await page.getByRole('link',{name:'Eclipse Crew',exact:true}).first().waitFor();
     console.error('setup:login');
     const softNavPanel=page.getByRole('complementary',{name:'Workspace panel'});
     const softNavWidth=await softNavPanel.evaluate(element=>element.getBoundingClientRect().width);
@@ -75,18 +84,15 @@ page.on('console',message=>{if(['error','warning'].includes(message.type())&&!be
     await peerPage.getByLabel('Password',{exact:true}).fill(input.password);
     await peerPage.getByRole('button',{name:'Sign in',exact:true}).click();
     await peerPage.waitForURL(base+'/');
-    await page.goto(base+'/');
-    await page.getByRole('tab',{name:'Settings',exact:true}).click();
-    await page.getByRole('link',{name:'Account settings',exact:true}).click();
-    await page.waitForURL(base+'/settings/account');
-    await page.getByRole('heading',{name:'Account',exact:true}).waitFor();
+    await page.goto(base+'/profile');
+    await page.getByRole('heading',{name:'Profile',exact:true}).waitFor();
     await page.setViewportSize({width:375,height:800});
     await page.reload();
-    await page.getByRole('heading',{name:'Account',exact:true}).waitFor();
+    await page.getByRole('heading',{name:'Profile',exact:true}).waitFor();
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>document.documentElement.clientWidth),false,'account settings fit at 375 px');
     await page.setViewportSize({width:1280,height:720});
     await page.reload();
-    await page.getByRole('heading',{name:'Account',exact:true}).waitFor();
+    await page.getByRole('heading',{name:'Profile',exact:true}).waitFor();
     const sessionList=page.getByRole('list',{name:'Active sessions'});
     await sessionList.getByRole('listitem').first().waitFor();
     assert.equal(await sessionList.getByRole('listitem').count(),2);
@@ -113,7 +119,7 @@ page.on('console',message=>{if(['error','warning'].includes(message.type())&&!be
     await page.getByRole('status').filter({hasText:/Email updated/}).waitFor();
     assert.equal(await page.locator('#email-login').inputValue(),newEmail,'email form immediately shows the saved address');
     await page.reload();
-    await page.getByText(newEmail,{exact:false}).waitFor();
+    await page.waitForFunction(email=>document.querySelector('#email-login')?.value===email,newEmail);
     assert.equal(await page.locator('#email-login').inputValue(),newEmail,'email form shows the saved address after reload');
     assert.doesNotMatch(await page.locator('main').innerText(),/[0-9a-f]{64}/,'session page exposes no token material');
     const wrongPassword=await context.request.post(base+'/api/auth/account/password',{headers:{Origin:base,'x-csrf-token':csrf.csrfToken},data:{currentPassword:'incorrect-password',newPassword:'replacement-owner-password'}});
@@ -129,7 +135,7 @@ page.on('console',message=>{if(['error','warning'].includes(message.type())&&!be
     assert.equal(await sessionList.getByRole('listitem').count(),1,'revoked peer disappears without a reload');
     console.error('setup:password-updated');
     await page.reload();
-    await page.getByRole('heading',{name:'Account',exact:true}).waitFor();
+    await page.getByRole('heading',{name:'Profile',exact:true}).waitFor();
     assert.equal(await sessionList.getByRole('listitem').count(),1);
     const staleLogin=await peer.request.post(base+'/api/auth/login',{headers:{Origin:base},data:{login:newEmail,password:input.password}});
     assert.equal(staleLogin.status(),401);
@@ -143,7 +149,7 @@ page.on('console',message=>{if(['error','warning'].includes(message.type())&&!be
     await peer2Page.getByRole('button',{name:'Sign in',exact:true}).click();
     await peer2Page.waitForURL(base+'/');
     await page.reload();
-    await page.getByRole('heading',{name:'Account',exact:true}).waitFor();
+    await page.getByRole('heading',{name:'Profile',exact:true}).waitFor();
     assert.equal(await sessionList.getByRole('listitem').count(),2);
     page.once('dialog',dialog=>dialog.accept());
     await page.getByRole('button',{name:'Sign out everywhere',exact:true}).click();
@@ -166,8 +172,8 @@ page.on('console',message=>{if(['error','warning'].includes(message.type())&&!be
     page.setDefaultTimeout(60000);
     await page.setViewportSize({width:1440,height:900});
     await page.goto(base+'/');
-    await page.getByRole('main',{name:'Eclipse Crew workspace'}).waitFor();
-    const pane=page.getByRole('complementary',{name:'Agents pane'});
+    await page.getByRole('main',{name:'Eclipse Crew'}).waitFor();
+    const pane=page.getByRole('complementary',{name:'App navigation'});
     const csrf=await (await context.request.get(base+'/api/auth/csrf')).json();
     const agentBody={name:'Forged',role:'None',soulMd:'Boundaries: ask.',dailyBudgetUsd:'1.00',monthlyBudgetUsd:'1.00',tools:[],domains:[],actions:[],memoryScopes:[]};
     const mutation=(method,path,{origin=base,csrfToken=csrf.csrfToken,data=agentBody}={})=>context.request.fetch(base+path,{method,headers:{Origin:origin,...(csrfToken?{'x-csrf-token':csrfToken}:{})},data});
@@ -210,7 +216,7 @@ page.on('console',message=>{if(['error','warning'].includes(message.type())&&!be
       await dialog.getByLabel('Monthly budget (USD)',{exact:true}).fill(spec.monthly);
       await dialog.getByLabel('Tools',{exact:true}).fill(index?'web.fetch':'web.fetch, web.fetch');
       await dialog.getByLabel('Domains',{exact:true}).fill(spec.domain);
-      if(index===0) assert.equal(await dialog.getByLabel('Actions',{exact:true}).inputValue(),'click, type, key, scroll, wait, read_document, deliver_file','new agents start with the known actions visible');
+      if(index===0) assert.equal(await dialog.getByLabel('Actions',{exact:true}).inputValue(),'click, type, key, scroll, wait, start_desktop, start_browser, read_document, deliver_file, remember, handoff','new agents start with the known actions visible');
       await dialog.getByLabel('Actions',{exact:true}).fill(spec.action);
       await dialog.getByRole('checkbox',{name:'agent',exact:true}).check();
       if(index===0){
@@ -256,7 +262,10 @@ page.on('console',message=>{if(['error','warning'].includes(message.type())&&!be
       const previous=new URL(page.url()).searchParams.get('agent');
       const createdResponse=page.waitForResponse(response=>response.request().method()==='POST'&&new URL(response.url()).pathname==='/api/agents');
       await dialog.getByRole('button',{name:'Create agent',exact:true}).click();
-      assert.equal((await createdResponse).status(),201,'agent create API succeeds');
+      const createResult=await createdResponse;
+      assert.equal(createResult.status(),201,'agent create API succeeds');
+      const createBody=await createResult.json().catch(()=>null);
+      assert.notEqual(createBody?.desktopReady,false,'agent desktop provisioned on create: '+JSON.stringify(createBody));
       await page.waitForURL(url=>url.pathname==='/'&&url.searchParams.get('agent')&&url.searchParams.get('agent')!==previous);
       const id=new URL(page.url()).searchParams.get('agent');
       assert.match(id,/^[0-9a-f-]{36}$/);
@@ -265,6 +274,56 @@ page.on('console',message=>{if(['error','warning'].includes(message.type())&&!be
     }
     const [first,second]=created;
     await page.getByRole('link',{name:/Audit A/}).click();
+    // Wait for the switch to finish: until then the previous agent's Stop button is still on screen.
+    await page.waitForURL(url=>url.searchParams.get('agent')===first.id);
+    await page.getByRole('heading',{level:1,name:'Audit A',exact:true}).first().waitFor();
+    // Provisioning already started the desktop: expect it running, then explicitly
+    // exercise Stop -> stopped -> Start -> running while the settings edits run below.
+    const stopDesktop=page.getByRole('button',{name:'Stop desktop',exact:true});
+    const startDesktop=page.getByRole('button',{name:'Start desktop',exact:true});
+    try {
+      await stopDesktop.waitFor({timeout:60000});
+    } catch (error) {
+      const panel=await page.getByRole('complementary',{name:'Workspace panel'}).innerText().catch(()=>'no-panel');
+      const center=await page.getByRole('region',{name:'Agent workspace'}).innerText().catch(()=>page.locator('main').innerText().catch(()=>('no-main')));
+      console.error(JSON.stringify({lifecycleDiagnostic:{expect:'running-after-create',url:page.url(),panel:panel.slice(0,1200),center:center.slice(0,1200)}}));
+      throw error;
+    }
+    // On a lifecycle timeout, record what the API and the page say (status fields and visible alerts only; no secrets).
+    const lifecycleStep=async(button,expect)=>{
+      try { await button.waitFor({timeout:60000}); }
+      catch (error) {
+        const agentId=new URL(page.url()).searchParams.get('agent');
+        const status=agentId?await context.request.get(base+'/api/agents/'+agentId+'/desktop').then(async r=>({http:r.status(),body:await r.json().catch(()=>null)})).catch(()=>'status-failed'):'no-agent';
+        const alerts=await page.getByRole('alert').allInnerTexts().catch(()=>[]);
+        const label=await page.getByRole('heading',{name:'Desktop',exact:true}).locator('xpath=following-sibling::p[1]').innerText().catch(()=>'no-label');
+        console.error(JSON.stringify({lifecycleDiagnostic:{expect,status,alerts,label,requests:globalThis.requestSnapshot?.()}}));
+        throw error;
+      }
+    };
+    await stopDesktop.click();
+    await lifecycleStep(startDesktop,'stopped-after-stop');
+    await startDesktop.click();
+    await lifecycleStep(stopDesktop,'running-after-start');
+    const centerTabs=page.getByRole('tablist',{name:'Audit A workspace'});
+    await centerTabs.waitFor();
+    assert.equal(await centerTabs.evaluate(element=>element.scrollWidth<=element.clientWidth),true,'all six center tabs fit');
+    const chatTab=centerTabs.getByRole('tab',{name:'Chat',exact:true});
+    const centerSettingsTab=centerTabs.getByRole('tab',{name:'Settings',exact:true});
+    const centerMemoryTab=centerTabs.getByRole('tab',{name:'Memory',exact:true});
+    for(const tab of await centerTabs.getByRole('tab').all()){
+      const controlled=await tab.getAttribute('aria-controls');
+      assert.ok(controlled);
+      assert.equal(await page.locator('[id="'+controlled+'"]').count(),1,'every tab controls an existing panel');
+    }
+    assert.equal(await chatTab.getAttribute('aria-selected'),'true');
+    await chatTab.focus();
+    await page.keyboard.press('End');
+    assert.equal(await centerMemoryTab.getAttribute('aria-selected'),'true','End selects the last tab');
+    await page.keyboard.press('Home');
+    assert.equal(await chatTab.getAttribute('aria-selected'),'true','Home selects the first tab');
+    await page.keyboard.press('ArrowRight');
+    assert.equal(await centerSettingsTab.getAttribute('aria-selected'),'true','ArrowRight moves tab selection');
     await page.getByRole('tab',{name:'Settings',exact:true}).click();
     const settings=page.getByRole('heading',{name:'Agent settings',exact:true});
     await settings.waitFor();
@@ -279,7 +338,6 @@ page.on('console',message=>{if(['error','warning'].includes(message.type())&&!be
     assert.equal(await page.getByLabel('Role',{exact:true}).inputValue(),'Research analyst');
     assert.equal(await page.getByLabel('Daily budget (USD)',{exact:true}).inputValue(),'12.50');
     assert.match(await page.getByLabel('Domains',{exact:true}).inputValue(),/example\.com, news\.example\.com/);
-    await page.getByRole('tab',{name:'Desktop',exact:true}).click();
     await page.getByRole('status').filter({hasText:/^Live$/}).waitFor();
     await page.getByRole('tab',{name:'Settings',exact:true}).click();
     await page.getByRole('button',{name:'Pause agent',exact:true}).click();
@@ -287,10 +345,10 @@ page.on('console',message=>{if(['error','warning'].includes(message.type())&&!be
     await page.getByRole('status').filter({hasText:/^Live$/}).waitFor({state:'detached'});
     await page.getByRole('tab',{name:'Settings',exact:true}).click();
     await page.getByRole('button',{name:'Resume agent',exact:true}).click();
+    await page.getByRole('button',{name:'Stop desktop',exact:true}).waitFor({timeout:60000});
     await page.getByRole('status').filter({hasText:/^Live$/}).waitFor();
     await page.getByRole('tab',{name:'Settings',exact:true}).click();
     await page.getByRole('button',{name:'Pause agent',exact:true}).waitFor();
-    await page.getByRole('tab',{name:'Desktop',exact:true}).click();
     await page.getByRole('status').filter({hasText:/^Live$/}).waitFor();
     await pane.getByRole('button',{name:'Create agent',exact:true}).first().click();
     const deleteCreate=page.getByRole('dialog',{name:'Create agent',exact:true});
@@ -326,49 +384,34 @@ page.on('console',message=>{if(['error','warning'].includes(message.type())&&!be
     await page.setViewportSize({width:375,height:800});
     await page.reload();
     await page.getByRole('navigation',{name:'Workspace panes',exact:true}).getByRole('button',{name:'Agents',exact:true}).click();
-    await pane.getByRole('link',{name:/Audit A/}).waitFor();
-    await pane.getByRole('button',{name:'Create agent',exact:true}).first().click();
+    await page.getByRole('complementary',{name:'Agents pane'}).getByRole('link',{name:/Audit A/}).click();
+    await page.waitForURL(url=>url.searchParams.get('agent')===first.id);
+    await page.getByRole('navigation',{name:'Workspace panes',exact:true}).getByRole('button',{name:'Chat',exact:true}).click();
+    assert.equal(await page.getByRole('tablist',{name:'Audit A workspace'}).evaluate(element=>element.scrollWidth<=element.clientWidth),true,'all six center tabs fit at 375 px');
+    await page.getByRole('navigation',{name:'Workspace panes',exact:true}).getByRole('button',{name:'Agents',exact:true}).click();
+    await page.getByRole('complementary',{name:'Agents pane'}).getByRole('button',{name:'Create agent',exact:true}).first().click();
     const mobileCreate=page.getByRole('dialog',{name:'Create agent',exact:true});
     await mobileCreate.getByLabel('Name',{exact:true}).waitFor();
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>document.documentElement.clientWidth),false,'agent creation fits at 375 px');
     await page.keyboard.press('Escape');
     await mobileCreate.waitFor({state:'detached'});
-    console.log(JSON.stringify({phase:'agents',agents:created,deletedId,checks:['agent_create_edit_pause_resume_delete','agent_modal_focus_and_backup_confirmation','agent_route_origin_csrf_owner_denials','agent_field_errors_and_focus','agent_mobile_create_no_overflow'],screenshot}));
+    console.log(JSON.stringify({phase:'agents',agents:created,deletedId,checks:['agent_create_edit_pause_resume_delete','agent_center_tabs_keyboard_and_fit','agent_modal_focus_and_backup_confirmation','agent_route_origin_csrf_owner_denials','agent_field_errors_and_focus','agent_mobile_create_no_overflow'],screenshot}));
   } else if(input.phase==='layout') {
     const visible=async locator=>await locator.count()>0&&await locator.isVisible();
     const box=async locator=>{const value=await locator.boundingBox();assert.ok(value,'element has a layout box');return value;};
-    const agents=page.getByRole('complementary',{name:'Agents pane'});
-    const chat=page.getByRole('region',{name:'Chat pane'});
+    const agents=page.getByRole('complementary',{name:'App navigation'});
+    const chat=page.getByRole('region',{name:'Agent workspace'});
     const panel=page.getByRole('complementary',{name:'Workspace panel'});
     await page.setViewportSize({width:1440,height:900});
     await page.goto(base+'/');
-    await page.getByRole('main',{name:'Eclipse Crew workspace'}).waitFor();
+    await page.getByRole('main',{name:'Eclipse Crew'}).waitFor();
     assert.ok(Math.abs((await box(agents)).width-260)<2,'desktop agent pane is 260 px');
     const initial=await box(panel);
-    assert.ok(Math.abs(initial.width-380)<2,'desktop panel defaults to 380 px');
+    assert.ok(Math.abs(initial.width-400)<2,'desktop panel defaults to 400 px');
     assert.ok((await box(chat)).x>=260,'chat follows the agent pane');
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>document.documentElement.clientWidth),false,'desktop workspace has no page overflow');
     const desktopCapture=(await page.screenshot()).toString('base64');
-    const tabs=page.getByRole('tablist',{name:'Workspace panel'});
-    assert.equal(await tabs.evaluate(element=>element.scrollWidth<=element.clientWidth),true,'all six panel tabs fit at the 380 px minimum');
-    const desktopTab=tabs.getByRole('tab',{name:'Desktop',exact:true});
-    const settingsTab=tabs.getByRole('tab',{name:'Settings',exact:true});
-    const memoryTab=tabs.getByRole('tab',{name:'Memory',exact:true});
-    for(const tab of await tabs.getByRole('tab').all()){
-      const controlled=await tab.getAttribute('aria-controls');
-      assert.ok(controlled);
-      assert.equal(await page.locator('[id="'+controlled+'"]').count(),1,'every tab controls an existing panel');
-    }
-    assert.equal(await desktopTab.getAttribute('aria-selected'),'true');
-    await desktopTab.focus();
-    await page.keyboard.press('End');
-    assert.equal(await memoryTab.getAttribute('aria-selected'),'true','End selects the last tab');
-    await page.keyboard.press('Home');
-    assert.equal(await desktopTab.getAttribute('aria-selected'),'true','Home selects the first tab');
-    await page.keyboard.press('ArrowRight');
-    assert.equal(await settingsTab.getAttribute('aria-selected'),'true','ArrowRight moves tab selection');
-    await page.getByRole('link',{name:'Account settings',exact:true}).waitFor();
-    await desktopTab.click();
+    // Center tabs need a selected agent, so their keyboard behaviour is checked in the agents phase.
     const separator=page.getByRole('separator',{name:'Resize workspace panel'});
     const handle=await box(separator);
     await page.mouse.move(handle.x+handle.width/2,handle.y+handle.height/2);
@@ -394,13 +437,13 @@ page.on('console',message=>{if(['error','warning'].includes(message.type())&&!be
     assert.equal(await separator.getAttribute('aria-valuenow'),'380','pointer resize clamps at the 380 px minimum');
     await page.setViewportSize({width:1280,height:800});
     await page.reload();
-    await page.getByRole('main',{name:'Eclipse Crew workspace'}).waitFor();
+    await page.getByRole('main',{name:'Eclipse Crew'}).waitFor();
     assert.ok(Math.abs((await box(agents)).width-260)<2,'1280 px keeps the full agent pane');
     assert.ok((await box(panel)).width>=380&&(await box(panel)).width<=380+60,'1280 px panel stays within its range');
     await page.setViewportSize({width:768,height:900});
     await page.reload();
-    await page.getByRole('main',{name:'Eclipse Crew workspace'}).waitFor();
-    const rail=page.getByRole('complementary',{name:'Agents rail'});
+    await page.getByRole('main',{name:'Eclipse Crew'}).waitFor();
+    const rail=page.getByRole('complementary',{name:'App rail'});
     assert.ok(Math.abs((await box(rail)).width-56)<2,'tablet agent rail is 56 px');
     assert.equal(await page.getByRole('complementary',{name:'Workspace panel'}).count(),0,'tablet panel is not permanently open');
     const panelOpener=page.getByRole('button',{name:'Open workspace panel',exact:true});
@@ -420,7 +463,7 @@ page.on('console',message=>{if(['error','warning'].includes(message.type())&&!be
     assert.equal(await panelOpener.evaluate(element=>document.activeElement===element),true,'panel opener regains focus');
     const agentOpener=page.getByRole('button',{name:'Open agents',exact:true});
     await agentOpener.click();
-    const agentSheet=page.getByRole('dialog',{name:'Agents pane',exact:true});
+    const agentSheet=page.getByRole('dialog',{name:'Agents',exact:true});
     await agentSheet.getByRole('button',{name:'Create agent',exact:true}).first().waitFor();
     await page.keyboard.press('Escape');
     await agentSheet.waitFor({state:'detached'});
@@ -430,30 +473,32 @@ page.on('console',message=>{if(['error','warning'].includes(message.type())&&!be
     await page.reload();
     const mobileNav=page.getByRole('navigation',{name:'Workspace panes',exact:true});
     await mobileNav.waitFor();
-    assert.equal(await visible(chat),true,'mobile starts on chat');
+    const mobileChat=page.getByRole('region',{name:'Chat pane'});
+    const mobileAgents=page.getByRole('complementary',{name:'Agents pane'});
+    assert.equal(await visible(mobileChat),true,'mobile starts on chat');
     assert.equal(await visible(agents),false,'mobile shows one pane at a time');
     await mobileNav.getByRole('button',{name:'Agents',exact:true}).click();
-    await agents.getByRole('button',{name:'Create agent',exact:true}).first().waitFor();
-    assert.equal(await visible(chat),false);
+    await mobileAgents.getByRole('button',{name:'Create agent',exact:true}).first().waitFor();
+    assert.equal(await visible(mobileChat),false);
     const panelButton=mobileNav.getByRole('button',{name:'Panel',exact:true});
     await panelButton.focus();
     await page.keyboard.press('Enter');
     await page.getByRole('complementary',{name:'Workspace panel'}).waitFor();
     assert.equal(await panelButton.getAttribute('aria-pressed'),'true','mobile pane button exposes its selected state');
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>document.documentElement.clientWidth),false,'mobile workspace has no horizontal overflow');
-    assert.equal(await page.getByRole('tablist',{name:'Workspace panel'}).evaluate(element=>element.scrollWidth<=element.clientWidth),true,'all six panel tabs fit at 375 px');
+    // Center tabs need a selected agent; their 375 px fit is checked in the agents phase.
     const mobileCapture=(await page.screenshot()).toString('base64');
     assert.equal(await page.getByRole('button',{name:'Open workspace panel',exact:true}).count(),0,'mobile uses the bottom navigation instead of an open button');
     await page.goto(base+'/?agent=not-a-uuid');
     await page.getByRole('complementary',{name:'Agents pane'}).getByRole('alert').filter({hasText:/agent link is invalid/}).waitFor();
     await page.setViewportSize({width:768,height:900});
     await page.goto(base+'/?agent=not-a-uuid');
-    await page.getByRole('dialog',{name:'Agents pane',exact:true}).getByRole('alert').filter({hasText:/agent link is invalid/}).waitFor();
-    console.log(JSON.stringify({phase:'layout',checks:['workspace_three_pane_resize','workspace_tabs_keyboard','workspace_tablet_sheet_focus','workspace_mobile_tabs_no_overflow','workspace_agent_error_visible'],screenshots:{'workspace-1440':desktopCapture,'workspace-768-sheet':sheetCapture,'workspace-375-panel':mobileCapture}}));
+    await page.getByRole('dialog',{name:'Agents',exact:true}).getByRole('alert').filter({hasText:/agent link is invalid/}).waitFor();
+    console.log(JSON.stringify({phase:'layout',checks:['workspace_three_pane_resize','workspace_tablet_sheet_focus','workspace_mobile_tabs_no_overflow','workspace_agent_error_visible'],screenshots:{'workspace-1440':desktopCapture,'workspace-768-sheet':sheetCapture,'workspace-375-panel':mobileCapture}}));
   } else if(input.phase==='chat') {
     await page.setViewportSize({width:1440,height:900});
     await page.goto(base+'/?agent='+input.agents[0]);
-    const chat=page.getByRole('region',{name:'Chat pane'});
+    const chat=page.getByRole('tabpanel');
     await chat.waitFor();
     const composer=chat.getByLabel('Message',{exact:true});
     await composer.waitFor();
@@ -470,7 +515,7 @@ page.on('console',message=>{if(['error','warning'].includes(message.type())&&!be
     await routine.getByRole('button',{name:'Confirm routine'}).waitFor();
     assert.equal(await chat.locator('[data-card-type="tool_connection"]').getByRole('button').count(),0,'tool connection remains a later task');
     await page.reload();
-    await page.getByRole('region',{name:'Chat pane'}).getByText('Please prepare the synthetic brief.',{exact:true}).waitFor();
+    await page.getByRole('tabpanel').getByText('Please prepare the synthetic brief.',{exact:true}).waitFor();
     const csrf=await (await context.request.get(base+'/api/auth/csrf')).json();
     const anonymous=await browser.newContext();
     assert.equal((await anonymous.request.get(base+'/api/agents/'+input.agents[0]+'/messages')).status(),401,'chat history requires an owner session');
@@ -485,14 +530,14 @@ page.on('console',message=>{if(['error','warning'].includes(message.type())&&!be
     assert.ok(firstHistory.messages.some(message=>message.card.text==='Please prepare the synthetic brief.'));
     assert.ok(firstHistory.messages.some(message=>message.runId&&message.card.text==='Background run completed.'),'background result keeps its run reference');
     await page.goto(base+'/?agent='+input.agents[1]);
-    const peerChat=page.getByRole('region',{name:'Chat pane'});
+    const peerChat=page.getByRole('tabpanel');
     await peerChat.getByText(/^No conversation yet\./).waitFor();
     assert.equal(await peerChat.getByText('Please prepare the synthetic brief.',{exact:true}).count(),0,'chat history is isolated per agent');
     const secondHistory=await (await context.request.get(base+'/api/agents/'+input.agents[1]+'/messages')).json();
     assert.equal(secondHistory.messages.length,0);
     assert.equal((await context.request.post(base+'/api/agents/'+input.agents[0]+'/pause',{headers:{Origin:base,'x-csrf-token':csrf.csrfToken},data:{}})).status(),200);
     await page.goto(base+'/?agent='+input.agents[0]);
-    const pausedChat=page.getByRole('region',{name:'Chat pane'});
+    const pausedChat=page.getByRole('tabpanel');
     await pausedChat.getByText('Please prepare the synthetic brief.',{exact:true}).waitFor();
     assert.equal(await pausedChat.getByLabel('Message',{exact:true}).isDisabled(),true,'paused agent chat is read-only');
     await pausedChat.getByText('Resume this agent to send a message.',{exact:true}).waitFor();
@@ -567,7 +612,8 @@ page.on('console',message=>{if(['error','warning'].includes(message.type())&&!be
       assert.equal((await (await context.request.get(base+'/api/agents/'+input.agents[1]+'/runs')).json()).runs.length,0,'the peer agent has no runs of its own');
       await page.setViewportSize({width:375,height:800});
       await page.goto(base+'/?agent='+input.agents[0]);
-      await page.getByRole('navigation',{name:'Workspace panes'}).getByRole('button',{name:'Panel',exact:true}).click();
+      // The History tab lives in the center column, shown under the Chat pane on phones; Panel is the live desktop.
+      await page.getByRole('navigation',{name:'Workspace panes'}).getByRole('button',{name:'Chat',exact:true}).click();
       await page.getByRole('tab',{name:'History',exact:true}).click();
       const phoneRuns=page.getByRole('tabpanel').getByRole('list',{name:'Runs'});
       await phoneRuns.getByRole('button').filter({hasText:'Collect monthly invoices'}).click();
@@ -581,7 +627,7 @@ page.on('console',message=>{if(['error','warning'].includes(message.type())&&!be
     await page.setViewportSize({width:1440,height:900});
     const agent=input.agents[0];
     await page.goto(base+'/?agent='+agent);
-    const chat=page.getByRole('region',{name:'Chat pane'});
+    const chat=page.getByRole('tabpanel');
     await chat.getByLabel('Message',{exact:true}).waitFor();
     const csrf=await (await context.request.get(base+'/api/auth/csrf')).json();
     const cards=()=>chat.locator('[data-card-type="file"]');
@@ -645,13 +691,13 @@ page.on('console',message=>{if(['error','warning'].includes(message.type())&&!be
     assert.equal((await context.request.post(base+'/api/agents/'+agent+'/pause',{headers:{Origin:base,'x-csrf-token':csrf.csrfToken},data:{}})).status(),200);
     assert.deepEqual(await answer(await upload({})),{status:409,body:{error:'agent_paused'}});
     await page.goto(base+'/?agent='+agent);
-    const paused=page.getByRole('region',{name:'Chat pane'});
+    const paused=page.getByRole('tabpanel');
     await paused.getByText('Resume this agent to send a message.',{exact:true}).waitFor();
     assert.equal(await paused.getByRole('button',{name:'Attach files',exact:true}).isDisabled(),true,'attach is off while paused');
     assert.equal((await context.request.post(base+'/api/agents/'+agent+'/resume',{headers:{Origin:base,'x-csrf-token':csrf.csrfToken},data:{}})).status(),200);
     // 8. Cards survive a reload, with only safe metadata.
     await page.goto(base+'/?agent='+agent);
-    const reloaded=page.getByRole('region',{name:'Chat pane'}).locator('[data-card-type="file"]');
+    const reloaded=page.getByRole('tabpanel').locator('[data-card-type="file"]');
     await reloaded.filter({hasText:'brief.pdf'}).waitFor();
     const history=await (await context.request.get(base+'/api/agents/'+agent+'/messages')).json();
     const fileCards=history.messages.filter(m=>m.card.type==='file');
@@ -668,7 +714,7 @@ page.on('console',message=>{if(['error','warning'].includes(message.type())&&!be
     await page.setViewportSize({width:1440,height:900});
     const agent=input.agents[0], peer=input.agents[1];
     await page.goto(base+'/?agent='+agent);
-    const chat=page.getByRole('region',{name:'Chat pane'});
+    const chat=page.getByRole('tabpanel');
     try{await chat.getByLabel('Message',{exact:true}).waitFor();}catch(error){console.error(JSON.stringify({outboxPageDiagnostic:page.url(),text:(await page.locator('body').innerText().catch(()=>'')).slice(0,400)}));throw error;}
     const csrf=await (await context.request.get(base+'/api/auth/csrf')).json();
     const card=name=>chat.locator('[data-card-type="file"]').filter({hasText:name});
@@ -733,7 +779,7 @@ page.on('console',message=>{if(['error','warning'].includes(message.type())&&!be
     // Opens one real file from its card and reports what the card says; the host then inspects the agent's tabs and Downloads.
     await page.setViewportSize({width:1440,height:900});
     await page.goto(base+'/?agent='+input.agents[0]);
-    const chat=page.getByRole('region',{name:'Chat pane'});
+    const chat=page.getByRole('tabpanel');
     await chat.getByLabel('Message',{exact:true}).waitFor();
     const card=chat.locator('[data-card-type="file"]').filter({hasText:input.name});
     await card.first().waitFor({timeout:40000});
@@ -846,8 +892,8 @@ page.on('console',message=>{if(['error','warning'].includes(message.type())&&!be
     const modelsCapture=(await page.screenshot()).toString('base64');
     console.log(JSON.stringify({phase:'models',checks:['model_main_save_masked_encrypted','model_same_key_one_provider','model_saved_test_rendering','model_routing_fixed_default_auto_persists','model_live_transport_unavailable','model_route_origin_csrf_owner_and_input_denials','model_mobile_no_overflow'],screenshot:modelsCapture}));
   } else if(input.phase==='account') {
-    await page.goto(base+'/settings/account');
-    await page.getByRole('heading',{name:'Account',exact:true}).waitFor();
+    await page.goto(base+'/profile');
+    await page.getByRole('heading',{name:'Profile',exact:true}).waitFor();
     const sessionList=page.getByRole('list',{name:'Active sessions'});
     await sessionList.getByRole('listitem').first().waitFor();
     assert.equal(await sessionList.getByRole('listitem').count(),1);
@@ -860,15 +906,24 @@ page.on('console',message=>{if(['error','warning'].includes(message.type())&&!be
     const countStream=request=>{if(request.url().includes('/api/desktop/')&&request.url().includes('/stream'))streamRequests++;};
     page.on('request',countStream);
     await page.goto(base+'/?agent='+input.agents[0]);
+    // Phones start on Chat; the live desktop is in the Panel pane. The shell waits for the real width before mounting the
+    // live view, so the Chat pane opens no stream and Panel opens exactly one.
+    await page.getByRole('navigation',{name:'Workspace panes',exact:true}).getByRole('button',{name:'Chat',exact:true}).waitFor();
+    const streamsBeforePanel=streamRequests;
+    await page.getByRole('navigation',{name:'Workspace panes',exact:true}).getByRole('button',{name:'Panel',exact:true}).click();
     await page.getByRole('complementary',{name:'Workspace panel'}).waitFor();
     await page.getByRole('status').filter({hasText:/^Live$/}).waitFor();
-    assert.equal(streamRequests,1,'mobile agent selection opens exactly one live panel');
+    console.error(JSON.stringify({mobileStreams:{beforePanel:streamsBeforePanel,total:streamRequests}}));
+    assert.equal(streamsBeforePanel,0,'the phone Chat pane opens no stream (no guessed-layout stream)');
+    assert.equal(streamRequests,1,'mobile Panel opens exactly one live stream');
     // TASK-068: on a phone the expanded view fills the window, is view-only and has no Take over.
     const phoneSockets=desktopSocketConnections;
     await page.getByRole('button',{name:'Full screen',exact:true}).click();
     const phoneView=page.getByRole('dialog',{name:/desktop, full screen/});
     await phoneView.waitFor();
-    assert.equal(await phoneView.getByRole('button',{name:'Take over'}).count(),0,'no Take over on phones');
+    // DESIGN.md (Expanded desktop view): takeover is an input-policy check, not a viewport rule. This 375 px browser has a
+    // mouse and keyboard, so Take over is offered behind the two-step check; touch-only stays view-only (TEST_PLAN, Touch-only viewport).
+    assert.equal(await phoneView.getByRole('button',{name:'Take over'}).count(),1,'a keyboard-and-mouse phone viewport is offered the checked Take over');
     await phoneView.getByText('view-only',{exact:true}).waitFor();
     await phoneView.locator('[aria-label="Agent screen"] canvas').waitFor();
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth>document.documentElement.clientWidth),false,'expanded view fits at 375 px');
@@ -882,6 +937,8 @@ page.on('console',message=>{if(['error','warning'].includes(message.type())&&!be
     streamRequests=0;
     await page.setViewportSize({width:768,height:900});
     await page.goto(base+'/?agent='+input.agents[0]);
+    // DESIGN.md: at 768-1279 px the panel opens as a sheet on request (the header Panel button), not automatically.
+    await page.getByRole('button',{name:'Open workspace panel',exact:true}).click();
     await page.getByRole('dialog',{name:'Workspace panel',exact:true}).waitFor();
     await page.getByRole('status').filter({hasText:/^Live$/}).waitFor();
     assert.equal(streamRequests,1,'tablet agent selection opens exactly one live panel');
@@ -929,7 +986,7 @@ page.on('console',message=>{if(['error','warning'].includes(message.type())&&!be
     await expandedView.getByRole('button',{name:'Exit full screen'}).waitFor();
     await expandedView.getByRole('heading',{name:'Current task'}).waitFor();
     await expandedView.getByRole('heading',{name:'Control safety'}).waitFor();
-    assert.equal(await page.evaluate(()=>document.querySelector('main[aria-label="Eclipse Crew workspace"]').inert),true,'workspace behind is inert');
+    assert.equal(await page.evaluate(()=>document.querySelector('main[aria-label="Eclipse Crew"]').inert),true,'workspace behind is inert');
     assert.equal(await page.locator('[aria-label="Agent screen"] canvas').count(),1,'one stream canvas, now inside the expanded view');
     assert.equal(await expandedView.locator('[aria-label="Agent screen"] canvas').count(),1);
     await page.waitForTimeout(400);
@@ -940,7 +997,7 @@ page.on('console',message=>{if(['error','warning'].includes(message.type())&&!be
     assert.equal(await page.evaluate(()=>Boolean(document.activeElement?.closest('[role="dialog"]'))),true,'Tab stays inside the expanded view');
     await page.keyboard.press('Escape');
     await expandedView.waitFor({state:'detached'});
-    assert.equal(await page.evaluate(()=>document.querySelector('main[aria-label="Eclipse Crew workspace"]').inert),false,'workspace is usable again');
+    assert.equal(await page.evaluate(()=>document.querySelector('main[aria-label="Eclipse Crew"]').inert),false,'workspace is usable again');
     assert.equal(await page.evaluate(()=>document.activeElement?.getAttribute('aria-label')),'Full screen','focus returns to the Full screen button');
     assert.equal(desktopSocketConnections,socketsBeforeExpand,'open and Esc close do not reconnect the stream');
     await page.setViewportSize({width:1280,height:720});
@@ -980,7 +1037,9 @@ page.on('console',message=>{if(['error','warning'].includes(message.type())&&!be
     const second=await watch(input.agents[1],'blue');
     assert.ok(second.blue>10000&&second.blue>second.red);
     await watch(input.agents[0],'red');
+    // watch() reloads the page, which resets the takeover input check: click (mouse) then Enter (keyboard) on the control.
     await page.getByRole('button',{name:'Take over',exact:true}).click();
+    await page.keyboard.press('Enter');
     await page.getByRole('button',{name:'Hand back',exact:true}).click();
     await page.getByRole('button',{name:'Take over',exact:true}).waitFor();
     const csrf=await (await context.request.get(base+'/api/auth/csrf')).json();
@@ -993,14 +1052,6 @@ page.on('console',message=>{if(['error','warning'].includes(message.type())&&!be
 } finally {await browser.close();}
 `;
 
-const desktopFixtureProgram = String.raw`
-import http from 'node:http';
-http.createServer((req,res)=>{
-  const a=req.url==='/A';const label=a?'Audit A':'Audit B';const color=a?'240,20,20':'20,20,240';
-  res.setHeader('Content-Type','text/html');
-  res.end('<!doctype html><title>'+label+'</title><body data-label="'+label+'" style="background:rgb('+color+');margin:30px"><textarea oninput="document.title=document.body.dataset.label+String.fromCharCode(32)+this.value" style="width:400px;height:90px"></textarea><input id="sensitive-password" type="password"><input id="sensitive-code" autocomplete="one-time-code"></body>');
-}).listen(18766,'127.0.0.1');
-`;
 
 const pagesProbe = String.raw`
 import fs from 'node:fs';import{randomUUID}from'node:crypto';
@@ -1026,9 +1077,9 @@ assert.equal(full.result.width,1024);assert.equal(full.result.height,768);
 const png=Buffer.from(full.result.base64,'base64');assert.equal(png.readUInt32BE(16),1024);assert.equal(png.readUInt32BE(20),768);
 const crop=await request('capture.screenshot',{generation,crop:{x:10,y:20,width:120,height:80}});assert.equal(crop.outcome,'ok');
 const cropped=Buffer.from(crop.result.base64,'base64');assert.equal(cropped.readUInt32BE(16),120);assert.equal(cropped.readUInt32BE(20),80);
-let pages;for(let n=0;n<20;n++){pages=await request('browser.pages',{generation});if(pages.outcome==='ok'&&pages.result.pages.some(p=>p.href.startsWith('http://127.0.0.1:18766/')))break;await new Promise(r=>setTimeout(r,100));}
+let pages;for(let n=0;n<100;n++){pages=await request('browser.pages',{generation});if(pages.outcome==='ok'&&pages.result.pages.some(p=>p.href.startsWith('http://127.0.0.1:18766/')))break;await new Promise(r=>setTimeout(r,100));}
 assert.equal(pages.outcome,'ok');assert.equal(pages.result.source_tag,'tool');assert.equal(pages.result.untrusted,true);
-const page=pages.result.pages.find(p=>p.href.startsWith('http://127.0.0.1:18766/'));assert.ok(page);
+const page=pages.result.pages.find(p=>p.href.startsWith('http://127.0.0.1:18766/'));assert.ok(page,'fixture page not open; pages: '+JSON.stringify(pages.result.pages.map(p=>String(p.href).slice(0,60))));
 for(const selector of ['#sensitive-password','#sensitive-code']){
  const result=await request('browser.locator',{generation,pageId:page.pageId,selector,action:'fill',text:'synthetic-denied'});
  assert.equal(result.outcome,'error');assert.equal(result.code,'sensitive_target');
@@ -1219,6 +1270,8 @@ test("fresh Compose browser auth and two real desktop streams", { timeout: 18000
   writeFileSync(empty, "", { mode: 0o600 });
   writeFileSync(override, JSON.stringify({ services: {
     ingress: { ports: [] }, app: { environment: { APP_ORIGIN: "http://127.0.0.1:8080" } },
+    // Test-only worker fixtures (the A/B probe page); never set outside disposable stacks.
+    desktop: { environment: { ECLIPSE_FIXTURES: "1" } },
   }, networks: { frontend: { internal: true } } }), { mode: 0o600 });
   // JSON has no Compose !reset tag, so use a tiny YAML override for ports.
   const ports = path.join(temp, "ports.yml");
@@ -1227,6 +1280,7 @@ test("fresh Compose browser auth and two real desktop streams", { timeout: 18000
   const appPassword = randomBytes(24).toString("hex");
   const migratorPassword = randomBytes(24).toString("hex");
   const controlSecret = randomBytes(32).toString("hex");
+  const egressDesktopSecret = randomBytes(32).toString("hex");
   const encryptionKey = randomBytes(32).toString("hex");
   const password = randomBytes(24).toString("hex");
   const replacementPassword = randomBytes(24).toString("hex");
@@ -1235,10 +1289,10 @@ test("fresh Compose browser auth and two real desktop streams", { timeout: 18000
   const env = { ...process.env, ...(process.platform === "win32" ? { PATH: `E:\\Apps\\Docker\\resources\\bin;${process.env.PATH ?? ""}` } : {}), COMPOSE_PROJECT_NAME: project,
     COMPOSE_FILE: [path.resolve("docker-compose.yml"), override, ports].join(path.delimiter), COMPOSE_ENV_FILES: empty,
     POSTGRES_BOOTSTRAP_PASSWORD: bootstrap, POSTGRES_APP_PASSWORD: appPassword, POSTGRES_MIGRATOR_PASSWORD: migratorPassword,
-    DESKTOP_CONTROL_SECRET: controlSecret, EGRESS_PROXY_SECRET: randomBytes(32).toString("hex"), ENCRYPTION_KEY: encryptionKey, APP_ORIGIN: "http://127.0.0.1:8080", MAX_UPLOAD_MB: "16",
+    DESKTOP_CONTROL_SECRET: controlSecret, EGRESS_DESKTOP_SECRET: egressDesktopSecret, EGRESS_PROXY_SECRET: randomBytes(32).toString("hex"), ENCRYPTION_KEY: encryptionKey, APP_ORIGIN: "http://127.0.0.1:8080", MAX_UPLOAD_MB: "16",
     DATABASE_URL: `postgresql://eclipse_app:${appPassword}@postgres:5432/eclipse`,
     MIGRATION_DATABASE_URL: `postgresql://eclipse_migrator:${migratorPassword}@postgres:5432/eclipse` };
-  const secrets = [bootstrap, appPassword, migratorPassword, controlSecret, encryptionKey, password, replacementPassword, modelApiKey];
+  const secrets = [bootstrap, appPassword, migratorPassword, controlSecret, egressDesktopSecret, encryptionKey, password, replacementPassword, modelApiKey];
   const raw = (args, options = {}) => spawnSync("docker", args, { env, encoding: "utf8", timeout: 60000, maxBuffer: 8 * 1024 * 1024, ...options });
   const check = (result, label) => {
     const output = `${result.stdout ?? ""}${result.stderr ?? ""}`;
@@ -1411,7 +1465,6 @@ test("fresh Compose browser auth and two real desktop streams", { timeout: 18000
     summary.checks.push(...rollback.checks);
     saveSummary();
     diagnostic = { app, ownerId, agentId: agents[0] };
-    docker(["exec", "-d", "--user", "0:0", desktop, "node", "--input-type=module", "-e", desktopFixtureProgram], "start synthetic local desktop page");
     const displayByAgent = new Map();
     summary.phase = "browser-outbox";
     saveSummary();
@@ -1472,7 +1525,10 @@ test("fresh Compose browser auth and two real desktop streams", { timeout: 18000
       const status = JSON.parse(admin("session-start", id));
       const display = status.display ?? (identity.uid - 19900);
       displayByAgent.set(id, { display, uid: identity.uid });
-      const navigate = `import fs from 'node:fs';import{spawnSync}from'node:child_process';const runtime=fs.readdirSync('/tmp').filter(n=>n.startsWith('ec-'+process.getuid()+'-')).map(n=>'/tmp/'+n).find(n=>{try{return fs.lstatSync(n).uid===process.getuid()&&spawnSync('xdpyinfo',[],{env:{PATH:process.env.PATH,DISPLAY:':${display}',XAUTHORITY:n+'/Xauthority'},stdio:'ignore',timeout:1000}).status===0;}catch{return false;}});if(!runtime)throw Error('missing_display');const env={PATH:process.env.PATH,DISPLAY:':${display}',XAUTHORITY:runtime+'/Xauthority'};for(const argv of [['key','--clearmodifiers','ctrl+l'],['type','--clearmodifiers','--delay','1','--','http://127.0.0.1:18766/${index ? "B" : "A"}'],['key','Return']])if(spawnSync('xdotool',argv,{env,timeout:2000}).status!==0)throw Error('fixture_navigation');`;
+      // TASK-071: the A/B page is served by the agent's own worker, on the loopback its Chromium can reach.
+      const fixturePage = admin("session-fixture-page", id);
+      assert.ok(fixturePage.includes("http://127.0.0.1:18766/"), "page fixture started in the agent namespace: " + fixturePage.slice(0, 300));
+      const navigate = `import fs from 'node:fs';import{spawnSync}from'node:child_process';const runtime=fs.readdirSync('/tmp').filter(n=>n.startsWith('ec-'+process.getuid()+'-')).map(n=>'/tmp/'+n).find(n=>{try{return fs.lstatSync(n).uid===process.getuid()&&spawnSync('xdpyinfo',[],{env:{PATH:process.env.PATH,DISPLAY:':${display}',XAUTHORITY:n+'/Xauthority'},stdio:'ignore',timeout:1000}).status===0;}catch{return false;}});if(!runtime)throw Error('missing_display');const env={PATH:process.env.PATH,DISPLAY:':${display}',XAUTHORITY:runtime+'/Xauthority'};for(const argv of [['search','--sync','--onlyvisible','--class','[Cc]hrom','windowactivate','--sync'],['key','--clearmodifiers','ctrl+l'],['type','--clearmodifiers','--delay','1','--','http://127.0.0.1:18766/${index ? "B" : "A"}'],['key','Return']])if(spawnSync('xdotool',argv,{env,timeout:10000}).status!==0)throw Error('fixture_navigation_'+argv[0]);`;
       admin("exec", id, ["node", "--input-type=module", "-e", navigate]);
     }
     const primitives = JSON.parse(docker(["exec", "-i", app, "node", "--input-type=module", "-e", primitiveProbe], "real desktop primitive probes", {
@@ -1518,6 +1574,12 @@ test("fresh Compose browser auth and two real desktop streams", { timeout: 18000
     saveSummary();
   } catch (error) {
     summary.reason = `failed_${summary.phase}`;
+    // Keep only lifecycle/stream lines, with the synthetic secrets scrubbed, so a failure leaves evidence before cleanup.
+    const logs = raw(["compose", "--env-file", empty, "logs", "--no-color", "--tail", "400", "app", "desktop"], { timeout: 30000 });
+    let kept = `${logs.stdout ?? ""}`.split(/\r?\n/).filter((line) => /desktop_stream|lifecycle|desktop[._]|session|stop|start|error|fail/i.test(line)).slice(-200).join("\n");
+    for (const secret of secrets) kept = kept.split(secret).join("[redacted]");
+    writeFileSync(path.join(evidence, "failure-service-logs.txt"), kept, { mode: 0o600 });
+    console.error(kept.split("\n").slice(-60).join("\n"));
     if (diagnostic && summary.phase === "browser-desktop") {
       const result = raw(["exec", "-i", diagnostic.app, "node", "--input-type=module", "-e", rawRfbProbe], { input: JSON.stringify(diagnostic), timeout: 15000 });
       if (result.status === 0) {

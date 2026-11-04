@@ -53,6 +53,11 @@ export function JobActions({ runId, label, outcome, trigger, routineId, csrfToke
       try { body = await response.json() as { error?: string }; } catch { body = null; }
       if (response.ok) {
         setMessage({ tone: "ok", text: action === "retry" ? "Retry started." : "Run cancelled." });
+        window.dispatchEvent(new CustomEvent("eclipse-notify", {
+          detail: action === "retry"
+            ? { title: "Retry started", text: "A new attempt is queued.", actionLabel: "Open run", actionHref: `/jobs/${runId}` }
+            : { title: "Run cancelled", text: "The agent stops at its next safe point.", actionLabel: "Open run", actionHref: `/jobs/${runId}` },
+        }));
         onChanged?.();
         return;
       }

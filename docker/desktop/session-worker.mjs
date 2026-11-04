@@ -248,7 +248,7 @@ export async function startSession(input, { onRuntime = () => {}, onEvent = () =
       }
     }
     browserPid = null;
-    await unlink(`${directory}/browser.pid`).catch((error) => { if (error.code !== "ENOENT") throw error; });
+    await unlink(`${env.XDG_RUNTIME_DIR}/browser.pid`).catch((error) => { if (error.code !== "ENOENT") throw error; });
     browser = "stopped"; browserClosing = false;
     if (!closing) emit({ state: "browser_stopped" });
   };
@@ -256,6 +256,7 @@ export async function startSession(input, { onRuntime = () => {}, onEvent = () =
     if (graphics === "running") return;
     if (graphicsStart) return graphicsStart;
     graphicsStart = (async () => {
+      if (graphics === "failed" || children.some((item) => item.role === "graphics")) await stopGraphicsChildren();
       graphics = "starting"; graphicsClosing = false; emit({ state: "desktop_starting" });
       // A conflicting X server is never removed or adopted.
       for (const name of [`/tmp/.X${record.display}-lock`, `/tmp/.X11-unix/X${record.display}`]) {
@@ -291,6 +292,10 @@ export async function startSession(input, { onRuntime = () => {}, onEvent = () =
       emit({ state: "vnc_ready", vncPort: vnc.vncPort, password: vnc.password });
       startChild("graphics", "pcmanfm", ["--desktop", "--profile=default"]);
       await untilRole("graphics", () => windowSearch("[Pp]cmanfm"), "session_component_failed");
+      // Owner-supplied wallpaper (cosmetic only): a failure here never fails graphics.
+      try {
+        command("pcmanfm", ["--set-wallpaper", "/opt/eclipse/desktop/desktop-config/wallpaper.png", "--wallpaper-mode=fit"]);
+      } catch { /* solid desktop background remains */ }
       startChild("graphics", "tint2", ["-c", `${record.home}/.config/tint2/tint2rc`]);
       await untilRole("graphics", () => windowSearch("[Tt]int2"), "session_component_failed");
       graphics = "running"; emit({ state: "desktop_running", display: record.display });
@@ -342,7 +347,7 @@ export async function startSession(input, { onRuntime = () => {}, onEvent = () =
         context = null; browser = "failed"; emit({ state: "browser_failed", reason: "browser_start_failed" });
         fail("browser_start_failed");
       }
-      await writeFile(`${directory}/browser.pid`, `${browserPid}\n`, { mode: 0o600 });
+      await writeFile(`${env.XDG_RUNTIME_DIR}/browser.pid`, `${browserPid}\n`, { mode: 0o600 });
       teach = new TeachCapture(context, { env });
       browser = "running"; emit({ state: "browser_running" });
     })().catch((error) => { if (browser !== "failed") { browser = "failed"; if (!closing) emit({ state: "browser_failed", reason: "browser_start_failed" }); } throw error; })
@@ -753,17 +758,21 @@ export async function dispatchOperation(session, operation, params = {}, trusted
 // TASK-071. Fixtures run inside the agent namespace so Chromium can reach them on its own loopback.
 let mockVendor = null;
 let cookieFixture = null;
+let pageFixture = null;
 async function fixtureOperation(params) {
   if (process.env.ECLIPSE_FIXTURES !== "1") throw operationError("fixtures_disabled");
   const input = params && typeof params === "object" && !Array.isArray(params) ? params : {};
-  const fixture = input.fixture === "cookie" ? "cookie" : "vendor";
+  const fixture = input.fixture === "cookie" ? "cookie" : input.fixture === "page" ? "page" : "vendor";
   const action = input.action;
-  let state = fixture === "cookie" ? cookieFixture : mockVendor;
+  let state = fixture === "cookie" ? cookieFixture : fixture === "page" ? pageFixture : mockVendor;
   if (action === "start") {
     if (!state) {
       if (fixture === "cookie") {
         const { startCookieFixture } = await import("./mock-vendor/cookie-fixture.mjs");
         cookieFixture = state = await startCookieFixture();
+      } else if (fixture === "page") {
+        const { startPageFixture } = await import("./mock-vendor/page-fixture.mjs");
+        pageFixture = state = await startPageFixture();
       } else {
         const { startMockVendor } = await import("./mock-vendor/server.mjs");
         mockVendor = state = await startMockVendor();
@@ -774,7 +783,7 @@ async function fixtureOperation(params) {
   if (action === "status") return { source_tag: "tool", untrusted: true, url: state?.url ?? null };
   if (action === "stop") {
     await state?.close?.().catch(() => {});
-    if (fixture === "cookie") cookieFixture = null; else mockVendor = null;
+    if (fixture === "cookie") cookieFixture = null; else if (fixture === "page") pageFixture = null; else mockVendor = null;
     return { source_tag: "tool", untrusted: true, stopped: true };
   }
   throw operationError("invalid_operation");

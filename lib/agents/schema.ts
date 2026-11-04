@@ -9,7 +9,7 @@ const singleLine = z.string().trim().min(1).max(MAX_NAME).refine(
   (value) => !/[\x00-\x1f\x7f]/.test(value),
   "must be a single line without control characters",
 );
-const soulMd = z.string().trim().min(1).max(MAX_SOUL).refine(
+export const soulMdSchema = z.string().trim().min(1).max(MAX_SOUL).refine(
   (value) => !/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value),
   "contains unsupported control characters",
 );
@@ -37,6 +37,9 @@ export const budgetUsdSchema = z.string()
 const settingsShape = {
   name: singleLine,
   role: singleLine,
+  // Index into the 12 local voxel avatars. Optional on create (the server assigns
+  // a random one) and on update (omitted keeps the stored avatar).
+  avatarVariant: z.number().int().min(0).max(11).optional(),
   dailyBudgetUsd: budgetUsdSchema,
   monthlyBudgetUsd: budgetUsdSchema,
   tools: uniqueArray(token),
@@ -47,12 +50,12 @@ const settingsShape = {
 
 export const agentCreateSchema = z.object({
   ...settingsShape,
-  soulMd: soulMd.optional(),
+  soulMd: soulMdSchema.optional(),
 }).strict().transform(withoutDollarFields);
 
 export const agentUpdateSchema = z.object({
   ...settingsShape,
-  soulMd,
+  soulMd: soulMdSchema,
 }).strict().transform(withoutDollarFields);
 
 function withoutDollarFields<T extends { dailyBudgetUsd: number; monthlyBudgetUsd: number }>(value: T) {

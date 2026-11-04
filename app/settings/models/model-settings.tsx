@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { LoaderCircle } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import { BackgroundModelCard, type BackgroundSettings } from "./background-model";
 
@@ -253,11 +254,11 @@ export function ModelSettings({ initial, csrfToken }: { initial: Settings; csrfT
         <form onSubmit={saveMain} className="mt-4 flex flex-col gap-4">
           <div className="flex flex-col gap-2">
             <label htmlFor="main-provider" className="text-sm font-medium">Provider</label>
-            <select id="main-provider" name="provider" value={mainKind} onChange={(event) => setMainKind(event.target.value as MainSettings["kind"])}
-              className={inputClass}>
+            <Select label="Provider" id="main-provider" name="provider" value={mainKind} onChange={(value) => setMainKind(value as MainSettings["kind"])}
+              className="w-full [&>span]:w-full" selectClassName={cn(inputClass, "w-full")}>
               <option value="meta">Meta Model API</option>
               <option value="openai-compatible">OpenAI-compatible</option>
-            </select>
+            </Select>
           </div>
           {mainKind === "openai-compatible" && (
             <div className="flex flex-col gap-2">
@@ -275,11 +276,11 @@ export function ModelSettings({ initial, csrfToken }: { initial: Settings; csrfT
           </div>
           <div className="flex flex-col gap-2">
             <label htmlFor="main-routing" className="text-sm font-medium">Routing</label>
-            <select id="main-routing" name="routing" value={routing} onChange={(event) => setRouting(event.target.value as MainSettings["routing"])}
-              aria-describedby="main-routing-hint" className={inputClass}>
+            <Select label="Routing" id="main-routing" name="routing" value={routing} onChange={(value) => setRouting(value as MainSettings["routing"])}
+              className="w-full [&>span]:w-full" selectClassName={cn(inputClass, "w-full")}>
               <option value="fixed">Fixed: always use this model</option>
               <option value="auto">Auto: use a stronger model for hard steps</option>
-            </select>
+            </Select>
             <p id="main-routing-hint" className="text-xs text-muted-foreground">
               Fixed never uses a second model. Auto switches only after a step fails or repeats, at most 5 times per run, and falls back to this model if the other one is unavailable.
             </p>
@@ -335,15 +336,15 @@ export function ModelSettings({ initial, csrfToken }: { initial: Settings; csrfT
         <form onSubmit={saveSam} className="mt-4 flex flex-col gap-4">
           <div className="flex flex-col gap-2">
             <label htmlFor="sam-mode" className="text-sm font-medium">Mode</label>
-            <select id="sam-mode" name="mode" value={samMode}
-              onChange={(event) => {
-                const mode = event.target.value as SamSettings["mode"];
+            <Select label="Mode" id="sam-mode" name="mode" value={samMode}
+              onChange={(value) => {
+                const mode = value as SamSettings["mode"];
                 setSamMode(mode);
                 if (mode === "meta" && !settings.sam.configured && settings.sam.canUseMainKey) setUseMainKey(true);
-              }} className={inputClass}>
+              }} className="w-full [&>span]:w-full" selectClassName={cn(inputClass, "w-full")}>
               <option value="off">Off</option>
               <option value="meta">Meta API</option>
-            </select>
+            </Select>
           </div>
           {samMode === "meta" && (
             <>

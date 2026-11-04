@@ -1,11 +1,12 @@
 import "server-only";
 
-import { and, eq, gt, isNull } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull } from "drizzle-orm";
 
 import type { getDatabase } from "../../db/client";
-import { agentPolicies, messages, runMeta, runs } from "../../db/schema";
+import { agentPolicies, crewMembers, messages, runMeta, runs } from "../../db/schema";
 import { appendUserMessage } from "../chat/data";
 import { listAgentRecords } from "../agents/data";
+import { crewIdsForAgent } from "../crew/custom";
 import { isAgentBusy } from "./step-loop";
 import { recordAuditBestEffort } from "../security/audit";
 
@@ -14,7 +15,7 @@ type Database = Awaited<ReturnType<typeof getDatabase>>;
 // TASK-085. Fixed refusal codes. The sender's run continues after a refusal, so it can do the work itself or ask.
 export type HandoffCode =
   | "teammate_unavailable" | "handoff_to_self" | "handoff_cycle" | "handoff_limit"
-  | "no_owner_message" | "invalid_note" | "start_failed";
+  | "different_crew" | "no_owner_message" | "invalid_note" | "start_failed";
 
 export interface HandoffInput {
   database: Database;
@@ -94,6 +95,13 @@ export async function performHandoff(
   if (!receiver) return { ok: false, code: "teammate_unavailable" };
   if (receiver.id === input.senderAgentId) return { ok: false, code: "handoff_to_self" };
   if (receiver.status !== "active") return { ok: false, code: "teammate_unavailable" };
+  // Handoffs stay inside a shared custom crew. A sender in no crew keeps the
+  // legacy open behaviour, so individual and starter-crew agents are untouched.
+  const senderCrews = await crewIdsForAgent(input.database, input.ownerId, input.senderAgentId);
+  if (senderCrews.length > 0) {
+    const shared = await crewIdsForAgent(input.database, input.ownerId, receiver.id);
+    if (!shared.some((crewId) => senderCrews.includes(crewId))) return { ok: false, code: "different_crew" };
+  }
 
   const chain = await handoffChain(input.database, input.ownerId, input.senderRunId);
   if (chain.hops >= MAX_HOPS) return { ok: false, code: "handoff_limit" };
@@ -128,13 +136,21 @@ export async function performHandoff(
 }
 
 // TASK-085. The model-facing list is names, roles, state and app names only. It never includes another agent's
-// permissions, connections or keys.
+// permissions, connections or keys. A sender inside a custom crew sees only
+// its crewmates; a sender in no crew sees everyone, as before.
 export async function loadTeammates(database: Database, ownerId: string, exceptAgentId: string) {
   const rows = await listAgentRecords(database, ownerId);
   const policies = await database.select({ agentId: agentPolicies.agentId, tools: agentPolicies.tools }).from(agentPolicies)
     .where(eq(agentPolicies.ownerId, ownerId));
   const toolsByAgent = new Map(policies.map((policy) => [policy.agentId, policy.tools as string[]]));
-  return rows
-    .filter((row) => row.id !== exceptAgentId)
+  let visible = rows.filter((row) => row.id !== exceptAgentId);
+  const senderCrews = await crewIdsForAgent(database, ownerId, exceptAgentId);
+  if (senderCrews.length > 0) {
+    const mates = await database.select({ agentId: crewMembers.agentId }).from(crewMembers)
+      .where(and(eq(crewMembers.ownerId, ownerId), inArray(crewMembers.crewId, senderCrews)));
+    const mateIds = new Set(mates.map((mate) => mate.agentId));
+    visible = visible.filter((row) => mateIds.has(row.id));
+  }
+  return visible
     .map((row) => ({ name: row.name, role: row.role, status: row.status, tools: toolsByAgent.get(row.id) ?? [] }));
 }

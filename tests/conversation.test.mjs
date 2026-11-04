@@ -13,8 +13,9 @@ test("conversation keeps 10 messages, tags owner and agent, and summarises other
   assert.equal(parts[0].sourceTag, "user");
   const messages = parts.slice(1);
   assert.equal(messages.length, 10, "only the last ten messages");
-  assert.ok(messages.some((part) => part.text.includes("message 14")));
-  assert.ok(!messages.some((part) => part.text.includes("message 0 ")));
+  assert.deepEqual(messages.map((part) => part.text), Array.from({ length: 10 }, (_, i) => `message ${i + 5}`));
+  assert.ok(!messages.some((part) => part.text === "message 4"));
+  assert.ok(messages.some((part) => part.text === "message 5"));
   assert.ok(messages.reduce((sum, part) => sum + part.text.length + 1, 0) <= 6000, "the total stays under 6,000 characters");
   assert.ok(messages.every((part) => part.sourceTag === "user" || part.sourceTag === "agent"));
   assert.ok(ownerTexts.every((text) => messages.some((part) => part.sourceTag === "user" && part.text === text)));

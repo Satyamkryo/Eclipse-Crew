@@ -314,6 +314,7 @@ export function createChatRunPorts(database: Database): ChatRunPorts {
           return {
             agent: { id: agent.id, name: agent.name, role: agent.role, soulMd: agent.soulMd, actions: childActions, tools: agent.tools, ...(memory ? { memory } : {}) },
             task: child.task, provider: childProvider, model: main.model!,
+            claimed: () => undefined,
             ...(main.routing === "auto" && main.hardModel ? { hardModel: main.hardModel } : {}),
             desktop: childPort, receipts: childReceipts, evidence: createEvidenceRecorder({ database, ownerId, runId: childRunId }),
             checkpoints: createCheckpointRecorder({ database, ownerId, runId: childRunId, desktop: childPort }),

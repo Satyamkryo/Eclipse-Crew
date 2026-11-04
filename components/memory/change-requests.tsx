@@ -17,6 +17,12 @@ export function ChangeRequests({ agentId, csrfToken, onCount }: { agentId: strin
   const [selected, setSelected] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
 
+  // Live: new agent requests appear within 30s while this tab is visible.
+  useEffect(() => {
+    const timer = window.setInterval(() => { if (document.visibilityState === "visible") setVersion((value) => value + 1); }, 30000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   useEffect(() => {
     const controller = new AbortController();
     fetch(`/api/memory/changes?agent=${agentId}`, { cache: "no-store", signal: controller.signal })
@@ -27,6 +33,7 @@ export function ChangeRequests({ agentId, csrfToken, onCount }: { agentId: strin
       .then((body) => {
         if (controller.signal.aborted) return;
         setChanges(body.changes);
+        setError(false);
         onCount?.(body.changes.filter((change) => !change.expired).length);
       })
       .catch(() => { if (!controller.signal.aborted) setError(true); });

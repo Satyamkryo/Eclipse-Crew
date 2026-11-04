@@ -79,6 +79,20 @@ All text pairings meet WCAG 2.2 AA on their intended background.
 - Status colour is never the only signal: always pair it with an icon or label (✓ Verified, ✕ Failed, "Needs you").
 - Tinted backgrounds (badges, banners) use the colour at 12% opacity with the full colour for text.
 
+**Owner avatar palette** (owner-approved 2026-11-04)
+
+The owner's initials avatar (header chip, owner chat rows) follows the DiceBear "Initials" style (CC0 1.0): a flat circular fill picked by hashing the login, with the owner's real initials in `#0A0A0A` at 60% opacity, Geist regular at half the avatar size, and a 1 px `border`. These fills are used **only** for this avatar, never for status, buttons or text.
+
+| Fill | Hex |
+|---|---|
+| Green | `#43AA8B` |
+| Blue | `#4D96FF` |
+| Purple | `#B57BFF` |
+| Pink | `#FF5D8F` |
+| Amber | `#FFB703` |
+
+Agent avatars are the 12 voxel bot SVGs in `public/avatars/voxel/` on a `surface-hover` circle with a `border` ring.
+
 ## Spacing and layout
 
 - 4 px base unit. Use Tailwind steps `1, 2, 3, 4, 6, 8, 12, 16` only.
@@ -102,7 +116,7 @@ Panes and the sidebar are separated by 1 px `border` lines, not by cards or gaps
 |---|---|
 | ≥ 1280 px | Full sidebar + workspace center + right column |
 | 768–1279 px | 56 px rail (logo mark, agent initials, settings) with the agent list and panel opening as sheets; header shows the page title, search and owner chip |
-| < 768 px | Header with back navigation, search icon and owner chip; the workspace shows one view at a time (Agents, Chat, Panel) through the bottom tab bar; other pages stack with the same header |
+| < 768 px | Header with back navigation, search icon and owner chip; every page shows the same bottom dock (Agents, Chat, Panel, Menu burger) — the workspace switches views in place, other pages link back via `?view=`; the Menu burger opens a bottom sheet listing all app pages; other pages stack with the same header |
 
 Test at 375, 768, 1280 and 1440 px. On phones, approvals, skill diffs and the Jobs list must be fully usable; the live desktop is view-only unless the takeover input check passes (keyboard plus mouse/trackpad — see Takeover).
 

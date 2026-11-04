@@ -10,7 +10,7 @@ import { createChannel, writeFramed } from "./controller-channel.mjs";
 
 export const SESSION_SOCKET = "/run/eclipse/sessions.sock";
 const COMMANDS = ["session-start", "session-status", "session-stop", "session-sandbox", "session-desktop-start", "session-desktop-stop",
-  "session-browser-start", "session-browser-stop", "session-fixture", "session-fixture-cookie"];
+  "session-browser-start", "session-browser-stop", "session-fixture", "session-fixture-cookie", "session-fixture-page"];
 export function validateSessionRequest(value) {
   if (!value || Object.keys(value).sort().join() !== "agentId,command,ownerId" || !COMMANDS.includes(value.command)) throw new AgentError("invalid_session_request");
   validateIds(value.ownerId, value.agentId); return value;
@@ -307,6 +307,15 @@ export class SessionManager {
       return entry.channel.send({ command: "operation", requestId: randomUUID(), operation: "fixture.mock_vendor", params: { fixture: "cookie", action: "start" } });
     });
   }
+  // Test-only A/B page for the desktop primitive probes; fixed port, inside the session namespace.
+  fixturePage(ownerId, agentId) {
+    validateIds(ownerId, agentId);
+    return this.serialize(agentId, async () => {
+      if (process.env.ECLIPSE_FIXTURES !== "1") throw new AgentError("fixtures_disabled");
+      const entry = this.authorize(ownerId, agentId, undefined);
+      return entry.channel.send({ command: "operation", requestId: randomUUID(), operation: "fixture.mock_vendor", params: { fixture: "page", action: "start" } });
+    });
+  }
   create(ownerId, agentId) {
     validateIds(ownerId, agentId);
     return this.serialize(agentId, async () => {
@@ -510,7 +519,7 @@ export async function listenSessions(manager) {
           const request = validateSessionRequest(JSON.parse(body));
           const method = { "session-start": "start", "session-status": "status", "session-stop": "stop", "session-sandbox": "ensureSandbox",
             "session-desktop-start": "startDesktop", "session-desktop-stop": "stopDesktop", "session-browser-start": "startBrowser",
-            "session-browser-stop": "stopBrowser", "session-fixture": "fixture", "session-fixture-cookie": "fixtureCookie" }[request.command];
+            "session-browser-stop": "stopBrowser", "session-fixture": "fixture", "session-fixture-cookie": "fixtureCookie", "session-fixture-page": "fixturePage" }[request.command];
           respond(await manager[method](request.ownerId, request.agentId));
         } catch (error) { respond({ outcome: "refused", reason: error instanceof AgentError ? error.code : "session_request_failed" }); }
       })();

@@ -15,7 +15,7 @@ type ActiveView = { generation: string; connectionId: string; csrfToken: string;
 type Viewer = { background: string; viewOnly: boolean; scaleViewport: boolean; resizeSession: boolean; disconnect(): void; addEventListener(type: string, callback: EventListener): void };
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export function LiveView({ agentId, agentName, modelName, astraMode }: { agentId: string; agentName?: string; modelName?: string; astraMode?: boolean }) {
+export function LiveView({ agentId, agentName, modelName, astraMode, avatarVariant }: { agentId: string; agentName?: string; modelName?: string; astraMode?: boolean; avatarVariant?: number }) {
   const frameRef = useRef<HTMLDivElement>(null);
   // The noVNC target. React never owns it: it is moved between the inline slot and the expanded slot, so opening or
   // closing the expanded view never reconnects the stream or drops a takeover.
@@ -337,7 +337,7 @@ export function LiveView({ agentId, agentName, modelName, astraMode }: { agentId
         </p>
       )}
       {expanded && (
-        <ExpandedView agentName={agentName ?? "Agent desktop"} astraMode={astraMode === true} status={status} takenOver={takenOver} busy={busy} takeover={takeoverCheck} modelName={modelName}
+        <ExpandedView agentName={agentName ?? "Agent desktop"} astraMode={astraMode === true} avatarVariant={avatarVariant} status={status} takenOver={takenOver} busy={busy} takeover={takeoverCheck} modelName={modelName}
           teachControls={(takenOver || teach.capture || teach.saved.length > 0) ? teachControls : null} connectedAt={connectedAt} error={error} slotRef={setExpandedSlot} overlay={overlay} onScreenKeyDown={handleKeyDown}
           onHandBack={handBack} onExit={() => setExpanded(false)} />
       )}

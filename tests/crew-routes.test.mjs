@@ -3,30 +3,26 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import test from "node:test";
 
-import { crewReportActionSchema, starterCrewPostSchema } from "../lib/crew/schema.ts";
+import { starterCrewPostSchema } from "../lib/crew/schema.ts";
 import { chatCardSchema } from "../lib/chat/schema.ts";
 import { viewOnlyStreamUrl } from "../lib/desktop/stream.ts";
 
 const unwrap = (module) => module.default ?? module;
 
 test("crew routes expose authenticated read and mutation handlers only", async () => {
-  const [starter, status, report] = await Promise.all([
+  const [starter, status] = await Promise.all([
     import("../app/api/crew/starter/route.ts"),
     import("../app/api/crew/status/route.ts"),
-    import("../app/api/crew/report/route.ts"),
   ]);
   assert.equal(typeof unwrap(starter).GET, "function");
   assert.equal(typeof unwrap(starter).POST, "function");
   assert.equal(typeof unwrap(status).GET, "function");
   assert.equal(unwrap(status).POST, undefined);
-  assert.equal(typeof unwrap(report).GET, "function");
-  assert.equal(typeof unwrap(report).POST, "function");
 });
 
 test("unauthenticated crew calls fail before reading a body", async () => {
   const starter = unwrap(await import("../app/api/crew/starter/route.ts"));
   const status = unwrap(await import("../app/api/crew/status/route.ts"));
-  const report = unwrap(await import("../app/api/crew/report/route.ts"));
   const headers = { Origin: "http://127.0.0.1:3000" };
   const starterPost = await starter.POST(new Request("http://127.0.0.1:3000/api/crew/starter", { method: "POST", headers }));
   assert.equal(starterPost.status, 401);
@@ -35,10 +31,6 @@ test("unauthenticated crew calls fail before reading a body", async () => {
   const statusGet = await status.GET(new Request("http://127.0.0.1:3000/api/crew/status"));
   assert.equal(statusGet.status, 401);
   assert.equal(statusGet.headers.get("x-content-type-options"), "nosniff");
-  const reportPost = await report.POST(new Request("http://127.0.0.1:3000/api/crew/report", {
-    method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify({ action: "generate" }),
-  }));
-  assert.equal(reportPost.status, 401);
 });
 
 test("crew request schemas are strict and bounded", () => {
@@ -46,18 +38,6 @@ test("crew request schemas are strict and bounded", () => {
   for (const bad of [{ ownerId: randomUUID() }, { members: [] }, { agentId: randomUUID() }, { text: "x" }]) {
     assert.equal(starterCrewPostSchema.safeParse(bad).success, false, JSON.stringify(bad));
   }
-  assert.equal(crewReportActionSchema.safeParse({ action: "generate" }).success, true);
-  assert.equal(crewReportActionSchema.safeParse({ action: "generate", ownerId: randomUUID() }).success, false);
-  assert.equal(crewReportActionSchema.safeParse({
-    action: "save", enabled: true, recipientAgentId: randomUUID(), localTime: "09:00",
-  }).success, true);
-  for (const bad of [
-    { action: "save", enabled: true, recipientAgentId: randomUUID(), localTime: "9:00" },
-    { action: "save", enabled: true, recipientAgentId: "not-a-uuid", localTime: "09:00" },
-    { action: "save", enabled: "yes", recipientAgentId: null, localTime: "09:00" },
-    { action: "save", enabled: true, recipientAgentId: null, localTime: "24:00" },
-    { action: "delete" },
-  ]) assert.equal(crewReportActionSchema.safeParse(bad).success, false, JSON.stringify(bad));
 });
 
 test("the view-only thumbnail rechecks stream state before opening a desktop socket", async () => {
@@ -110,19 +90,22 @@ test("a crew report card is validated text and safe identifiers only", () => {
   ]) assert.equal(chatCardSchema.safeParse(bad).success, false, JSON.stringify(bad));
 });
 
-test("the report path has no model, network or external-mutation call", () => {
-  for (const file of ["lib/crew/report.ts", "lib/crew/queue.ts", "lib/crew/time.ts"]) {
-    const source = readFileSync(file, "utf8");
-    assert.doesNotMatch(source, /\bfetch\s*\(/, file);
+test("crew and Mission Control pages are session-gated and the morning report is gone", () => {
+  // The morning report was replaced by Schedules: no settings UI, route, queue or scheduler tick remains.
+  for (const file of ["lib/crew/report.ts", "lib/crew/queue.ts", "app/api/crew/report/route.ts", "components/crew/report-settings.tsx"]) {
+    assert.throws(() => readFileSync(file, "utf8"), /ENOENT/, file);
   }
-  const report = readFileSync("lib/crew/report.ts", "utf8");
-  assert.doesNotMatch(report, /from "\.\.\/(models|providers|agent|egress)\//);
-  assert.doesNotMatch(report, /desktopSession|desktopCommand|recordAudit|sendMessage/);
+  const scheduler = readFileSync("lib/routines/scheduler.ts", "utf8");
+  assert.doesNotMatch(scheduler, /CrewReport|crew\/report|crew\/queue/);
+  assert.doesNotMatch(readFileSync("lib/crew/time.ts", "utf8"), /\bfetch\s*\(/);
   const page = readFileSync("app/crew/page.tsx", "utf8");
   assert.match(page, /validateSession\(\)/);
-  assert.match(page, /MissionControl/);
   assert.match(page, /StarterCrew/);
-  assert.match(page, /ReportSettings/);
+  assert.match(page, /CustomCrews/);
+  assert.doesNotMatch(page, /ReportSettings/);
+  const missionControl = readFileSync("app/mission-control/page.tsx", "utf8");
+  assert.match(missionControl, /validateSession\(\)/);
+  assert.match(missionControl, /MissionControl/);
   const navigation = readFileSync("components/workspace/app-navigation.tsx", "utf8");
   assert.match(navigation, /href: "\/crew"/);
   assert.match(navigation, /label: "Crew"/);

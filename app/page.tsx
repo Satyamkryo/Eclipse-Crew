@@ -21,7 +21,7 @@ import { WorkspaceShell } from "@/components/workspace/workspace-shell";
 export const dynamic = "force-dynamic";
 
 export default async function Home({ searchParams }: { searchParams: Promise<{
-  agent?: string | string[]; panel?: string | string[]; run?: string | string[]; continue?: string | string[];
+  agent?: string | string[]; panel?: string | string[]; run?: string | string[]; continue?: string | string[]; view?: string | string[];
 }> }) {
   const session = await validateSession();
   if (!session) redirect("/login");
@@ -39,7 +39,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{
     ...agent, status: agent.status === "active" ? "active" : "paused",
     attention: agent.attentionReason === "budget_warning" || agent.attentionReason === "budget_paused" || agent.attentionReason === "security_stop" || agent.attentionReason === "approval_pending" ? agent.attentionReason : null,
   }));
-  const { agent, panel, run, continue: continueFlag } = await searchParams;
+  const { agent, panel, run, continue: continueFlag, view } = await searchParams;
   const selected = z.string().uuid().safeParse(agent);
   // TASK-085. Continue deep-links into History with the rewind dialog ready at the last saved checkpoint.
   const panelTab = z.enum(["desktop", "settings", "tools", "routines", "history", "memory"]).safeParse(panel);
@@ -70,14 +70,17 @@ export default async function Home({ searchParams }: { searchParams: Promise<{
   if (liveAgentId) {
     try { modelName = (await createModelSettingsStore(database).load(session.ownerId)).main?.model ?? undefined; } catch { modelName = undefined; }
   }
-  const mobileInitialView = error ? "agents" : selectedAgent ? "panel" : "chat";
+  // The phone dock on non-workspace pages links back here with ?view=…; an
+  // explicit view wins, otherwise the default depends on the agent state.
+  const requestedView = z.enum(["agents", "chat", "panel"]).safeParse(view);
+  const mobileInitialView = requestedView.success ? requestedView.data : error ? "agents" : "chat";
   const chatAgent = selectedAgent
-    ? { id: selectedAgent.id, name: selectedAgent.name, role: selectedAgent.role, status: selectedAgent.status, astraMode: selectedAgent.astraMode }
+    ? { id: selectedAgent.id, name: selectedAgent.name, role: selectedAgent.role, status: selectedAgent.status, astraMode: selectedAgent.astraMode, avatarVariant: selectedAgent.avatarVariant }
     : undefined;
   // A bad MAX_UPLOAD_MB must not take the whole workspace down: the upload route reports it instead.
   let maxUploadBytes: number | undefined;
   try { maxUploadBytes = requireMaxUploadBytes(); } catch { maxUploadBytes = undefined; }
-  const chatPane = <ChatPane key={chatAgent?.id ?? "no-agent"} agent={chatAgent} csrfToken={session.csrfToken} maxUploadBytes={maxUploadBytes} />;
+  const chatPane = <ChatPane key={chatAgent?.id ?? "no-agent"} agent={chatAgent} csrfToken={session.csrfToken} maxUploadBytes={maxUploadBytes} ownerEmail={ownerEmail} />;
 
   // Central tabs superseded the old right-panel tabs; the legacy ?panel= links map onto them.
   const initialTab = panelTab.success && panelTab.data !== "desktop"
@@ -98,8 +101,8 @@ export default async function Home({ searchParams }: { searchParams: Promise<{
       settings={selectedAgent ? <AgentSettings agent={selectedAgent} desktopStatus={desktopStatus} csrfToken={session.csrfToken} /> : undefined}
       desktop={selectedAgent && selectedAgent.status === "active" ? (
         <div className="flex flex-col gap-3">
-          <DesktopLifecycle agentId={selectedAgent.id} csrfToken={session.csrfToken} initial={desktopStatus} />
-          {liveAgentId ? <LiveView agentId={liveAgentId} agentName={selectedAgent.name} astraMode={selectedAgent.astraMode} modelName={modelName} /> : null}
+          <DesktopLifecycle key={selectedAgent.id} agentId={selectedAgent.id} csrfToken={session.csrfToken} initial={desktopStatus} />
+          {liveAgentId ? <LiveView agentId={liveAgentId} agentName={selectedAgent.name} astraMode={selectedAgent.astraMode} avatarVariant={selectedAgent.avatarVariant} modelName={modelName} /> : null}
         </div>
       ) : undefined}
       history={<HistoryPanel key={`${selectedAgent?.id ?? "no-agent"}:${initialRun.success ? initialRun.data : ""}`} agentId={selectedAgent?.id} agentName={selectedAgent?.name} astraMode={selectedAgent?.astraMode} timeZone={ownerTimeZone} csrfToken={session.csrfToken}

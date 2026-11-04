@@ -133,7 +133,7 @@ test("actual Drizzle auth guards enforce expiry/revocation/CSRF and reject owner
       const body = JSON.parse(options.body);
       requests.push({ url, body, headers: options.headers });
       return Response.json({ outcome: "ok", result: body.operation === "session.status" ?
-        { agentId: ownerId, state: "running", generation: valid.generation, display: 100, vncPort: 5901, vncReady: true } : { ok: true } });
+        { agentId: ownerId, state: "running", sandbox: "running", graphics: "running", browser: "running", generation: valid.generation, display: 100, vncPort: 5901, vncReady: true } : { ok: true } });
     };
     try {
       const response = await POST(make({ "x-owner-id": crypto.randomUUID() }, valid), { params: Promise.resolve({ agentId: ownerId }) });
@@ -149,7 +149,8 @@ test("actual Drizzle auth guards enforce expiry/revocation/CSRF and reject owner
       const probe = new Request(`http://127.0.0.1:3000/api/desktop/${ownerId}/stream?connectionId=${valid.connectionId}`, { headers: { Cookie: `eclipse_session=${token}` } });
       const ready = await stream.GET(probe, { params: Promise.resolve({ agentId: ownerId }) });
       assert.equal(ready.status, 200);
-      assert.deepEqual(await ready.json(), { agentId: ownerId, ownerId, sessionRef: authenticated.sessionRef, generation: valid.generation, state: "running" });
+      // The stream probe carries the graphical/browser state; scripts/app-server.mjs requires both fields.
+      assert.deepEqual(await ready.json(), { agentId: ownerId, ownerId, sessionRef: authenticated.sessionRef, generation: valid.generation, state: "running", graphics: "running", browser: "running" });
       const malformed = await stream.GET(new Request(probe.url + "&ownerId=" + ownerId, probe), { params: Promise.resolve({ agentId: ownerId }) });
       assert.equal(malformed.status, 400);
       assert.equal(requests.length, 2);

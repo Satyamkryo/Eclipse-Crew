@@ -74,6 +74,9 @@ export async function POST(request: Request, { params }: { params: Promise<{ age
     const mention = parseMention(parsed.data.text);
     if (mention) {
       const agents = await listAgentRecords(database, session.ownerId);
+      const source = agents.find((agent) => agent.id === agentId);
+      if (!source) return Response.json({ error: "not_found" }, { status: 404 });
+      if (source.status !== "active") return Response.json({ error: "agent_paused" }, { status: 409 });
       const target = agents.find((agent) => namesAgent(agent.name, mention.name));
       if (!target) return Response.json({ error: "mention_not_found" }, { status: 404 });
       if (target.status !== "active") return Response.json({ error: "teammate_unavailable" }, { status: 409 });

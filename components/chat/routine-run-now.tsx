@@ -67,6 +67,9 @@ export function RoutineRunNow({ routineId, csrfToken, onStarted, className }: {
         if (typeof body.executionId !== "string") throw new Error();
         setExecutionId(body.executionId);
         setView({ executionId: body.executionId, state: "queued", retryCount: 0, runId: null, detail: null });
+        window.dispatchEvent(new CustomEvent("eclipse-notify", {
+          detail: { title: "Run started", text: "Routine queued. Watch progress in Mission Control.", actionLabel: "Open Mission Control", actionHref: "/mission-control" },
+        }));
         onStarted?.();
         return;
       }

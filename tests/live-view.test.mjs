@@ -39,6 +39,7 @@ async function fixture(t, { upstreamAutoPong = true, origin: originValue = "http
   });
   desktop.listen(0, "127.0.0.1"); await once(desktop, "listening");
   let valid = true, generation = randomUUID(), spoofed;
+  let graphics = "running", browser = "running", rawResponse = null;
   const server = createAppServer({
     origin: originValue, secret, resolveIngress: async () => [],
     handle: async (req, res) => {
@@ -48,7 +49,8 @@ async function fixture(t, { upstreamAutoPong = true, origin: originValue = "http
       assert.equal(req.headers.host, origin.host);
       assert.equal(req.headers.origin, origin.origin);
       res.setHeader("Content-Type", "application/json");
-      res.end(JSON.stringify({ agentId, ownerId, sessionRef, generation, state: "running" }));
+      if (rawResponse !== null) { res.end(JSON.stringify(rawResponse)); return; }
+      res.end(JSON.stringify({ agentId, ownerId, sessionRef, generation, state: "running", graphics, browser }));
     },
     connectDesktop(url, key) {
       seen.push({ url, key });
@@ -64,7 +66,9 @@ async function fixture(t, { upstreamAutoPong = true, origin: originValue = "http
     await Promise.all([new Promise((resolve) => server.close(resolve)), new Promise((resolve) => desktop.close(resolve))]);
     wss.close();
   });
-  return { seen, server, peers, revoke: () => { valid = false; }, replace: () => { generation = randomUUID(); }, getSpoofed: () => spoofed,
+  return { seen, server, peers, revoke: () => { valid = false; }, replace: () => { generation = randomUUID(); },
+    setGraphics: (value) => { graphics = value; }, setBrowser: (value) => { browser = value; },
+    setRawResponse: (value) => { rawResponse = value; }, getSpoofed: () => spoofed,
     ws(headers = {}, url = path, options = {}) {
       const ws = new WebSocket(`ws://127.0.0.1:${server.address().port}${url}`, { ...options, headers: { Host: origin.host, Origin: origin.origin, Cookie: "session=valid", ...headers } });
       clients.push(ws); return ws;
@@ -124,6 +128,66 @@ test("authorized upgrade relays real binary frames with server-only controller s
   assert.equal(url.searchParams.get("connectionId"), connectionId);
 });
 
+test("browser-only stop keeps the desktop stream viewable", async (t) => {
+  const f = await fixture(t);
+  f.setBrowser("stopped");
+  const ws = f.ws();
+  const opened = once(ws, "open");
+  const first = once(ws, "message");
+  await opened;
+  const [rfb, binary] = await first;
+  assert.equal(binary, true); assert.equal(rfb.toString(), "RFB 003.008\n");
+});
+
+test("nonstreamable graphics states deny the upgrade", async (t) => {
+  for (const graphics of ["stopped", "failed", "starting"]) {
+    const f = await fixture(t);
+    f.setGraphics(graphics);
+    await denied(f.ws());
+    assert.equal(f.seen.length, 0, graphics);
+  }
+});
+
+test("legacy five-field authorization without graphics/browser is denied", async (t) => {
+  const f = await fixture(t);
+  // Well-formed legacy shape explicitly (no graphics/browser) must no longer pass.
+  f.setRawResponse({ agentId, ownerId, sessionRef, generation: "11111111-1111-4111-8111-111111111111", state: "running" });
+  await denied(f.ws());
+  assert.equal(f.seen.length, 0);
+});
+
+test("malformed, unauthorized and nonstreamable stream authorizations are denied", async (t) => {
+  const f = await fixture(t);
+  const good = { agentId, ownerId, sessionRef, generation: "11111111-1111-4111-8111-111111111111", state: "running", graphics: "running", browser: "running" };
+  const badResponses = [
+    { ...good, graphics: "stopped" },
+    { ...good, browser: "bogus" },
+    { ...good, state: "stopped" },
+    { ...good, generation: "not-a-uuid" },
+    { ...good, extra: true },
+    { agentId, ownerId, sessionRef, generation: good.generation, state: "running", graphics: "running" },
+  ];
+  for (const response of badResponses) {
+    f.setRawResponse(response);
+    await denied(f.ws());
+  }
+  assert.equal(f.seen.length, 0);
+  f.setRawResponse(null);
+  f.setGraphics("stopped");
+  const ws = f.ws(); await new Promise((resolve, reject) => {
+    ws.on("open", () => reject(new Error("unexpected_upgrade")));
+    ws.on("unexpected-response", (_req, res) => { assert.equal(res.statusCode, 403); res.resume(); ws.terminate(); resolve(); });
+    ws.on("error", () => {});
+  });
+});
+
+test("revalidation closes the stream after graphics stops mid-session", { timeout: 7000 }, async (t) => {
+  const f = await fixture(t); const ws = f.ws(); await once(ws, "open");
+  const closed = once(ws, "close");
+  f.setGraphics("stopped");
+  assert.equal((await closed)[0], 1008);
+});
+
 test("native bridge preserves an RFB greeting coalesced with the upstream upgrade", { timeout: 5000 }, async (t) => {
   const sockets = new Set();
   const desktop = createServer();
@@ -135,7 +199,7 @@ test("native bridge preserves an RFB greeting coalesced with the upstream upgrad
   });
   desktop.listen(0, "127.0.0.1"); await once(desktop, "listening");
   const server = createAppServer({ origin: "http://127.0.0.1:3000", secret, resolveIngress: async () => [],
-    handle: (_req, res) => { res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify({ agentId, ownerId, sessionRef, generation: randomUUID(), state: "running" })); },
+    handle: (_req, res) => { res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify({ agentId, ownerId, sessionRef, generation: randomUUID(), state: "running", graphics: "running", browser: "running" })); },
     connectDesktop: () => new WebSocket(`ws://127.0.0.1:${desktop.address().port}`),
   });
   server.listen(0, "127.0.0.1"); await once(server, "listening");

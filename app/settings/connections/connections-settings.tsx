@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { Check, Copy, ExternalLink, GitBranch, LoaderCircle, Plus } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
 import { ModalDialog } from "@/components/workspace/modal-dialog";
 import { CONNECTION_PRESETS } from "@/lib/connections/presets";
 import type { ConnectionBinding, ConnectionPreset } from "@/lib/connections/schema";
@@ -417,16 +418,18 @@ export function ConnectionsSettings({ initial, agents, csrfToken, installUrl }: 
           <form onSubmit={addConnection} className="flex flex-col gap-4">
             <div className="flex flex-col gap-2">
               <label htmlFor="connection-agent" className="text-sm font-medium">Agent</label>
-              <select id="connection-agent" name="agentId" required className={inputClass}>
+              <Select label="Agent" id="connection-agent" name="agentId" required
+                className="w-full [&>span]:w-full" selectClassName={cn(inputClass, "w-full")}>
                 {agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
-              </select>
+              </Select>
             </div>
             <div className="flex flex-col gap-2">
               <label htmlFor="connection-preset" className="text-sm font-medium">Tool</label>
-              <select id="connection-preset" name="preset" required defaultValue="github" className={inputClass}>
+              <Select label="Tool" id="connection-preset" name="preset" required defaultValue="github"
+                className="w-full [&>span]:w-full" selectClassName={cn(inputClass, "w-full")}>
                 <option value="github">GitHub</option>
                 <option value="custom">Custom host</option>
-              </select>
+              </Select>
             </div>
             <div className="flex flex-col gap-2">
               <label htmlFor="connection-label" className="text-sm font-medium">Label</label>
@@ -452,10 +455,11 @@ export function ConnectionsSettings({ initial, agents, csrfToken, installUrl }: 
               <input id="connection-host" name="host" maxLength={253} placeholder="api.example.com" spellCheck={false}
                 autoComplete="off" className={cn(inputClass, "font-mono")} />
               <label htmlFor="connection-scheme" className="text-sm font-medium">Send the token as</label>
-              <select id="connection-scheme" name="scheme" defaultValue="bearer" className={inputClass}>
+              <Select label="Send the token as" id="connection-scheme" name="scheme" defaultValue="bearer"
+                className="w-full [&>span]:w-full" selectClassName={cn(inputClass, "w-full")}>
                 <option value="bearer">Authorization: Bearer</option>
                 <option value="header">Header: x-api-key</option>
-              </select>
+              </Select>
               <p className="text-xs text-muted-foreground">Custom connections take one exact host. GitHub presets set their own hosts.</p>
             </div>
             <div className="flex flex-wrap justify-end gap-2">
@@ -496,9 +500,10 @@ export function ConnectionsSettings({ initial, agents, csrfToken, installUrl }: 
             <form onSubmit={startConnect} className="flex flex-col gap-4">
               <div className="flex flex-col gap-2">
                 <label htmlFor="connect-agent" className="text-sm font-medium">Agent</label>
-                <select id="connect-agent" name="agentId" required defaultValue={connecting.agentId} className={inputClass}>
+                <Select label="Agent" id="connect-agent" name="agentId" required defaultValue={connecting.agentId}
+                  className="w-full [&>span]:w-full" selectClassName={cn(inputClass, "w-full")}>
                   {agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
-                </select>
+                </Select>
               </div>
               <div className="flex flex-col gap-2">
                 <label htmlFor="connect-label" className="text-sm font-medium">Label</label>

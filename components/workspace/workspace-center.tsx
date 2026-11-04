@@ -2,6 +2,7 @@
 import { useRef, useState } from "react";
 import Link from "next/link";
 import { AstraBadge } from "@/components/ui/astra-badge";
+import { AgentAvatar } from "@/components/workspace/agent-avatar";
 import { StatusChip } from "@/components/ui/status-chip";
 import { cn } from "@/lib/utils";
 import type { ReactNode } from "react";
@@ -16,7 +17,7 @@ const TABS = [
   { id: "memory", label: "Memory" },
 ] as const;
 
-export type CenterAgent = { id: string; name: string; role: string; status: "active" | "paused"; astraMode: boolean };
+export type CenterAgent = { id: string; name: string; role: string; status: "active" | "paused"; astraMode: boolean; avatarVariant: number };
 
 // Agent heading + central tabs (images 05/36/39): the tabs that used to live on the right
 // panel are now the center column's navigation, under the agent identity.
@@ -58,9 +59,7 @@ export function WorkspaceCenter({ agent, initialTab, children }: {
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-6 pb-3 pt-4">
         <div className="flex min-w-0 items-start gap-3">
-          <span aria-hidden="true" className="flex size-10 shrink-0 items-center justify-center rounded-full border border-border bg-surface text-sm font-semibold">
-            {initials(agent.name)}
-          </span>
+          <AgentAvatar seed={agent.id} variant={agent.avatarVariant} size={40} label={`${agent.name} avatar`} />
           <div className="min-w-0">
             <div className="flex min-w-0 flex-wrap items-center gap-2">
               <h1 className="min-w-0 truncate text-2xl font-semibold tracking-tight">{agent.name}</h1>
@@ -73,13 +72,14 @@ export function WorkspaceCenter({ agent, initialTab, children }: {
           </div>
         </div>
       </div>
-      <div role="tablist" aria-label={`${agent.name} workspace`} className="flex shrink-0 items-center gap-1 overflow-x-auto border-b border-border px-6">
+      {/* Phones use the right panel's proven six-column grid so every tab fits at 375 px; wider screens keep the spaced row. */}
+      <div role="tablist" aria-label={`${agent.name} workspace`} className="grid shrink-0 grid-cols-6 items-center border-b border-border px-2 sm:flex sm:gap-1 sm:overflow-x-auto sm:px-6">
         {TABS.map((tab, index) => (
           <button key={tab.id} ref={(element) => { buttons.current[index] = element; }} type="button"
             role="tab" id={`center-tab-${tab.id}`} aria-controls="center-tab-content"
             aria-selected={active === tab.id} tabIndex={active === tab.id ? 0 : -1}
             onClick={() => select(index, false)} onKeyDown={(event) => onKeyDown(event, index)}
-            className={cn("h-11 shrink-0 border-b-2 px-3 text-sm transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring",
+            className={cn("h-11 min-w-0 border-b-2 px-1 text-xs transition-colors sm:shrink-0 sm:px-3 sm:text-sm duration-150 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring",
               active === tab.id ? "border-foreground font-medium text-foreground" : "border-transparent text-muted-foreground hover:text-foreground")}>
             {tab.label}
           </button>
@@ -91,10 +91,6 @@ export function WorkspaceCenter({ agent, initialTab, children }: {
       </div>
     </div>
   );
-}
-
-function initials(name: string) {
-  return name.trim().split(/\s+/).slice(0, 2).map((part) => part[0]?.toUpperCase() ?? "").join("") || "A";
 }
 
 // Tools and Routines have no dedicated per-agent backend surface in v1; they render honest
@@ -110,8 +106,8 @@ export function ToolsTabEmpty() {
 export function RoutinesTabEmpty() {
   return (
     <EmptyTab title="No routines for this agent yet."
-      body="Ask the agent in chat to create a routine, and confirm it there. Scheduled and upcoming runs are listed on Jobs."
-      href="/jobs" label="Open Jobs" />
+      body="Ask the agent in chat to create a routine, and confirm it there. Scheduled and upcoming runs live on Schedules."
+      href="/schedules" label="Open Schedules" />
   );
 }
 

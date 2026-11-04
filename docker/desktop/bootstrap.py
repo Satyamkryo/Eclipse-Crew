@@ -170,7 +170,7 @@ def main():
     args = sys.argv[1:]
     if args:
         require(args[0] == "--admin" and len(args) >= 2 and args[1] in ("create", "inspect", "exec", "health", "session-start", "session-status", "session-stop",
-            "session-sandbox", "session-desktop-start", "session-desktop-stop", "session-browser-start", "session-browser-stop", "session-fixture", "session-fixture-cookie"), "invalid_admin_command")
+            "session-sandbox", "session-desktop-start", "session-desktop-stop", "session-browser-start", "session-browser-stop", "session-fixture", "session-fixture-cookie", "session-fixture-page"), "invalid_admin_command")
         verify_setup()
         reduce_privileges()
         os.execve("/usr/local/bin/node", ["node", BASE + "/agent-admin.mjs"] + args[1:], ENV)

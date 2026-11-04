@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { LoaderCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -23,6 +23,19 @@ const ERROR_TEXT: Record<string, string> = {
 };
 const errorText = (code: string | undefined) => (code && ERROR_TEXT[code]) || "Something went wrong. Try again.";
 
+// Longer than the app's 45 s lifecycle timeout, so a slow but healthy action still returns its own error.
+const ACTION_TIMEOUT_MS = 75_000;
+const REFRESH_TIMEOUT_MS = 10_000;
+const SETTLE_TIMEOUT_MS = 20_000;
+const SETTLE_INTERVAL_MS = 1_000;
+
+function settled(action: Action, status: DesktopStatus): boolean {
+  if (action === "stop") return status.graphics !== "running" && status.graphics !== "starting";
+  if (action === "start") return status.graphics === "running" || status.graphics === "failed";
+  if (action === "stop-browser") return status.browser !== "running" && status.browser !== "starting";
+  return status.browser === "running" || status.browser === "failed";
+}
+
 function statusLabel(status: DesktopStatus): string {
   if (status.sandbox === "starting" || status.graphics === "starting") return "Starting the desktop…";
   if (status.graphics === "failed") return "Desktop failed";
@@ -42,40 +55,66 @@ export function DesktopLifecycle({ agentId, csrfToken, initial }: { agentId: str
   const [busy, setBusy] = useState<Action | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = useCallback(async () => {
-    const response = await fetch(`/api/agents/${agentId}/desktop`, { cache: "no-store" });
-    if (response.status === 401) { router.push("/login"); return; }
-    if (response.ok) setStatus(await response.json() as DesktopStatus);
+  const inFlight = useRef(false);
+  const unmounted = useRef(false);
+  useEffect(() => () => { unmounted.current = true; }, []);
+
+  // Bounded and always drains the body, so a stalled or unread response can never pin the button or hold a connection.
+  const refresh = useCallback(async (): Promise<DesktopStatus | null> => {
+    const response = await fetch(`/api/agents/${agentId}/desktop`, { cache: "no-store", signal: AbortSignal.timeout(REFRESH_TIMEOUT_MS) });
+    if (response.status === 401) { await response.body?.cancel().catch(() => undefined); router.push("/login"); return null; }
+    const body = await response.json().catch(() => null) as DesktopStatus | null;
+    if (!response.ok || !body) return null;
+    if (!unmounted.current) setStatus(body);
+    return body;
   }, [agentId, router]);
 
   useEffect(() => {
-    const timer = setInterval(() => { if (!document.hidden) void refresh().catch(() => undefined); }, 5000);
+    const timer = setInterval(() => {
+      if (document.hidden || inFlight.current) return;
+      inFlight.current = true;
+      void refresh().catch(() => undefined).finally(() => { inFlight.current = false; });
+    }, 5000);
     return () => clearInterval(timer);
   }, [refresh]);
+
+  // Polls until the desktop reports the state the action asked for, or tells the owner it never confirmed.
+  async function settle(action: Action) {
+    const deadline = Date.now() + SETTLE_TIMEOUT_MS;
+    while (!unmounted.current && Date.now() < deadline) {
+      const current = await refresh().catch(() => null);
+      if (current && settled(action, current)) return;
+      await new Promise((resolve) => setTimeout(resolve, SETTLE_INTERVAL_MS));
+    }
+    if (!unmounted.current) setError("The desktop didn't confirm the change. Refresh to check its state.");
+  }
 
   async function act(action: Action) {
     setBusy(action);
     setError(null);
+    let ok = false;
     try {
       const response = await fetch(`/api/agents/${agentId}/desktop`, {
         method: "POST",
         headers: { "Content-Type": "application/json", "x-csrf-token": csrfToken },
         body: JSON.stringify({ action }),
+        signal: AbortSignal.timeout(ACTION_TIMEOUT_MS),
       });
+      const body = await response.json().catch(() => ({})) as { error?: string };
       if (response.status === 401) { router.push("/login"); return; }
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({}));
-        setError(errorText(body.error));
-        return;
-      }
-      await refresh().catch(() => undefined);
-      // The server adds or removes the live view; chat is a client component and keeps its state.
-      router.refresh();
-    } catch {
-      setError("Unable to connect. Try again.");
+      if (!response.ok) { setError(errorText(body.error)); return; }
+      ok = true;
+    } catch (error) {
+      setError(error instanceof DOMException && error.name === "TimeoutError"
+        ? "The desktop is taking too long to respond. Try again."
+        : "Unable to connect. Try again.");
     } finally {
       setBusy(null);
     }
+    if (!ok) return;
+    // The server adds or removes the live view; chat is a client component and keeps its state.
+    router.refresh();
+    await settle(action);
   }
 
   const running = status.graphics === "running";

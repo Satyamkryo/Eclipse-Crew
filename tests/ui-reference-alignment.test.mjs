@@ -43,12 +43,14 @@ test("the teach recorder can only run during an eligible takeover", async () => 
 
 test("the shared shell renders the reference navigation and the workspace uses central tabs", async () => {
   const nav = await read("components/workspace/app-navigation.tsx");
-  for (const label of ["Agents", "Crew", "Jobs", "Evidence", "Models", "MCP Servers", "Settings"]) {
+  // Nov 4 restructure: Jobs merged into Mission Control (Runs), MCP servers live under Connections, Schedules has its
+  // own page, Account moved to Profile (header chip).
+  for (const label of ["Agents", "Crew", "Mission Control", "Evidence", "Models", "Connections", "Schedules", "Security"]) {
     assert.ok(nav.includes(`label: "${label}"`), `navigation includes ${label}`);
   }
-  // The reference's Skills and Schedules entries have no v1 backend: no dead links.
+  // Skills has no v1 backend: no dead link. Jobs is a redirect, not a nav entry.
   assert.ok(!nav.includes('label: "Skills"'));
-  assert.ok(!nav.includes('label: "Schedules"'));
+  assert.ok(!nav.includes('label: "Jobs"'));
 
   const appShell = await read("components/workspace/app-shell.tsx");
   assert.ok(appShell.includes("Control K"), "global search is reachable");
@@ -75,14 +77,18 @@ test("the workspace passes a full agent identity to the center heading", async (
 
 test("every standalone page composes the shared shell", async () => {
   for (const [path, title] of [
-    ["app/jobs/page.tsx", "Jobs"],
+    ["app/mission-control/page.tsx", "Mission Control"],
+    ["app/schedules/page.tsx", "Schedules"],
     ["app/security/page.tsx", "Security Center"],
     ["app/crew/page.tsx", "Crew"],
+    ["app/profile/page.tsx", "Profile"],
     ["app/settings/models/page.tsx", "Models"],
-    ["app/settings/account/page.tsx", "Account"],
     ["app/settings/connections/page.tsx", "Connections"],
   ]) {
     const source = await read(path);
     assert.ok(source.includes("AppShell"), `${title} uses the shared shell`);
   }
+  // Old addresses stay as redirects for bookmarks; run detail pages under /jobs/[runId] are unchanged.
+  assert.match(await read("app/jobs/page.tsx"), /redirect\(`\/mission-control\$\{query\}`\)/);
+  assert.match(await read("app/settings/account/page.tsx"), /redirect\("\/profile"\)/);
 });

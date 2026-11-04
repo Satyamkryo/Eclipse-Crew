@@ -135,6 +135,9 @@ if (process.argv.includes("--inside")) {
     // TASK-058: the starter setup and report schedule are owner-managed rows; delivery rows are inserted once and linked.
     await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.starter_crew_setups TO eclipse_app`);
     await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.starter_crew_members TO eclipse_app`);
+    // Custom crews: the crew row and its membership rows are owner-managed; member states move as agents provision.
+    await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.crews TO eclipse_app`);
+    await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.crew_members TO eclipse_app`);
     await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.crew_report_settings TO eclipse_app`);
     await database.execute(sql`GRANT SELECT, INSERT, UPDATE ON public.crew_report_deliveries TO eclipse_app`);
     console.log("Database migrations applied.");

@@ -35,7 +35,7 @@ export async function createCrewDatabase() {
       await adminPool.query(readFileSync(new URL(`../drizzle/${file}`, import.meta.url), "utf8").replaceAll("--> statement-breakpoint", ""));
     }
     await adminPool.query(`CREATE SCHEMA IF NOT EXISTS drizzle; GRANT USAGE ON SCHEMA public TO eclipse_app;
-      GRANT SELECT, INSERT, UPDATE ON owner, agents, agent_policies, audit_log, sessions, model_roles, providers, routines, chat_sessions, messages, starter_crew_setups, starter_crew_members, crew_report_settings, crew_report_deliveries TO eclipse_app;
+      GRANT SELECT, INSERT, UPDATE ON owner, agents, agent_policies, audit_log, sessions, model_roles, providers, routines, chat_sessions, messages, starter_crew_setups, starter_crew_members, crew_report_settings, crew_report_deliveries, crews, crew_members TO eclipse_app;
       GRANT SELECT, INSERT ON chat_sessions, messages, runs, steps, run_meta, cost_entries, audit_log TO eclipse_app;
       GRANT SELECT ON runs, steps, run_meta, cost_entries, approvals, teach_recordings TO eclipse_app;
       GRANT INSERT ON crew_report_deliveries TO eclipse_app;

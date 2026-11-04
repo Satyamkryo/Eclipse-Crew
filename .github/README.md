@@ -70,7 +70,7 @@ Hosted agent products run your bots on someone else's computer. Every bot often 
 - **Approvals and permissions:** Allow once / Always allow / Deny, scoped per agent, site and action.
 - **Astra Mode:** a per-agent switch that removes approval prompts while keeping every other safety layer on.
 - **Budgets:** per agent, routine, day and month, with a cost receipt for every run.
-- **Jobs dashboard** for every run, retry and schedule.
+- **Mission Control** for runs and **Schedules** for routines.
 - **Security Center** with kill switches.
 - **Chat attachments** (button, drag-and-drop, paste) saved to the agent's `inbox/`, and **file cards** for files the agent writes to `outbox/` with Download and Open on the agent's desktop. A Files tab *(coming)*.
 - **Tools:** MCP servers, and Composio with your own key *(coming)*.
@@ -137,7 +137,7 @@ These figures are estimates, to be confirmed by measurement.
 | Heavy | 8 vCPU / 16 GB / 160 GB | More |
 
 - No GPU is needed. The base stack uses about 1.5–2 GB RAM, and each active browser about 0.5–1.5 GB.
-- x86-64 and 64-bit Linux ARM (arm64) are supported; Docker builds the native CPU and other CPUs stop with a clear message. This build verifies amd64; Linux ARM64 has pinned inputs and a native acceptance matrix still pending on Oracle hardware. Apple Silicon through a native ARM64 Linux VM is a separate, unverified target.
+- x86-64 and 64-bit Linux ARM (arm64) are supported; Docker builds the native CPU and other CPUs stop with a clear message. The desktop image and standalone desktop smoke are verified natively on Oracle ARM; full application acceptance on ARM remains pending. Apple Silicon through a native ARM64 Linux VM is a separate, unverified target.
 - A GPU is only useful for optional local models or local SAM. See [Local models](#local-models).
 
 ### A model
@@ -284,7 +284,7 @@ Running it again is safe and is also how you update: it only fills in missing va
 The first visit to `http://127.0.0.1:3000` opens owner setup. It runs once. Current setup creates the owner and timezone; model setup, live agent replies, chat attachments and file cards remain upcoming.
 
 1. **Create the owner account.** Enter your email and a new **Eclipse Crew password**, not your Gmail or other password. There's only one account per install, and signup closes after this step.
-2. **Confirm your timezone.** It's detected from your browser and used for schedules and the clock every agent sees.
+2. **Confirm your timezone.** It's detected from your browser and used for schedules and the clock every agent sees. If you later open the app from a device in a different timezone (a trip, a VPN), a notice asks whether to switch: **Use** (for example `Use Asia/Dubai`) updates it, **Keep** leaves it and stops asking on that device. It never changes on its own, so your routines don't shift without you knowing.
 3. **Planned, not yet available:** Configure a model provider and save its key. See [Models](#models) for the planned settings.
 4. **Create an agent.** Use **Create agent** in the Agents pane and give it a name, role, persona, default-deny permissions and daily/monthly budgets. Starter templates remain planned.
 5. **Planned, not yet available:** Receive live agent replies in chat while the agent works.
@@ -300,16 +300,18 @@ The same compose file runs on a Linux VPS, so your crew keeps working while your
 ### 1. Prepare the server
 
 - Ubuntu 22.04/24.04 or similar, sized from [Requirements](#hardware).
-- Attach a block-storage volume for data if your provider offers it, since screenshots and checkpoints grow over time. Every step keeps its screenshots (about 0.1-0.4 MB each) and a checkpoint of the agent's files in the `artifacts` volume, and nothing is cleaned up automatically yet.
+- Attach a block-storage volume for data if your provider offers it, since screenshots and checkpoints grow over time. Every step keeps its screenshots (about 0.1-0.4 MB each) and a checkpoint of the agent's files in the `artifacts` volume; screenshots and checkpoints auto-delete after 32 days (receipts stay forever), and Mission Control warns at 80% of the cap.
 - Install Docker Engine, the Compose plugin and Git, then follow [Quickstart](#quickstart-your-own-pc) steps 1–3 on the server.
 
-On an ARM64 server (for example Oracle Ampere A1), run `node scripts/acceptance/arm64.mjs --preflight` before building. It reports the host and Docker daemon CPU and refuses a non-ARM host. Then resolve and review the ARM package lock on that server:
+On an ARM64 server (for example Oracle Ampere A1), run `node scripts/acceptance/arm64.mjs --preflight` before building. It reports the host and Docker daemon CPU and refuses a non-ARM host. The repository includes the native ARM package lock, resolved on Oracle against signed Ubuntu archive metadata; a normal build uses it directly.
+
+To review a future package refresh, resolve a separate candidate on a native ARM server:
 
 ```bash
-node scripts/resolve-package-lock.mjs --arch arm64
+node scripts/resolve-package-lock.mjs --arch arm64 --output /tmp/ubuntu-packages.arm64.candidate.json
 ```
 
-The desktop image uses this separate native package lock; if `ubuntu-packages.arm64.lock.json` is missing, the build stops with a clear message instead of reusing amd64 packages.
+Review the candidate and update the ARM manifest digest/count/bytes in `docker/desktop/fetch-packages.mjs` together with the lock before building. The build verifies every archive's size and SHA-256, and refuses a missing or changed manifest instead of reusing amd64 packages. Interrupted socket downloads get at most three attempts within the existing overall download deadline; integrity failures are never retried.
 
 The app listens on `127.0.0.1:3000` **only**. Nothing is reachable from the internet until you choose one of the options below. For a quick private check without Tailscale, tunnel from your laptop with `ssh -L 3000:127.0.0.1:3000 ubuntu@<server>` and open `http://127.0.0.1:3000`. Never open port 3000 in the firewall or publish it in Compose.
 
@@ -372,7 +374,7 @@ The judges' instance is a separate, throwaway install of this repository on its 
 2. **Workspace → an agent.** The agent's screen streams live from its own Linux desktop. Click **Live** to enlarge it. You can watch without interrupting the agent, or take over the mouse and keyboard.
 3. **Send a chat task** such as "Download the October invoice." The agent works on the mock vendor portal on its desktop. Steps appear as they happen, and a risky step (such as a download) asks for approval first.
 4. **History.** Open the finished run to see each step with before/after screenshots, the verification result, and a receipt. Use **Export** and verify the file offline with the `eclipse-crew verify` command in the [CLI reference](#cli-reference).
-5. **Crew → Jobs.** See the run, its outcome and cost, and the routines it belongs to.
+5. **Mission Control → Runs.** See the run, its outcome and cost. Open **Schedules** for routines and upcoming runs.
 6. **Memory.** The seeded agent already knows a few demo facts. Sections show where each fact came from.
 7. **Security Center.** The audit log and kill switches are visible. The canary tripwire and allowlists are on.
 
@@ -383,7 +385,7 @@ The judges' instance is a separate, throwaway install of this repository on its 
 | Live desktop and takeover | A real browser and Linux desktop, per agent, streamed to the web. Not a recording and not a screenshot loop. |
 | Chat with approval cards | The agent plans, then stops at risky actions and waits for the owner. |
 | History and Export | Every step has a receipt in a hash chain; a run can be verified offline. |
-| Jobs | Runs and schedules are durable and inspectable. |
+| Runs | Runs are durable and inspectable; routines are managed in Schedules. |
 | Memory | Facts carry provenance, versions and Undo. |
 | Security Center | Audit, halt controls and the leak tripwire are visible, not just claimed. |
 
@@ -567,7 +569,7 @@ Nothing is recorded while you're in control, unless you press **Record** in teac
 3. Choose the **catch-up policy** for missed runs: run once now, skip, or run all missed.
 4. Click **Confirm**. The validated schedule, IANA timezone and UTC next-run are saved once; reloading shows **Routine saved**. Use **Run now** to start it immediately and watch queued, retrying, the current step, elapsed time and recorded cost update beside the card.
 
-- Open **Jobs** from the workspace header to see every run across the crew: outcome, agent, trigger, start, duration and cost, with agent/outcome/date filters, search and paging. A run's page shows its task, final answer, delivered files, failed steps, retry attempts and the full receipt timeline. Cancel a running job, retry a sealed chat or routine run that is not verified, run a routine now with live step status, and pause or resume routines; **Upcoming runs** lists the next occurrences in your timezone.
+- Open **Mission Control** to see live agent frames plus **Runs**, the tracker of every run across the crew: outcome, agent, trigger, start, duration and cost, with agent/outcome/date filters, search and paging. A run's page shows its task, final answer, delivered files, failed steps, retry attempts and the full receipt timeline. Cancel a running job or retry a sealed chat or routine run that is not verified. Schedules live on the **Schedules** page, which lists upcoming runs in your timezone and lets you run a routine now with live step status or pause/resume routines.
 - Confirmed routines run once a minute on the app's pg-boss scheduler. A duplicate tick is a no-op, one agent runs at most one job at a time, and transient failures retry with backoff. After downtime, each routine follows its chosen catch-up policy. The scheduler starts with the app. If scheduler startup fails, the app logs that scheduled routines are paused and continues starting; restart the app after resolving the cause. On an existing install, rebuild the app image first, then run `npm run db:migrate` and `npm run db:provision` (or use the installer); the database helper runs inside the app image.
 - A verified routine replays without the model. A failed site check starts a bounded repair on the live screen and proposes a **replay update** for approval.
 - **Replay a verified run without the model.** Open **History**, pick a run that finished with every step verified, and press **Save as replay**. A replay is saved only when each step can be checked from the page itself (a control is present or absent, or the URL path), so a run whose check needed a model's judgement is refused with the step and the reason. Saved replays are listed at the top of **History**: press **Replay**, review the steps first, and fill in any text the replay must type (that text is used once and never saved). A replay makes no model call and costs nothing; it finds each control again by its exact role and name, checks the page, and stops with a "Needs you" card at the first step that doesn't match, for example after the site changed. It uses one check per step (the page's structure) instead of the two-method check of a normal run. Replays are limited to 20 steps.
@@ -630,7 +632,7 @@ Files are saved in the agent's own `inbox`, `work`, `downloads` and `outbox` bef
 
 **Address a teammate directly.** Start a chat message with `@Name ` (for example `@Scout check my calendar`). The message is stored in Scout's chat, Scout starts working, and the current chat shows "Sent to Scout." An unknown name sends nothing and shows an inline error; an `@` later in a sentence is ordinary text.
 
-**Background helpers (opt-in).** Add `spawn_subagent` to an agent's Actions (the form hint explains it). For screenless work such as document, history or pinned-tool lookups, the agent may start up to three helpers. Each helper runs as its own signed run with at most 20% of the parent's steps, time and weighted tokens, never takes the screen, and cannot borrow permissions or write memory. Its result comes back to the parent as untrusted data. Live chat shows helpers indented under the parent; **History** and **Jobs** link and count them. Helpers are never rewound.
+**Background helpers (opt-in).** Add `spawn_subagent` to an agent's Actions (the form hint explains it). For screenless work such as document, history or pinned-tool lookups, the agent may start up to three helpers. Each helper runs as its own signed run with at most 20% of the parent's steps, time and weighted tokens, never takes the screen, and cannot borrow permissions or write memory. Its result comes back to the parent as untrusted data. Live chat shows helpers indented under the parent; **History** and **Mission Control → Runs** link and count them. Helpers are never rewound.
 
 ### 10. Approvals and permissions
 
@@ -640,7 +642,7 @@ When an agent is about to download, send, post, delete, purchase or submit, it p
 - **Always allow:** saved for this agent, this exact site and this action. It is limited to 20 uses per rolling 24 hours and is never global.
 - **Deny:** the run stops.
 
-A request waits up to 10 minutes. While it waits, the agent shows **Needs you** in the workspace and the Jobs page says **Waiting for approval**. If the page changes while you decide, the agent re-checks it and stops rather than acting on a stale screen. Saved approvals are listed under the agent's **Settings → Saved approvals**, where you can revoke one; the next risky action asks again. Saved replays never wait: a risky replay step runs only when a saved approval still has capacity.
+A request waits up to 10 minutes. While it waits, the agent shows **Needs you** in the workspace and Mission Control shows **Waiting for approval**. If the page changes while you decide, the agent re-checks it and stops rather than acting on a stale screen. Saved approvals are listed under the agent's **Settings → Saved approvals**, where you can revoke one; the next risky action asks again. Saved replays never wait: a risky replay step runs only when a saved approval still has capacity.
 
 The action is classified from the control's name and the agent's expected result, so treat this as a safety net rather than a guarantee. Pressing Enter to submit a form is not classified, and a page that labels a destructive button neutrally can still mislead it.
 
@@ -710,19 +712,19 @@ Limits: 50 MB per document, up to 5,000,000 characters indexed, 20,000 character
 
 To keep costs down, let routines replay, use Spark for most steps, and use Sundance cheap checks instead of frequent full runs.
 
-### 16. Jobs dashboard
+### 16. Runs and schedules
 
-**Workspace → Jobs** lists every routine run, check, webhook and background job with its status, agent, trigger, duration and cost.
+**Mission Control → Runs** lists crew runs with their status, agent, trigger, duration and cost. **Schedules** lists routines and upcoming scheduled runs.
 - Open a run for its step timeline, receipts, errors and retry history.
 - Actions: **Run now**, **Cancel**, **Retry**, **Pause/Resume** a routine.
 - **Upcoming** shows the next scheduled runs in your local time.
 
-### 16b. Crew overview and morning report
+### 16b. Crew overview and Mission Control
 
-**Workspace → Crew** is the owner-only overview.
+**Mission Control** and **Crew** are owner-only pages in the left navigation.
 - **Mission Control** shows every agent with its current run, step count, today's spend, current-run cost, model and any approval or budget alert. Up to four running desktops stream as view-only thumbnails; stopped desktops show a placeholder. Opening a card goes to that agent's workspace. The overview never starts a desktop.
 - **Starter crew** previews six roles (PR Reviewer, Dev Agent, Daily Briefer, Inbox Triage, Research Analyst, Travel & Booking Assistant) and creates them with their own policies. A repeat or a retry resumes the same six identities instead of creating more. It creates identities and setup checklists only: connect mail/calendar accounts yourself, and add the pinned server key under the agent's Tools. Draft routine examples are previews, not enabled routines.
-- **Morning report** is a deterministic local summary of the previous 24 hours. Choose a recipient agent, a local time and enable it. The report card shows exact window boundaries, completed/running/interrupted/failed/needs-you counts, attempted spend (including failed calls), up to ten run links and the Jobs link. It makes no model call and never sends or changes anything. Disable it to block a queued delivery; a schedule edit applies from the next occurrence.
+- For recurring work, use **Schedules**: ask an agent in chat to create a routine, confirm it there, and see upcoming runs on the Schedules page.
 
 ### 17. Security Center and kill switches
 
@@ -730,7 +732,7 @@ To keep costs down, let routines replay, use Spark for most steps, and use Sunda
 
 - **Security Center** lists security events and the signed audit log, with agent and time filters. **Export audit log** downloads the owner's full chain; check it offline with `node scripts/eclipse-crew.mjs verify-audit audit.json`. The header shows **Verified N entries** after the app runs the same verifier.
 - **Stop agent** halts one agent immediately: blocked egress, live runs cancelled, desktop stopped and the agent paused. **Stop crew** sets a crew-wide gate first, then halts every agent; new chat, scheduled, Run Now, retry, heal and replay runs are refused until you press **Resume crew**. Agents stay paused afterwards until you resume each one.
-- Blocked outbound requests appear as **Denied** rows. Stopped events link to the run in Jobs.
+- Blocked outbound requests appear as **Denied** rows. Stopped events link to the run in Mission Control.
 - Audit signing needs `RECEIPT_SIGNING_KEY`. Without it the Security Center shows a banner and entries from that period are not recorded; existing runs already refuse to start without the key.
 
 ### 18. Voice *(coming)*
@@ -872,13 +874,12 @@ Docker volumes:
 
 | Data | Kept |
 |---|---|
-| Working screenshots | 7 days |
-| Receipt thumbnails and hashes | Permanently |
-| Rewind checkpoints | 7 days |
-| Failed runs | 30 days |
-| Teaching recordings | Kept locally until you discard the capture or approve its skill; approval keeps one reference screenshot per step |
+| Step screenshots and checkpoint files | 32 days, then auto-deleted (receipts stay, so proof still verifies) |
+| Receipt text, hashes and audit log | Permanently (append-only) |
+| Teach recordings | Kept locally until you discard the capture or approve its skill; approval keeps one reference screenshot per step; leftovers auto-delete after 32 days |
+| Failed runs | Run rows stay; their screenshots follow the 32-day rule |
 
-You can delete any run or agent's data immediately from the UI. Each agent has a storage limit *(coming, default 10 GB)*.
+Download anything you want to keep first: every step screenshot has a Download link, and each run exports its signed `run.json`. Mission Control warns at 80% of the instance cap (`ARTIFACTS_CAP_BYTES`, default 20 GB); at 100%, the oldest evidence is purged early. Receipts are never purged.
 
 ---
 
@@ -919,7 +920,7 @@ The `eclipse-crew` command itself is installed by the one-command installer *(co
 | Routine didn't run while the PC was off | It runs according to its catch-up policy when the stack starts again. Use a VPS for always-on. |
 | Agent paused: budget reached | Raise the budget in agent or routine settings, or wait for the next period |
 | Agent says receipt signing is not set up | Run `npm run receipt-key`, then `docker compose up -d` so the app sees the new value, and send the message again |
-| Wrong times in schedules | Check your timezone in **Settings → Account**. Schedules store the timezone, so DST changes are handled. |
+| Wrong times in schedules | Check your timezone on your **Profile** (click your avatar), or use the timezone notice at the top of the app when it appears. Schedules store the timezone, so DST changes are handled. |
 | Forgot password | `npm run reset-password` on the host; see [Account and recovery](#account-and-recovery) |
 | `docker compose build` stops with `fs.read` / BuildKit policy | Build directly and recreate without building: `docker build -f Dockerfile -t main-app .` then `docker compose up -d --no-build app`. Do not relax the Docker policy. |
 | A run says Interrupted after a restart | That is the crash-safe seal. Open the card's **Continue** or History and branch from the last complete checkpoint. |
@@ -933,7 +934,7 @@ The `eclipse-crew` command itself is installed by the one-command installer *(co
 |---|---|---|
 | Core | Docker setup, owner login, agents and personas, chat cards, live desktop + takeover | Templates, Mission Control, PWA, Files tab |
 | Standouts | Teach from video, proof receipts + verifier, rewind and branch, self-healing, isolation + tripwire | Auto-rewind on security events |
-| Routines | Schedules, Run Now, catch-up, deterministic replay, Jobs dashboard | Sundance/Moondance, webhooks, live dashboard updates |
+| Routines | Schedules, Run Now, catch-up, deterministic replay, Mission Control runs | Sundance/Moondance, webhooks, live dashboard updates |
 | Models | Meta Model API, SAM 3.1 via API, role cards, saved keys, capability detection | Anthropic-compatible connector (Claude), local models, local SAM, model check, per-agent overrides |
 | Safety | Permissions, approvals, Astra Mode, budgets, egress allowlist, key injection, audit log, kill switches | Taint tracking, quarantined reader, threat feeds, download scanning, 2FA |
 | Other | Memory files with scopes and approval | Voice, multi-agent, booking assistant, backups, Composio |

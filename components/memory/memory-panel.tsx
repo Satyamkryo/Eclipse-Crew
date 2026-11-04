@@ -48,6 +48,14 @@ export function MemoryPanel({ agentId, csrfToken, timeZone }: { agentId?: string
   const [version, setVersion] = useState(0);
   const [modeBusy, setModeBusy] = useState(false);
 
+  // Live: background memory writes appear within 30s. Skipped while the
+  // add/edit dialog is open so a refresh never surprises an editor.
+  useEffect(() => {
+    if (adding || editing) return;
+    const timer = window.setInterval(() => { if (document.visibilityState === "visible") setVersion((value) => value + 1); }, 30000);
+    return () => window.clearInterval(timer);
+  }, [adding, editing]);
+
   useEffect(() => {
     if (!agentId) return;
     const controller = new AbortController();

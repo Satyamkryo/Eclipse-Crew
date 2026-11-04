@@ -44,8 +44,8 @@ export function PriceTable({ initial, csrfToken }: { initial: PriceRowView[]; cs
       {providers.map((provider) => (
         <div key={provider} className="border-b border-border pb-4 last:border-b-0 last:pb-0">
           <p className="mb-2 font-mono text-xs text-muted-foreground">{provider}</p>
-          <div className="mb-1 hidden grid-cols-[minmax(0,1.4fr)_repeat(5,minmax(0,1fr))_auto] gap-2 px-1 text-xs text-muted-foreground md:grid">
-            <span>Model</span><span>Input / 1M</span><span>Cached / 1M</span><span>Output / 1M</span><span>Images / 1K</span><span>Audio / hour</span><span>Status</span>
+          <div className="mb-1 hidden grid-cols-[minmax(0,1.2fr)_repeat(5,minmax(0,0.9fr))_minmax(150px,auto)] items-center gap-2 px-1 text-xs text-muted-foreground md:grid">
+            <span>Model</span><span>Input / 1M</span><span>Cached / 1M</span><span>Output / 1M</span><span>Images / 1K</span><span>Audio / hour</span><span className="text-right">Status</span>
           </div>
           <div className="divide-y divide-border">
             {initial.filter((row) => row.providerLabel === provider).map((row) => (
@@ -104,8 +104,8 @@ function PriceEditorRow({ row, csrfToken }: { row: PriceRowView; csrfToken: stri
   }
 
   return (
-    <form onSubmit={save} className="py-2" aria-label={`Prices for ${row.model}`}>
-      <div className="grid grid-cols-2 gap-2 md:grid-cols-[minmax(0,1.4fr)_repeat(5,minmax(0,1fr))_auto] md:items-center">
+    <form onSubmit={save} className="px-1 py-2" aria-label={`Prices for ${row.model}`}>
+      <div className="grid grid-cols-2 gap-2 md:grid-cols-[minmax(0,1.2fr)_repeat(5,minmax(0,0.9fr))_minmax(150px,auto)] md:items-center">
         <div className="col-span-2 min-w-0 md:col-span-1">
           <p className="truncate font-mono text-xs" title={row.model}>{row.model}</p>
           {row.role && <p className="text-xs capitalize text-muted-foreground">{row.role}</p>}
@@ -124,7 +124,7 @@ function PriceEditorRow({ row, csrfToken }: { row: PriceRowView; csrfToken: stri
               aria-label={`${row.model} ${label} in USD`} className={inputClass} />
           </label>
         ))}
-        <div className="col-span-2 flex items-center justify-between gap-2 md:col-span-1 md:justify-end">
+        <div className="col-span-2 flex items-center justify-between gap-2 md:col-span-1 md:justify-end md:whitespace-nowrap">
           <span className={cn("whitespace-nowrap text-xs", row.source === "unpriced" ? "text-corona" : "text-muted-foreground")}>
             {state === "saved" ? "Saved" : sourceLabel(row.source)}
           </span>

@@ -81,6 +81,30 @@ test("daily and monthly bounds follow the owner timezone", () => {
   assert.equal(utc.monthStart.toISOString(), "2026-11-01T00:00:00.000Z");
 });
 
+test("UTC zero-offset spellings share midnight bounds; bad offsets fail", () => {
+  const now = new Date("2026-11-02T10:00:00.000Z");
+  const realFormatToParts = Intl.DateTimeFormat.prototype.formatToParts;
+  const withOffsetName = (name, fn) => {
+    Intl.DateTimeFormat.prototype.formatToParts = function (...args) {
+      const parts = realFormatToParts.apply(this, args);
+      return parts.map((part) => (part.type === "timeZoneName" ? { ...part, value: name } : part));
+    };
+    try { return fn(); } finally { Intl.DateTimeFormat.prototype.formatToParts = realFormatToParts; }
+  };
+  for (const name of ["GMT", "GMT+00:00", "GMT-00:00"]) {
+    const utc = withOffsetName(name, () => budgetPeriods(now, "UTC"));
+    assert.equal(utc.dayStart.toISOString(), "2026-11-02T00:00:00.000Z", name);
+    assert.equal(utc.dayEnd.toISOString(), "2026-11-03T00:00:00.000Z", name);
+    assert.equal(utc.monthStart.toISOString(), "2026-11-01T00:00:00.000Z", name);
+  }
+  const kolkata = withOffsetName("GMT+05:30", () => budgetPeriods(now, "Asia/Kolkata"));
+  assert.equal(kolkata.dayStart.toISOString(), "2026-11-01T18:30:00.000Z");
+  for (const bad of ["XYZ", "UTC", "GMT+5", "GMT+00", "", "GMT+00:00:00"]) {
+    assert.throws(() => withOffsetName(bad, () => budgetPeriods(now, "UTC")), /invalid_timezone/, bad);
+  }
+  assert.equal(Intl.DateTimeFormat.prototype.formatToParts, realFormatToParts);
+});
+
 test("budget evaluation warns at 80 percent and pauses at 100 percent in the most constrained period", () => {
   assert.equal(evaluateBudget({ daySpentMicroUsd: 79, monthSpentMicroUsd: 0, dailyLimitCents: 1, monthlyLimitCents: 10 }).state, "ok");
   const warning = evaluateBudget({ daySpentMicroUsd: 8_000, monthSpentMicroUsd: 10_000, dailyLimitCents: 1, monthlyLimitCents: 10 });

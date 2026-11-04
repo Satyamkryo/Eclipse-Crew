@@ -26,6 +26,12 @@ export function HistoryView({ agentId, docKey, title, timeZone, csrfToken, onCha
   const [selected, setSelected] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
 
+  // Live: background auto-saves and tidy batches appear within 30s.
+  useEffect(() => {
+    const timer = window.setInterval(() => { if (document.visibilityState === "visible") setVersion((value) => value + 1); }, 30000);
+    return () => window.clearInterval(timer);
+  }, []);
+
   useEffect(() => {
     const controller = new AbortController();
     fetch(`/api/memory/${agentId}/history?doc=${encodeURIComponent(docKey)}`, { cache: "no-store", signal: controller.signal })

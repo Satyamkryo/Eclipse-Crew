@@ -78,7 +78,7 @@ export async function runMemoryReview(database: Database, job: MemoryReviewJob, 
 
   const model = await resolveMemoryModel(database, job.ownerId);
   if (!model) return;
-  const costs = createRunCostSink({ database, ownerId: job.ownerId, agentId: job.agentId, runId: jobId });
+  const costs = createRunCostSink({ database, ownerId: job.ownerId, agentId: job.agentId, backgroundJobId: jobId });
   const connector = createCostedConnector(model.connector, costs, { providerId: model.providerId, kind: model.kind, baseUrl: model.baseUrl });
   let result;
   try {

@@ -59,7 +59,7 @@ test.after(() => {
 });
 
 test("exact message/model-role/policy contracts accept historical and 0029 catalogs repeatedly", () => {
-  const checkpoints = new Set([6, 8, 14, 29, 30, 31, migrations.length]);
+  const checkpoints = new Set([6, 8, 14, 29, 30, 31, 35, 36, migrations.length]);
   assert.equal(migrations[7].tag, "0007_luxuriant_ultimatum");
   assert.match(migrations[7].source, /ADD COLUMN "routing"/);
   assert.match(migrations[29].source, /model_roles_background_shape_check/);
@@ -67,6 +67,7 @@ test("exact message/model-role/policy contracts accept historical and 0029 catal
     const entry = migrations[index];
     checked(sql(`BEGIN; SET LOCAL ROLE eclipse_migrator;\n${entry.source.replaceAll("--> statement-breakpoint", "")}\nINSERT INTO drizzle.__drizzle_migrations(hash,created_at) VALUES ('${history[index].hash_lf}',${entry.when}); COMMIT;`), `apply ${entry.tag}`);
     if (!checkpoints.has(index + 1)) continue;
+    if (index + 1 >= 35) checked(preflight(), `full preflight after ${entry.tag}`);
     for (let repeat = 0; repeat < 2; repeat++) {
       checked(sql(roles), `model-role contract after ${entry.tag}, pass ${repeat + 1}`);
       checked(sql(messages), `message contract after ${entry.tag}, pass ${repeat + 1}`);
@@ -142,4 +143,16 @@ test("full provisioning rejects altered policy defaults and constraints without 
     } finally { checked(sql(restore), "restore exact policy contract"); }
     checked(preflight(), "restored policy contract provisions successfully");
   }
+});
+
+test("provisioning rejects a missing avatar constraint", () => {
+  try {
+    checked(sql("ALTER TABLE public.agents DROP CONSTRAINT agents_avatar_variant_check"), "remove avatar constraint");
+    const result = preflight();
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /unexpected agents schema/);
+  } finally {
+    checked(sql("ALTER TABLE public.agents ADD CONSTRAINT agents_avatar_variant_check CHECK (avatar_variant BETWEEN 0 AND 11)"), "restore avatar constraint");
+  }
+  checked(preflight(), "restored avatar constraint accepted");
 });

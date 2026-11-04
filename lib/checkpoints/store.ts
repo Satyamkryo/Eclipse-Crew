@@ -44,7 +44,8 @@ export function createCheckpointRecorder(options: {
     for (const entry of manifest.entries) {
       if (!entry.sha256 || seen.has(entry.sha256)) continue;
       seen.add(entry.sha256);
-      if (await blobs.has(entry.sha256)) continue;
+      // `touch` marks an unchanged file's stored blob as used by this checkpoint, so age-based retention keeps it.
+      if (await (blobs.touch ? blobs.touch(entry.sha256) : blobs.has(entry.sha256))) continue;
       const bytes = await desktop.checkpointBlob({ area: entry.area, path: entry.path, sha256: entry.sha256 });
       if (sha256(bytes) !== entry.sha256 || (await blobs.put(bytes)) !== entry.sha256) throw Object.assign(new Error("content_changed"), { code: "content_changed" });
     }

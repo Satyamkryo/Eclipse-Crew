@@ -1,6 +1,6 @@
 import "server-only";
 
-import { randomUUID } from "node:crypto";
+import { randomInt, randomUUID } from "node:crypto";
 import { and, eq, inArray, lt, or } from "drizzle-orm";
 
 import type { getDatabase } from "../../db/client";
@@ -26,6 +26,7 @@ export function templateCreateInput(template: AgentTemplate): AgentCreateInput {
     name: template.label,
     role: template.role,
     soulMd: template.soulMd,
+    avatarVariant: randomInt(12),
     dailyBudgetCents: cents(template.dailyBudgetUsd),
     monthlyBudgetCents: cents(template.monthlyBudgetUsd),
     tools: [...template.tools],

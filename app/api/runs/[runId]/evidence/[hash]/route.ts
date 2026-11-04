@@ -15,15 +15,20 @@ const SECURITY = { "X-Content-Type-Options": "nosniff", "Content-Security-Policy
 export async function GET(request: Request, { params }: { params: Promise<{ runId: string; hash: string }> }) {
   try {
     const session = await requireOwnerRequest(request);
-    if (new URL(request.url).search) throw new RequestError(400, "invalid_query");
+    const query = new URL(request.url).searchParams;
+    const download = query.get("download");
+    if (download !== null && download !== "1") throw new RequestError(400, "invalid_query");
     const parsed = z.object({ runId: z.string().uuid(), hash: z.string().regex(/^[0-9a-f]{64}$/) }).safeParse(await params);
     if (!parsed.success) throw new RequestError(400, "invalid_evidence");
     if (!(await evidenceBelongsToRun(await getDatabase(), session.ownerId, parsed.data.runId, parsed.data.hash)))
       return Response.json(NOT_FOUND, { status: 404, headers: { ...SECURITY, "Cache-Control": "no-store" } });
     const bytes = await createBlobStore().get(parsed.data.hash).catch(() => null);
     if (!bytes) return Response.json(NOT_FOUND, { status: 404, headers: { ...SECURITY, "Cache-Control": "no-store" } });
+    const disposition = download === "1"
+      ? `attachment; filename="evidence-${parsed.data.hash.slice(0, 8)}.png"`
+      : "inline";
     return new Response(new Uint8Array(bytes), { status: 200, headers: { ...SECURITY, "Content-Type": "image/png", "Content-Length": String(bytes.length),
-      "Content-Disposition": "inline", "Cache-Control": "private, max-age=31536000, immutable" } });
+      "Content-Disposition": disposition, "Cache-Control": "private, max-age=31536000, immutable" } });
   } catch (error) {
     const response = requestErrorResponse(error);
     response.headers.set("Cache-Control", "no-store");

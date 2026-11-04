@@ -1,7 +1,7 @@
 import "server-only";
 
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 
 import type { getDatabase } from "../../db/client";
@@ -98,7 +98,7 @@ export async function runMemoryTidy(database: Database, job: MemoryTidyJob, jobI
   if (entries.length < 2) return;
   const model = await resolveMemoryModel(database, job.ownerId);
   if (!model) return;
-  const costs = createRunCostSink({ database, ownerId: job.ownerId, agentId: job.agentId, runId: jobId });
+  const costs = createRunCostSink({ database, ownerId: job.ownerId, agentId: job.agentId, backgroundJobId: jobId });
   const connector = createCostedConnector(model.connector, costs, { providerId: model.providerId, kind: model.kind, baseUrl: model.baseUrl });
   let result;
   try {
@@ -147,11 +147,28 @@ export async function runMemoryTidy(database: Database, job: MemoryTidyJob, jobI
   }
   if (!accepted.length) return;
 
-  const merged = accepted.filter((item) => item.op === "merge").reduce((sum, item) => sum + item.ids.length, 0);
-  const archived = accepted.filter((item) => item.op === "archive").length;
-  await database.transaction(async (transaction) => {
+  const seenIds = new Set<string>();
+  const distinctAccepted = accepted.filter((item) => {
+    if (item.ids.some((id) => seenIds.has(id))) return false;
+    for (const id of item.ids) seenIds.add(id);
+    return true;
+  });
+
+  const merged = distinctAccepted.filter((item) => item.op === "merge").reduce((sum, item) => sum + item.ids.length, 0);
+  const archived = distinctAccepted.filter((item) => item.op === "archive").length;
+  const committed = await database.transaction(async (transaction) => {
     await transaction.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${job.ownerId}), hashtext(${job.docKey}))`);
-    for (const item of accepted) {
+    const touchedIds = [...seenIds];
+    const currentRows = await transaction.select({ id: memoryEntries.id, status: memoryEntries.status, pinned: memoryEntries.pinned, version: memoryEntries.version })
+      .from(memoryEntries).where(and(eq(memoryEntries.ownerId, job.ownerId), inArray(memoryEntries.id, touchedIds))).for("update");
+    const currentById = new Map(currentRows.map((entry) => [entry.id, entry]));
+    if (touchedIds.some((id) => {
+      const before = byId.get(id);
+      const current = currentById.get(id);
+      return !before || !current || current.status !== "active" || current.pinned || current.version !== before.version;
+    })) return false;
+
+    for (const item of distinctAccepted) {
       if (item.op === "merge") {
         const sources = item.ids.map((id) => byId.get(id)!);
         const [base, ...rest] = sources;
@@ -177,7 +194,9 @@ export async function runMemoryTidy(database: Database, job: MemoryTidyJob, jobI
         await appendTidyVersion(transaction, job.ownerId, { docKey: job.docKey, entryId: entry.id, agentId: entry.agentId, op: "archive", before: snapshotOf(entry), after: null, batchId, reason: item.reason });
       }
     }
+    return true;
   });
+  if (!committed) return;
   await recordAudit(database as unknown as AuditExecutor, job.ownerId, { kind: "memory_tidied", agentId: job.agentId, ref: batchId }).catch(() => undefined);
   try {
     await appendAgentCard(database, job.ownerId, job.agentId, {

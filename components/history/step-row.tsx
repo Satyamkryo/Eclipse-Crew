@@ -12,16 +12,28 @@ const RESULT_LABEL: Record<string, string> = {
 
 function Evidence({ runId, hash, label, step, box }: { runId: string; hash: string | null; label: string; step: StepView; box?: StepView["samBox"] }) {
   const [broken, setBroken] = useState(false);
-  if (!hash || broken) {
+  if (!hash) {
     return (
       <div className="flex aspect-[4/3] w-full items-center justify-center gap-2 rounded-md border border-border bg-surface text-xs text-muted-foreground">
         <ImageOff aria-hidden className="size-4" strokeWidth={1.5} />{label}: screenshot not stored
       </div>
     );
   }
+  if (broken) {
+    return (
+      <div className="flex aspect-[4/3] w-full flex-col items-center justify-center gap-1 rounded-md border border-border bg-surface px-3 text-center text-xs text-muted-foreground">
+        <span className="flex items-center gap-2"><ImageOff aria-hidden className="size-4" strokeWidth={1.5} />{label}: expired</span>
+        <span>Auto-deleted after 32 days. Download evidence you need before then.</span>
+      </div>
+    );
+  }
   return (
     <figure className="m-0">
-      <figcaption className="mb-1 text-xs text-muted-foreground">{label}</figcaption>
+      <figcaption className="mb-1 flex items-center justify-between gap-2 text-xs text-muted-foreground">
+        <span>{label}</span>
+        <a href={`/api/runs/${runId}/evidence/${hash}?download=1`} download
+          className="underline underline-offset-4 hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring">Download</a>
+      </figcaption>
       <div className="relative overflow-hidden rounded-md border border-border bg-black">
         {/* eslint-disable-next-line @next/next/no-img-element -- owner-only evidence route; the bytes are the hashed PNG */}
         <img src={`/api/runs/${runId}/evidence/${hash}`} alt={`${label} screenshot of step ${step.idx}`} loading="lazy" decoding="async"

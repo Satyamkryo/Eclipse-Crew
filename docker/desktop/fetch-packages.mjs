@@ -2,9 +2,12 @@ import { createHash } from "node:crypto";
 import { mkdir, open, readFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
+import { get } from "node:https";
+import { Readable } from "node:stream";
 
 // One reviewed lock per CPU. The amd64 values are the TASK-010 pins and must not move;
-// the arm64 row is filled only from a native resolution (see scripts/resolve-package-lock.mjs).
+// ARM packages were resolved natively on Oracle from signed Ubuntu archive metadata.
 export const TARGETS = {
   amd64: {
     lock: "ubuntu-packages.lock.json",
@@ -16,9 +19,9 @@ export const TARGETS = {
   },
   arm64: {
     lock: "ubuntu-packages.arm64.lock.json",
-    sha256: null,
-    count: null,
-    bytes: null,
+    sha256: "acc7f512e07138ff80fb3fb68be4021e7002ed5f1f9b8494014889d6593bc0e2",
+    count: 442,
+    bytes: 242101668,
     hosts: ["ports.ubuntu.com"],
     pathPrefix: "/ubuntu-ports/",
   },
@@ -58,13 +61,44 @@ export function validateManifest(bytes, target = "amd64") {
       manifest.packages.reduce((sum, entry) => sum + entry.bytes, 0) !== spec.bytes) throw Error("invalid_package_manifest");
   return manifest;
 }
-export async function fetchPackage(entry, directory, { fetchImpl = fetch, signal, target = "amd64" } = {}) {
+// Stream through Node HTTPS instead of fetch: the pinned ARM build runtime can crash
+// inside Undici's Parser.finish when an Ubuntu archive connection closes while paused.
+// HTTPS verifies certificates normally and never follows redirects.
+function packageRequest(url, { signal }) {
+  return new Promise((resolve, reject) => {
+    const request = get(url, { signal, agent: false }, (response) => {
+      resolve({
+        ok: response.statusCode >= 200 && response.statusCode < 300,
+        headers: { get(name) {
+          const value = response.headers[name.toLowerCase()];
+          return Array.isArray(value) ? value.join(",") : value ?? null;
+        } },
+        body: Readable.toWeb(response),
+      });
+    });
+    request.on("error", reject);
+  });
+}
+export async function fetchPackage(entry, directory, { fetchImpl = packageRequest, signal, target = "amd64" } = {}) {
+  for (let attempt = 0; ; attempt++) {
+    signal?.throwIfAborted();
+    try { return await fetchPackageOnce(entry, directory, { fetchImpl, signal, target }); }
+    catch (error) {
+      // Ubuntu may close a reused connection during the large package closure download.
+      // Restart the archive from scratch; integrity, HTTP and TLS failures never retry.
+      const code = error?.cause?.code ?? error?.code;
+      if (attempt >= 2 || !["UND_ERR_SOCKET", "ECONNRESET", "EPIPE"].includes(code) || signal?.aborted) throw error;
+      await delay(250 * (attempt + 1), undefined, { signal });
+    }
+  }
+}
+async function fetchPackageOnce(entry, directory, { fetchImpl, signal, target }) {
   validateEntry(entry, target);
   const destination = path.join(directory, `${entry.sha256}.deb`); const partial = `${destination}.partial`;
   let file; let created = false;
   try {
     const response = await fetchImpl(entry.url, { redirect: "error", signal: AbortSignal.any([AbortSignal.timeout(60000), ...(signal ? [signal] : [])]) });
-    if (!response.ok || !response.body) throw Error("package_download_failed");
+    if (!response.ok || !response.body) { await response.body?.cancel(); throw Error("package_download_failed"); }
     const declared = response.headers.get("content-length");
     if (declared !== null && +declared !== entry.bytes) { await response.body.cancel(); throw Error("package_size_mismatch"); }
     file = await open(partial, "wx", 0o600); created = true;
@@ -85,7 +119,7 @@ export async function fetchPackage(entry, directory, { fetchImpl = fetch, signal
     await file?.close().catch(() => {}); if (created) await rm(partial, { force: true });
   }
 }
-export async function fetchPackages(entries, directory, { fetchImpl = fetch, signal, target = "amd64", onProgress = () => {} } = {}) {
+export async function fetchPackages(entries, directory, { fetchImpl = packageRequest, signal, target = "amd64", onProgress = () => {} } = {}) {
   for (const entry of entries) validateEntry(entry, target);
   const controller = new AbortController();
   const combined = signal ? AbortSignal.any([signal, controller.signal]) : controller.signal;

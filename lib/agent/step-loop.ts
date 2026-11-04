@@ -278,6 +278,7 @@ const HANDOFF_FAILURE_TEXT: Record<string, string> = {
   handoff_to_self: "I cannot hand a request to myself.",
   handoff_cycle: "That request already went to this teammate, so I did not send it again.",
   handoff_limit: "This request already passed through two agents, so I did not hand it on again.",
+  different_crew: "That teammate is not in my crew, so I did not send it. Handoffs stay inside the crew.",
   no_owner_message: "I can only hand off a request you sent in chat, so I did not send this one.",
   invalid_note: "The handoff note was not valid, so I did not send it.",
   start_failed: "The handoff could not be started, so I did not send it.",

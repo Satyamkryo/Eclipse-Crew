@@ -1,11 +1,12 @@
 "use client";
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { MessageSquare, Monitor, UsersRound, PanelRight, X } from "lucide-react";
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { Loader2, PanelRight, UsersRound, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { AppShell, type OwnerChip } from "@/components/workspace/app-shell";
 import { RoutinesTabEmpty, ToolsTabEmpty, WorkspaceCenter, type CenterAgent, type WorkspaceTabId } from "@/components/workspace/workspace-center";
 import { DesktopColumn } from "@/components/workspace/desktop-column";
 import { cn } from "@/lib/utils";
+import { MobileDock } from "@/components/workspace/mobile-dock";
 import type { AgentSummary } from "@/components/workspace/agent-pane";
 
 type MobileView = "agents" | "chat" | "panel";
@@ -27,14 +28,27 @@ type Props = {
 // The workspace composes the shared reference shell: sidebar + header from AppShell, the
 // agent heading with central tabs in the center, and the live desktop + activity column on
 // the right (docs/DESIGN.md "App shell"; images 05, 39, 40).
+function subscribeViewport(onChange: () => void) {
+  window.addEventListener("resize", onChange);
+  return () => window.removeEventListener("resize", onChange);
+}
+const readViewport = () => window.innerWidth;
+const readNoViewport = () => null;
+
 export function WorkspaceShell({ initialMobileView, initialTab, agents, selectedAgent, owner, csrfToken, agentPane, chatPane, settings, desktop, history, memory }: Props) {
   const [mobileView, setMobileView] = useState<MobileView>(initialMobileView);
   const [panelOpen, setPanelOpen] = useState(false);
   const [agentsSheetOpen, setAgentsSheetOpen] = useState(initialMobileView === "agents");
   const [panelWidth, setPanelWidth] = useState(400);
-  const [viewportWidth, setViewportWidth] = useState(1440);
+  // The server and hydration render have no width (laid out as 1440 px); the live view waits for the real width so its
+  // stream opens once, in the final layout, instead of opening in a guessed layout and reconnecting.
+  const measuredWidth = useSyncExternalStore(subscribeViewport, readViewport, readNoViewport);
+  const viewportWidth = measuredWidth ?? 1440;
+  const measured = measuredWidth !== null;
   const panelOpener = useRef<HTMLButtonElement>(null);
   const panelWasOpen = useRef(false);
+  const agentsOpener = useRef<HTMLButtonElement>(null);
+  const agentsWasOpen = useRef(false);
   const styleSheet = useRef<CSSStyleSheet | null>(null);
   const drag = useRef<{ startX: number; startWidth: number } | null>(null);
   const maxPanelWidth = Math.max(380, Math.floor(viewportWidth / 2));
@@ -42,12 +56,6 @@ export function WorkspaceShell({ initialMobileView, initialTab, agents, selected
   const isMobile = viewportWidth < 768;
   const isDesktop = viewportWidth >= 1280;
 
-  useEffect(() => {
-    const update = () => setViewportWidth(window.innerWidth);
-    update();
-    window.addEventListener("resize", update);
-    return () => window.removeEventListener("resize", update);
-  }, []);
 
   useEffect(() => {
     const sheet = new CSSStyleSheet();
@@ -68,6 +76,11 @@ export function WorkspaceShell({ initialMobileView, initialTab, agents, selected
     if (panelWasOpen.current && !panelOpen) panelOpener.current?.focus();
     panelWasOpen.current = panelOpen;
   }, [panelOpen]);
+
+  useEffect(() => {
+    if (agentsWasOpen.current && !agentsSheetOpen) agentsOpener.current?.focus();
+    agentsWasOpen.current = agentsSheetOpen;
+  }, [agentsSheetOpen]);
 
   const closePanel = () => setPanelOpen(false);
   const onSeparatorKeyDown = (event: React.KeyboardEvent) => {
@@ -102,14 +115,22 @@ export function WorkspaceShell({ initialMobileView, initialTab, agents, selected
     </WorkspaceCenter>
   );
 
-  const column = <DesktopColumn desktop={desktop} agentId={selectedAgent?.id} csrfToken={csrfToken} active={selectedAgent?.status === "active"} />;
+  const pendingDesktop = desktop && (
+    <div className="relative aspect-[4/3] w-full bg-background">
+      <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 p-6 text-center">
+        <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" aria-hidden="true" />
+        <p className="text-sm text-muted-foreground">Connecting to agent desktop…</p>
+      </div>
+    </div>
+  );
+  const column = <DesktopColumn desktop={measured ? desktop : pendingDesktop} agentId={selectedAgent?.id} csrfToken={csrfToken} active={selectedAgent?.status === "active"} />;
 
   return (
     <AppShell owner={owner} agents={agents} selectedAgentId={selectedAgent?.id} agentsSection={agentPane}
-      mobileNav={<MobileNav value={mobileView} onChange={setMobileView} />}
+      mobileNav={<MobileDock active={mobileView} onSelect={setMobileView} />}
       headerAction={isDesktop ? undefined : (
         <div className="flex items-center gap-2">
-          {!isMobile && <Button type="button" variant="secondary" size="sm" aria-label="Open agents"
+          {!isMobile && <Button ref={agentsOpener} type="button" variant="secondary" size="sm" aria-label="Open agents"
             onClick={() => setAgentsSheetOpen(true)}><UsersRound aria-hidden="true" className="size-4" />Agents</Button>}
           <Button ref={panelOpener} type="button" variant="secondary" size="sm" aria-label="Open workspace panel"
             onClick={() => setPanelOpen(true)}><PanelRight aria-hidden="true" className="size-4" />Panel</Button>
@@ -167,7 +188,7 @@ function SettingsEmpty() {
       <div className="flex flex-wrap gap-4">
         <a href="/settings/models" className="text-sm underline underline-offset-4">Model settings</a>
         <a href="/settings/connections" className="text-sm underline underline-offset-4">Connections</a>
-        <a href="/settings/account" className="text-sm underline underline-offset-4">Account settings</a>
+        <a href="/profile" className="text-sm underline underline-offset-4">Profile</a>
       </div>
     </div>
   );
@@ -214,25 +235,5 @@ function Sheet({ label, onClose, children }: { label: string; onClose: () => voi
         <div className="min-h-0 flex-1 overflow-hidden">{children}</div>
       </div>
     </dialog>
-  );
-}
-
-function MobileNav({ value, onChange }: { value: MobileView; onChange: (value: MobileView) => void }) {
-  const items = [
-    { id: "agents", label: "Agents", Icon: UsersRound },
-    { id: "chat", label: "Chat", Icon: MessageSquare },
-    { id: "panel", label: "Panel", Icon: Monitor },
-  ] as const;
-  return (
-    <nav aria-label="Workspace panes" className="grid h-14 shrink-0 grid-cols-3 border-t border-border bg-card">
-      {items.map(({ id, label, Icon }) => (
-        <button key={id} type="button" aria-pressed={value === id} onClick={() => onChange(id)}
-          className={cn("flex flex-col items-center justify-center gap-1 text-xs transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring",
-            value === id ? "text-foreground" : "text-muted-foreground hover:text-foreground")}>
-          <Icon aria-hidden="true" className="size-4" />
-          <span>{label}</span>
-        </button>
-      ))}
-    </nav>
   );
 }

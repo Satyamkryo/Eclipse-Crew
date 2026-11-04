@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { LoaderCircle } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
 import { ModalDialog } from "@/components/workspace/modal-dialog";
 import { COMPOSIO_TOOLKITS } from "@/lib/composio/schema";
 import type { ComposioAccountView, ComposioDiscovery, ComposioKeyView } from "@/lib/composio/view";
@@ -271,15 +272,17 @@ export function ComposioSettings({ initialKey, initialAccounts, agents, csrfToke
           <div className="mt-3 flex flex-wrap items-end gap-3">
             <div className="flex flex-col gap-2">
               <label htmlFor="composio-agent" className="text-xs font-medium">Agent</label>
-              <select id="composio-agent" value={agentId} onChange={(event) => setAgentId(event.target.value)} className={inputClass}>
+              <Select label="Agent" id="composio-agent" value={agentId} onChange={setAgentId}
+                selectClassName={inputClass}>
                 {agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
-              </select>
+              </Select>
             </div>
             <div className="flex flex-col gap-2">
               <label htmlFor="composio-toolkit" className="text-xs font-medium">App</label>
-              <select id="composio-toolkit" value={toolkit} onChange={(event) => setToolkit(event.target.value)} className={inputClass}>
+              <Select label="App" id="composio-toolkit" value={toolkit} onChange={setToolkit}
+                selectClassName={inputClass}>
                 {COMPOSIO_TOOLKITS.map((item) => <option key={item.slug} value={item.slug}>{item.label}</option>)}
-              </select>
+              </Select>
             </div>
             <Button type="button" size="sm" onClick={connect} disabled={busy || agents.length === 0}>
               {busy && <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" />}

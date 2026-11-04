@@ -1,7 +1,7 @@
 import "server-only";
 
 import { randomUUID } from "node:crypto";
-import { and, asc, eq, isNull, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, or, sql } from "drizzle-orm";
 
 import type { getDatabase } from "../../db/client";
 import { agents, costEntries, modelPrices, modelRoles, owner, providers, runs } from "../../db/schema";
@@ -141,17 +141,32 @@ export function createRunCostSink(options: {
   database: Database;
   ownerId: string;
   agentId: string;
-  runId: string;
+  runId?: string;
+  backgroundJobId?: string;
   now?: () => Date;
   onWarning?: (card: BudgetCard) => Promise<void> | void;
 }): RunCostSink {
-  const { database, ownerId, agentId, runId } = options;
+  const { database, ownerId, agentId, runId, backgroundJobId } = options;
+  if (Boolean(runId) === Boolean(backgroundJobId)) throw new Error("cost_source_invalid");
+  const sourceFields = runId ? { runId, captureId: null, backgroundJobId: null } : { runId: null, captureId: null, backgroundJobId };
+  const idempotencyPrefix = runId ? `cost:${runId}:` : `cost:job:${backgroundJobId}:`;
   const now = options.now ?? (() => new Date());
   const prices = new Map<string, ModelPriceRates>();
   const audioKeys = new Map<string, { costMicroUsd: number; callIndex: number }>();
   let callIndex = 0;
+  let jobIndexLoaded = false;
   let total = 0;
   let warned = false;
+
+  async function allocateCallIndex(): Promise<number> {
+    if (backgroundJobId && !jobIndexLoaded) {
+      const previous = await database.select({ callIndex: costEntries.callIndex }).from(costEntries)
+        .where(eq(costEntries.backgroundJobId, backgroundJobId)).orderBy(desc(costEntries.callIndex)).limit(1);
+      callIndex = previous[0]?.callIndex ?? 0;
+      jobIndexLoaded = true;
+    }
+    return ++callIndex;
+  }
 
   return {
     async beforeCall(call) {
@@ -181,7 +196,7 @@ export function createRunCostSink(options: {
       const price = prices.get(key);
       prices.delete(key);
       if (!price) throw new CostStopError("cost_error");
-      const index = ++callIndex;
+      const index = await allocateCallIndex();
       let cost: number;
       try {
         cost = calculateCostMicroUsd(price, call.usage, { images: call.images, audioDurationMs: call.audioDurationMs ?? 0 });
@@ -193,7 +208,7 @@ export function createRunCostSink(options: {
         const inserted = await database.insert(costEntries).values({
           id: randomUUID(),
           ownerId,
-          runId,
+          ...sourceFields,
           agentId,
           providerId: call.providerId,
           callIndex: index,
@@ -204,7 +219,7 @@ export function createRunCostSink(options: {
           audioDurationMs: call.audioDurationMs ?? 0,
           costMicroUsd: cost,
           outcome,
-          idempotencyKey: `cost:${runId}:${index}`,
+          idempotencyKey: `${idempotencyPrefix}${index}`,
         }).onConflictDoNothing({ target: costEntries.idempotencyKey }).returning({ id: costEntries.id });
         if (inserted[0]) total += cost;
       } catch {
@@ -224,12 +239,12 @@ export function createRunCostSink(options: {
       let cost: number;
       try { cost = calculateCostMicroUsd(price, { inputTokens: 0, outputTokens: 0, cachedInputTokens: 0 }, { audioDurationMs: call.durationMs }); }
       catch { throw new CostStopError("cost_error"); }
-      const index = ++callIndex;
+      const index = await allocateCallIndex();
       try {
         const inserted = await database.insert(costEntries).values({
-          id: randomUUID(), ownerId, runId, agentId, providerId: call.providerId, callIndex: index, model: call.model,
+          id: randomUUID(), ownerId, ...sourceFields, agentId, providerId: call.providerId, callIndex: index, model: call.model,
           tokensIn: 0, tokensOut: 0, tokensCached: 0, audioDurationMs: call.durationMs, costMicroUsd: cost,
-          outcome: "asr_attempted", idempotencyKey: `cost:${runId}:${index}`,
+          outcome: "asr_attempted", idempotencyKey: `${idempotencyPrefix}${index}`,
         }).onConflictDoNothing({ target: costEntries.idempotencyKey }).returning({ id: costEntries.id });
         if (!inserted[0]) { const reservation = { duplicate: true, costMicroUsd: cost, callIndex: index }; audioKeys.set(key, reservation); return reservation; }
         total += cost;

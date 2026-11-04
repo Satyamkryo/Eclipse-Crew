@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { ChatCard } from "@/components/chat/chat-card";
 import { LiveRunCard } from "@/components/chat/live-run-card";
+import { AgentAvatar, BoldPopAvatar } from "@/components/workspace/agent-avatar";
 import { AstraBadge } from "@/components/ui/astra-badge";
 import {
   chatHistoryResponseSchema,
@@ -17,10 +18,10 @@ import { formatBytes, precheckFile, uploadErrorMessage, uploadFile, UploadError 
 
 type Upload = { key: string; file: File; loaded: number; state: "queued" | "uploading" | "error"; error?: string };
 const MAX_FILES_AT_ONCE = 10;
-type ChatAgent = { id: string; name: string; status: "active" | "paused"; astraMode: boolean };
+type ChatAgent = { id: string; name: string; status: "active" | "paused"; astraMode: boolean; avatarVariant: number; ownerEmail?: string };
 type LoadState = "idle" | "loading" | "ready" | "error";
 
-export function ChatPane({ agent, csrfToken, maxUploadBytes }: { agent?: ChatAgent; csrfToken: string; maxUploadBytes?: number }) {
+export function ChatPane({ agent, csrfToken, maxUploadBytes, ownerEmail }: { agent?: ChatAgent; csrfToken: string; maxUploadBytes?: number; ownerEmail?: string }) {
   const router = useRouter();
   const timeline = useRef<HTMLDivElement>(null);
   const errorRef = useRef<HTMLParagraphElement>(null);
@@ -304,8 +305,8 @@ export function ChatPane({ agent, csrfToken, maxUploadBytes }: { agent?: ChatAge
           </div>
         </div>
       ) : (
-        <div ref={timeline} className="min-h-0 flex-1 overflow-y-auto px-6 py-6" aria-live="polite">
-          <div className="mx-auto flex max-w-[720px] flex-col gap-3">
+        <div ref={timeline} className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-6" aria-live="polite">
+          <div className="flex flex-col gap-3">
             {hasMore && (
               <Button type="button" variant="secondary" size="sm" className="self-center" onClick={loadEarlier}>
                 Load earlier messages
@@ -316,7 +317,7 @@ export function ChatPane({ agent, csrfToken, maxUploadBytes }: { agent?: ChatAge
                 ? "No conversation yet. Send a message to this agent."
                 : "No conversation yet."} inset />
             ) : messages.map((message) => (
-              <MessageRow key={message.id} message={message} agentName={agent.name}>
+              <MessageRow key={message.id} message={message} agentName={agent.name} agentId={agent.id} agentAvatarVariant={agent.avatarVariant} ownerEmail={ownerEmail}>
                 <ChatCard message={message} agentId={agent?.id} csrfToken={csrfToken} />
               </MessageRow>
             ))}
@@ -376,18 +377,32 @@ export function ChatPane({ agent, csrfToken, maxUploadBytes }: { agent?: ChatAge
 
 // Reference sheet 36 "Chat message": ordinary messages are unboxed rows — avatar, name and
 // time on one line, then the content. Action content (file, routine, approval, …) stays a card.
-function MessageRow({ message, agentName, children }: { message: ChatMessage; agentName: string; children: React.ReactNode }) {
+function MessageRow({ message, agentName, agentId, agentAvatarVariant, ownerEmail, children }: { message: ChatMessage; agentName: string; agentId?: string; agentAvatarVariant?: number; ownerEmail?: string; children: React.ReactNode }) {
   const isOwner = message.sourceTag === "user";
   const forwarded = message.card.type === "message" && message.card.fromAgent ? message.card.fromAgent : null;
   const name = isOwner ? "You" : forwarded ? `${forwarded} (agent)` : agentName;
-  const initial = isOwner ? "Y" : initials(agentName);
+  // Orbit/Atlas layout: agent on the left (avatar + unboxed row), owner on the right (bubble).
+  if (isOwner) {
+    return (
+      <div className="motion-safe:animate-in motion-safe:fade-in motion-safe:duration-200">
+        <div className="flex justify-end gap-3">
+          <div className="min-w-0 max-w-[75ch] text-right">
+            <p className="flex flex-wrap items-baseline justify-end gap-2">
+              <span className="text-sm font-semibold">{name}</span>
+              <time dateTime={message.createdAt} className="text-xs text-text-subtle">{formatTime(message.createdAt)}</time>
+            </p>
+            <div className="mt-1">{children}</div>
+          </div>
+          <span className="mt-0.5 shrink-0"><BoldPopAvatar seed={ownerEmail ?? "owner"} size={32} label="You" /></span>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="motion-safe:animate-in motion-safe:fade-in motion-safe:duration-200">
       <div className="flex gap-3">
-        <span aria-hidden="true" className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full border border-border bg-surface text-xs font-semibold">
-          {initial}
-        </span>
-        <div className="min-w-0 flex-1">
+        <span className="mt-0.5 shrink-0"><AgentAvatar seed={agentId ?? agentName} variant={agentAvatarVariant} size={32} /></span>
+        <div className="min-w-0 max-w-[75ch] flex-1">
           <p className="flex flex-wrap items-baseline gap-2">
             <span className="text-sm font-semibold">{name}</span>
             <time dateTime={message.createdAt} className="text-xs text-text-subtle">{formatTime(message.createdAt)}</time>
@@ -398,10 +413,6 @@ function MessageRow({ message, agentName, children }: { message: ChatMessage; ag
       </div>
     </div>
   );
-}
-
-function initials(name: string) {
-  return name.trim().split(/\s+/).slice(0, 2).map((part) => part[0]?.toUpperCase() ?? "").join("") || "A";
 }
 
 function UploadRow({ upload, onCancel }: { upload: Upload; onCancel: () => void }) {

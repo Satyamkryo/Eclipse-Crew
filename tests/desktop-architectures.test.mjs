@@ -224,12 +224,16 @@ test("package locks stay per CPU and every wrong target, host or ABI fails close
   const manifest = validateManifest(amd64);
   assert.equal(manifest.packages.length, 445);
   assert.throws(() => validateManifest(amd64, "riscv64"), /unsupported_target_architecture/);
-  if (TARGETS.arm64.sha256 === null) {
-    // A native arm64 resolution fills TARGETS.arm64 and ubuntu-packages.arm64.lock.json;
-    // until then both the manifest and fetch must refuse instead of reusing amd64 pins.
-    assert.throws(() => validateManifest(amd64, "arm64"), /package_lock_pending/);
-    assert.throws(() => validateManifest(Buffer.from("{}"), "arm64"), /package_lock_pending/);
-  }
+  const arm64 = await readFile("docker/desktop/ubuntu-packages.arm64.lock.json");
+  const armManifest = validateManifest(arm64, "arm64");
+  assert.equal(armManifest.packages.length, 442);
+  assert.equal(armManifest.packages.reduce((total, entry) => total + entry.bytes, 0), 242101668);
+  assert.throws(() => validateManifest(amd64, "arm64"), /package_manifest_hash_mismatch/);
+  assert.throws(() => validateManifest(arm64, "amd64"), /package_manifest_hash_mismatch/);
+  assert.throws(() => validateManifest(Buffer.from("{}"), "arm64"), /package_manifest_hash_mismatch/);
+  const tampered = structuredClone(armManifest);
+  tampered.packages[0].sha256 = "0".repeat(64);
+  assert.throws(() => validateManifest(manifestBytes(tampered), "arm64"), /package_manifest_hash_mismatch/);
   validateEntry(ARM_ENTRY, "arm64");
   assert.throws(() => validateEntry(ARM_ENTRY, "amd64"), /invalid_package_entry/);
   assert.throws(() => validateEntry({ ...ARM_ENTRY, architecture: "amd64" }, "arm64"), /invalid_package_entry/);

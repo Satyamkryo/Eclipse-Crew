@@ -17,11 +17,31 @@ import {
 import { scheduledRoutineJobs } from "./execution-plan";
 import { enqueueRoutineJob, getRoutineQueue, ROUTINE_QUEUE, routineJobSchema, type PgBossTransaction, type RoutineJob } from "./queue";
 import { runRoutineExecution } from "./run";
-import { CREW_REPORT_QUEUE, crewReportJobSchema, enqueueCrewReport, ensureCrewReportQueue } from "../crew/queue";
-import { deliverCrewReport, tickCrewReports } from "../crew/report";
 
 type Database = Awaited<ReturnType<typeof getDatabase>>;
 const TICK_MS = 60_000;
+const RETENTION_SWEEP_MS = 20 * 60 * 60 * 1000;
+let lastRetentionSweep = 0;
+let retentionRunning = false;
+
+// Evidence retention: heavy bytes older than 32 days thin out (receipts stay forever). Throttled to about once a day;
+// if the meter reads full, a 7-day pass clears room first. It walks the whole blob store, so it runs beside the minute
+// tick (one at a time) instead of inside it, and a long walk never delays routines.
+function startRetentionSweep(database: Database): void {
+  const now = Date.now();
+  if (retentionRunning || now - lastRetentionSweep < RETENTION_SWEEP_MS) return;
+  lastRetentionSweep = now;
+  retentionRunning = true;
+  void (async () => {
+    const { sweepOldEvidence, EVIDENCE_RETENTION_DAYS } = await import("../retention/sweep");
+    const { measureArtifacts } = await import("../retention/usage");
+    const usage = await measureArtifacts().catch(() => null);
+    if (usage && usage.fraction >= 1) await sweepOldEvidence(database, new Date(now), 7);
+    await sweepOldEvidence(database, new Date(now), EVIDENCE_RETENTION_DAYS);
+  })()
+    .catch(() => console.error("Retention sweep failed."))
+    .finally(() => { retentionRunning = false; });
+}
 const MAX_DUE_ROUTINES = 25;
 const MAX_JOBS_PER_TICK = 200;
 const MAX_JOBS_PER_ROUTINE = 100;
@@ -178,17 +198,6 @@ export async function startRoutineScheduler(): Promise<SchedulerHandle> {
     await startMemoryWorkers(boss, database);
     await startGithubDeviceWorkers(boss, database);
 
-    // TASK-058. The morning report is deterministic and local: the worker rechecks settings, writes one card and never
-    // calls a model or the network. The delivery row and the message commit in one transaction.
-    await ensureCrewReportQueue(boss);
-    await boss.work(CREW_REPORT_QUEUE, { batchSize: 1, localConcurrency: 1, pollingIntervalSeconds: 2 }, async ([job]) => {
-      const parsed = crewReportJobSchema.safeParse(job.data);
-      if (!parsed.success) return;
-      await deliverCrewReport(database, parsed.data.ownerId, {
-        scheduledAt: new Date(parsed.data.scheduledAt), timezone: parsed.data.timezone,
-      });
-    });
-
     let currentTick: Promise<unknown> | undefined;
     const runTick = () => {
       if (currentTick) return currentTick;
@@ -196,8 +205,6 @@ export async function startRoutineScheduler(): Promise<SchedulerHandle> {
         .catch(() => console.error("Routine scheduler tick failed."))
         .then(() => tickMemoryTidy(database))
         .catch(() => console.error("Memory tidy tick failed."))
-        .then(() => tickCrewReports(database, (ownerId, scheduledAt, timezone) => enqueueCrewReport(database, { ownerId, scheduledAt, timezone })))
-        .catch(() => console.error("Crew report tick failed."))
         .then(async () => {
           const { expireStaleFlows, refreshDueConnections } = await import("../connections/github-device");
           await expireStaleFlows(database);
@@ -211,6 +218,7 @@ export async function startRoutineScheduler(): Promise<SchedulerHandle> {
           await sweepStalledRuns(database, loadReceiptSigner());
         })
         .catch(() => console.error("Run sweeper tick failed."))
+        .then(() => { startRetentionSweep(database); })
         .finally(() => { currentTick = undefined; });
       return currentTick;
     };

@@ -2,28 +2,31 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Bot, FileText, ListChecks, Plug, Search, Settings, Settings2, UserRound, X } from "lucide-react";
+import { Activity, Bot, CalendarClock, FileText, Plug, Search, Settings2, ShieldCheck, UserRound, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { AgentSummary } from "@/components/workspace/agent-pane";
 
 // App navigation per images 02/39, plus the post-reference Crew page kept in the same row
-// pattern. Only existing destinations appear here; the reference's Skills and Schedules
-// entries have no v1 backend (docs/UI_REFERENCE_MAP.md "Named gaps"), so no dead links are rendered.
+// pattern. Only existing destinations appear here; the reference's Skills entry has
+// no v1 backend (docs/UI_REFERENCE_MAP.md "Named gaps"), so no dead link is rendered.
+// Schedules hosts the morning report + upcoming routines; Security is the audit center.
 export const APP_NAV_ITEMS = [
   { href: "/", label: "Agents", Icon: UserRound, match: (path: string) => path === "/" },
   { href: "/crew", label: "Crew", Icon: Bot, match: (path: string) => path.startsWith("/crew") },
-  { href: "/jobs", label: "Jobs", Icon: ListChecks, match: (path: string) => path.startsWith("/jobs") },
+  { href: "/mission-control", label: "Mission Control", Icon: Activity, match: (path: string) => path.startsWith("/mission-control") || path.startsWith("/jobs") },
   { href: "/?panel=history", label: "Evidence", Icon: FileText, match: () => false },
   { href: "/settings/models", label: "Models", Icon: Settings2, match: (path: string) => path.startsWith("/settings/models") },
-  { href: "/settings/connections", label: "MCP Servers", Icon: Plug, match: (path: string) => path.startsWith("/settings/connections") },
-  { href: "/settings/account", label: "Settings", Icon: Settings, match: (path: string) => path.startsWith("/settings/account") },
+  { href: "/settings/connections", label: "Connections", Icon: Plug, match: (path: string) => path.startsWith("/settings/connections") },
+  { href: "/schedules", label: "Schedules", Icon: CalendarClock, match: (path: string) => path.startsWith("/schedules") },
+  { href: "/security", label: "Security", Icon: ShieldCheck, match: (path: string) => path.startsWith("/security") },
 ] as const;
 
-export function AppNavList({ onNavigate }: { onNavigate?: () => void }) {
+export function AppNavList({ onNavigate, exclude }: { onNavigate?: () => void; exclude?: readonly string[] }) {
   const pathname = usePathname();
+  const items = exclude?.length ? APP_NAV_ITEMS.filter(({ label }) => !exclude.includes(label)) : APP_NAV_ITEMS;
   return (
     <nav aria-label="App" className="flex flex-col gap-0.5 px-2">
-      {APP_NAV_ITEMS.map(({ href, label, Icon, match }) => {
+      {items.map(({ href, label, Icon, match }) => {
         const active = pathname === "/" ? match("/") : pathname === href || match(pathname);
         return (
           <Link key={label} href={href} onClick={onNavigate} aria-current={active ? "page" : undefined}
@@ -98,8 +101,8 @@ export function SearchPalette({ agents, open, onClose }: SearchPaletteProps) {
             <p className="px-2 py-4 text-center text-sm text-muted-foreground">No agents match “{query}”.</p>
           )}
           <div className="mt-2 flex flex-wrap gap-2 border-t border-border pt-3">
-            <Link href="/jobs" onClick={onClose} className="rounded-md border border-border-strong bg-surface px-3 py-1.5 text-xs transition-colors duration-150 hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-ring">
-              Search runs on Jobs
+            <Link href="/mission-control" onClick={onClose} className="rounded-md border border-border-strong bg-surface px-3 py-1.5 text-xs transition-colors duration-150 hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-ring">
+              Search runs
             </Link>
             <Link href="/security" onClick={onClose} className="rounded-md border border-border-strong bg-surface px-3 py-1.5 text-xs transition-colors duration-150 hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-ring">
               Search security events

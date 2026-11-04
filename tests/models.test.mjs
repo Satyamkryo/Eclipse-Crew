@@ -132,6 +132,15 @@ test("empty model settings expose a safe required Main AI and SAM off", async ()
       keyHint: null,
       canUseMainKey: false,
     },
+    // TASK-086 background (memory review/tidy) model: off until configured, and never exposes a key.
+    background: {
+      configured: false,
+      kind: "meta",
+      baseUrl: null,
+      model: "muse-spark-1.3",
+      hasKey: false,
+      keyHint: null,
+    },
   });
 });
 

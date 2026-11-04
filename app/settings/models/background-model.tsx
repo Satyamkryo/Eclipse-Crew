@@ -4,6 +4,7 @@ import { useState } from "react";
 import { LoaderCircle } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Select } from "@/components/ui/select";
 
 export type BackgroundSettings = {
   configured: boolean;
@@ -66,10 +67,11 @@ export function BackgroundModelCard({ initial, csrfToken }: { initial: Backgroun
           <>
             <div className="flex flex-col gap-2">
               <label htmlFor="background-provider" className="text-sm font-medium">Provider</label>
-              <select id="background-provider" value={kind} onChange={(event) => setKind(event.target.value as BackgroundSettings["kind"])} className={inputClass}>
+              <Select label="Provider" id="background-provider" value={kind} onChange={(value) => setKind(value as BackgroundSettings["kind"])}
+                className="w-full [&>span]:w-full" selectClassName={inputClass + " w-full"}>
                 <option value="meta">Meta Model API</option>
                 <option value="openai-compatible">OpenAI-compatible</option>
-              </select>
+              </Select>
             </div>
             {kind === "openai-compatible" && (
               <div className="flex flex-col gap-2">

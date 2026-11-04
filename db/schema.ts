@@ -52,6 +52,8 @@ export const agents = pgTable(
     attentionReason: text("attention_reason"),
     // TASK-051. Removes only the approval prompt. See ADR-019; every other safety layer is unchanged.
     astraMode: boolean("astra_mode").notNull().default(false),
+    // Avatar picker. Index into the 12 local voxel avatars; the server assigns a random one at creation.
+    avatarVariant: integer("avatar_variant").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -61,6 +63,7 @@ export const agents = pgTable(
     check("agents_daily_budget_check", sql`${table.dailyBudgetCents} between 1 and 100000000`),
     check("agents_monthly_budget_check", sql`${table.monthlyBudgetCents} between 1 and 100000000`),
     check("agents_attention_reason_check", sql`${table.attentionReason} is null or ${table.attentionReason} in ('budget_warning', 'budget_paused', 'security_stop', 'approval_pending')`),
+    check("agents_avatar_variant_check", sql`${table.avatarVariant} between 0 and 11`),
   ],
 );
 
@@ -265,6 +268,53 @@ export const crewReportSettings = pgTable(
   },
   (table) => [
     check("crew_report_settings_time_check", sql`${table.localTime} ~ '^([01][0-9]|2[0-3]):[0-5][0-9]$'`),
+  ],
+);
+
+// Custom crews: an owner-named group of up to 6 agents with handoff scoped
+// inside the group. The starter crew keeps its own tables; custom crews live here.
+export const crews = pgTable(
+  "crews",
+  {
+    id: uuid("id").primaryKey(),
+    ownerId: uuid("owner_id").notNull(),
+    name: text("name").notNull(),
+    description: text("description").notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("crews_owner_id_idx").on(table.ownerId),
+    check("crews_name_check", sql`char_length(${table.name}) between 1 and 80`),
+    check("crews_description_check", sql`char_length(${table.description}) between 0 and 500`),
+  ],
+);
+
+export const crewMembers = pgTable(
+  "crew_members",
+  {
+    id: uuid("id").primaryKey(),
+    ownerId: uuid("owner_id").notNull(),
+    crewId: uuid("crew_id").notNull().references(() => crews.id, { onDelete: "cascade" }),
+    // Preallocated app identity. No FK: a partially provisioned agent survives a retry and is audited once.
+    agentId: uuid("agent_id").notNull(),
+    // The member's agent name, stored here so a retry matches the exact draft.
+    agentName: text("agent_name").notNull(),
+    // The member's display role, shown under its name everywhere.
+    role: text("role").notNull(),
+    state: text("state").notNull().default("pending"),
+    errorCode: text("error_code"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("crew_members_owner_id_idx").on(table.ownerId),
+    index("crew_members_crew_id_idx").on(table.crewId),
+    uniqueIndex("crew_members_crew_agent_idx").on(table.crewId, table.agentId),
+    check("crew_members_name_check", sql`char_length(${table.agentName}) between 1 and 80`),
+    check("crew_members_role_check", sql`char_length(${table.role}) between 1 and 80`),
+    check("crew_members_state_check", sql`${table.state} in ('pending', 'creating', 'ready', 'failed')`),
+    check("crew_members_error_check", sql`${table.errorCode} is null or ${table.errorCode} ~ '^[a-z_]{1,64}$'`),
   ],
 );
 
@@ -505,6 +555,7 @@ export const costEntries = pgTable(
     runId: uuid("run_id").references(() => runs.id),
     captureId: uuid("capture_id").references(() => teachRecordings.id),
     audioDurationMs: integer("audio_duration_ms").notNull().default(0),
+    backgroundJobId: uuid("background_job_id"),
     agentId: uuid("agent_id").notNull(),
     providerId: uuid("provider_id").notNull(),
     callIndex: integer("call_index").notNull(),
@@ -522,14 +573,15 @@ export const costEntries = pgTable(
     index("cost_entries_run_id_idx").on(table.runId),
     uniqueIndex("cost_entries_run_call_idx").on(table.runId, table.callIndex),
     uniqueIndex("cost_entries_capture_call_idx").on(table.captureId, table.callIndex),
+    uniqueIndex("cost_entries_job_call_idx").on(table.backgroundJobId, table.callIndex),
     uniqueIndex("cost_entries_idempotency_key_idx").on(table.idempotencyKey),
     check("cost_entries_call_index_check", sql`${table.callIndex} > 0`),
     check("cost_entries_tokens_check", sql`${table.tokensIn} >= 0 and ${table.tokensOut} >= 0 and ${table.tokensCached} >= 0 and ${table.tokensCached} <= ${table.tokensIn}`),
     check("cost_entries_cost_check", sql`${table.costMicroUsd} >= 0`),
     check("cost_entries_outcome_check", sql`${table.outcome} ~ '^[a-z_]{1,64}$'`),
-    check("cost_entries_source_check", sql`(${table.runId} is not null)::integer + (${table.captureId} is not null)::integer = 1`),
+    check("cost_entries_source_check", sql`(${table.runId} is not null)::integer + (${table.captureId} is not null)::integer + (${table.backgroundJobId} is not null)::integer = 1`),
     check("cost_entries_audio_duration_check", sql`${table.audioDurationMs} between 0 and 120000`),
-    check("cost_entries_idempotency_check", sql`(${table.runId} is not null and ${table.idempotencyKey} = 'cost:' || ${table.runId}::text || ':' || ${table.callIndex}::text) or (${table.captureId} is not null and (${table.idempotencyKey} = 'teach:' || ${table.captureId}::text || ':asr:' || (${table.callIndex} - 1)::text or ${table.idempotencyKey} = 'teach:' || ${table.captureId}::text || ':skill:' || ${table.callIndex}::text))`),
+    check("cost_entries_idempotency_check", sql`(${table.runId} is not null and ${table.idempotencyKey} = 'cost:' || ${table.runId}::text || ':' || ${table.callIndex}::text) or (${table.captureId} is not null and (${table.idempotencyKey} = 'teach:' || ${table.captureId}::text || ':asr:' || (${table.callIndex} - 1)::text or ${table.idempotencyKey} = 'teach:' || ${table.captureId}::text || ':skill:' || ${table.callIndex}::text)) or (${table.backgroundJobId} is not null and ${table.idempotencyKey} = 'cost:job:' || ${table.backgroundJobId}::text || ':' || ${table.callIndex}::text)`),
   ],
 );
 

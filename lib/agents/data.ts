@@ -1,4 +1,5 @@
 import "server-only";
+import { randomInt } from "node:crypto";
 import { and, asc, eq, sql } from "drizzle-orm";
 import { getDatabase } from "../../db/client";
 import { agentPolicies, agents, teachRecordings } from "../../db/schema";
@@ -18,6 +19,7 @@ const agentFields = {
   soulMd: agents.soulMd,
   status: agents.status,
   astraMode: agents.astraMode,
+  avatarVariant: agents.avatarVariant,
   dailyBudgetCents: agents.dailyBudgetCents,
   monthlyBudgetCents: agents.monthlyBudgetCents,
   createdAt: agents.createdAt,
@@ -37,6 +39,7 @@ export async function listAgentRecords(database: Database, ownerId: string) {
     role: agents.role,
     status: agents.status,
     astraMode: agents.astraMode,
+    avatarVariant: agents.avatarVariant,
     attentionReason: sql<string | null>`case when ${agents.attentionReason} is not null then ${agents.attentionReason} when exists (select 1 from ${teachRecordings} where ${teachRecordings.ownerId} = ${agents.ownerId} and ${teachRecordings.agentId} = ${agents.id} and ${teachRecordings.state} = 'paused') then 'teach_paused' else null end`,
   }).from(agents).where(eq(agents.ownerId, ownerId)).orderBy(asc(agents.name));
 }
@@ -83,6 +86,8 @@ export async function createAgentRecordIfAbsent(
       role: input.role,
       soulMd: input.soulMd ?? defaultSoul(input.name, input.role),
       status: "paused",
+      // A chosen avatar is kept; otherwise the server assigns a random voxel avatar.
+      avatarVariant: input.avatarVariant ?? randomInt(12),
       dailyBudgetCents: input.dailyBudgetCents,
       monthlyBudgetCents: input.monthlyBudgetCents,
     }).onConflictDoNothing({ target: agents.id }).returning({ agentId: agents.id });
@@ -127,6 +132,8 @@ export async function updateAgentRecord(
       name: input.name,
       role: input.role,
       soulMd: input.soulMd,
+      // An omitted avatar keeps the stored one.
+      ...(input.avatarVariant !== undefined ? { avatarVariant: input.avatarVariant } : {}),
       dailyBudgetCents: input.dailyBudgetCents,
       monthlyBudgetCents: input.monthlyBudgetCents,
       updatedAt: new Date(),

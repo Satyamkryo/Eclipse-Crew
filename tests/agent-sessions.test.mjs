@@ -81,7 +81,8 @@ test("two real graphical agent sessions isolate displays/profiles and survive li
   const ready = () => wait(() => checked(["inspect", "--format", "{{.State.Health.Status}}", container]) === "healthy");
   const sessionEnv = (id, display) => `import fs from 'node:fs';import assert from 'node:assert/strict';import{spawnSync}from'node:child_process';
     const runtime=fs.readdirSync('/tmp').filter(n=>n.startsWith('ec-${display + 19900}-')).map(n=>'/tmp/'+n).find(n=>{try{return fs.lstatSync(n).uid===process.getuid()&&spawnSync('xdpyinfo',[],{env:{PATH:process.env.PATH,DISPLAY:':${display}',XAUTHORITY:n+'/Xauthority'},stdio:'ignore',timeout:1000}).status===0;}catch{return false;}});assert.ok(runtime);
-    const env={PATH:process.env.PATH,HOME:process.env.HOME,DISPLAY:':${display}',XAUTHORITY:runtime+'/Xauthority',XDG_RUNTIME_DIR:runtime,XDG_CONFIG_HOME:process.env.HOME+'/.config',XDG_DATA_HOME:process.env.HOME+'/.local/share',XDG_CACHE_HOME:process.env.HOME+'/.cache',DBUS_SESSION_BUS_ADDRESS:'unix:path='+runtime+'/bus',DBUS_SYSTEM_BUS_ADDRESS:'disabled:',TERM:'xterm-256color'};
+    const xdg=runtime+'/runtime';
+    const env={PATH:process.env.PATH,HOME:process.env.HOME,DISPLAY:':${display}',XAUTHORITY:runtime+'/Xauthority',XDG_RUNTIME_DIR:xdg,XDG_CONFIG_HOME:process.env.HOME+'/.config',XDG_DATA_HOME:process.env.HOME+'/.local/share',XDG_CACHE_HOME:process.env.HOME+'/.cache',DBUS_SESSION_BUS_ADDRESS:'unix:path='+xdg+'/bus',DBUS_SYSTEM_BUS_ADDRESS:'disabled:',TERM:'xterm-256color'};
     const cmd=(a)=>{const r=spawnSync('xdotool',a,{env,encoding:'utf8',timeout:2000});assert.equal(r.status,0);return r.stdout.trim();};`;
   const navigate = (id, display, url) => agent(id, sessionEnv(id, display) + `const focused=spawnSync('/opt/eclipse/desktop/desktop-config/browser-focus.sh',[],{env,encoding:'utf8',timeout:3000});assert.equal(focused.status,0,'browser focus before navigation '+focused.stderr);cmd(['key','--clearmodifiers','ctrl+l']);cmd(['type','--clearmodifiers','--delay','1','--',${JSON.stringify(url)}]);cmd(['key','Return']);`);
   const title = (id, display) => agent(id, sessionEnv(id, display) + "console.log(cmd(['getactivewindow','getwindowname']));");
@@ -137,7 +138,7 @@ test("two real graphical agent sessions isolate displays/profiles and survive li
       const find=(program)=>{const base=program.split('/').pop();for(const p of fs.readdirSync('/proc').filter(n=>/^[0-9]+$/.test(n))){try{if(fs.statSync('/proc/'+p).uid!==process.getuid())continue;const c=fs.readFileSync('/proc/'+p+'/cmdline','utf8').split(String.fromCharCode(0)).filter(Boolean);if(c[0]===program||c[0]===base)return {pid:Number(p),argv:c};}catch{}}return null;};
       // Chromium re-execs with the whole command line packed into argv[0]; renderer/zygote children carry --type=.
       const chrome=()=>{let n=0;for(const p of fs.readdirSync('/proc').filter(n=>/^[0-9]+$/.test(n))){try{if(fs.statSync('/proc/'+p).uid!==process.getuid())continue;const c=fs.readFileSync('/proc/'+p+'/cmdline','utf8').split(String.fromCharCode(0)).filter(Boolean);const command=c.join(' ');if((c[0]==='/opt/chrome-for-testing/chrome-linux64/chrome'||c[0].startsWith('/opt/chrome-for-testing/chrome-linux64/chrome '))&&!command.includes('--type='))n++;}catch{}}return n;};
-      const pid=Number(fs.readFileSync(runtime+'/browser.pid','utf8'));const st=fs.statSync(runtime+'/browser.pid');assert.equal(st.mode&0o777,0o600);assert.equal(st.uid,process.getuid());
+      const pid=Number(fs.readFileSync(xdg+'/browser.pid','utf8'));const st=fs.statSync(xdg+'/browser.pid');assert.equal(st.mode&0o777,0o600);assert.equal(st.uid,process.getuid());
       const win=(pattern)=>{const r=spawnSync('xdotool',['search','--classname',pattern],{env,encoding:'utf8',timeout:2000});return r.status===0&&r.stdout.trim().length>0;};
       assert.ok(win('[Tt]int2'),'dock');assert.ok(win('[Pp]cmanfm'),'desktop');
       const before=chrome();assert.equal(before,1);
@@ -254,7 +255,7 @@ test("two real graphical agent sessions isolate displays/profiles and survive li
     assert.ok(afterDisplayCrash.includes("sess=A"), `a crashed display must not erase the saved session cookies (${beforeRestart}; after restart ${snapshotState()}): ${afterDisplayCrash}`);
     summary.checks.push("component_failure_cleanup_and_independent_peer_lifecycle");
     summary.phase = "browser_close";
-    const browserPid = () => agent(A, `import fs from 'node:fs';const d=fs.readdirSync('/tmp').filter(n=>n.startsWith('ec-'+process.getuid()+'-')).map(n=>'/tmp/'+n).find(n=>{try{return fs.existsSync(n+'/browser.pid')}catch{return false}});console.log(d?fs.readFileSync(d+'/browser.pid','utf8').trim():'');`).trim();
+    const browserPid = () => agent(A, `import fs from 'node:fs';const d=fs.readdirSync('/tmp').filter(n=>n.startsWith('ec-'+process.getuid()+'-')).map(n=>'/tmp/'+n).find(n=>{try{return fs.existsSync(n+'/runtime/browser.pid')}catch{return false}});console.log(d?fs.readFileSync(d+'/runtime/browser.pid','utf8').trim():'');`).trim();
     const pid = browserPid(); assert.match(pid, /^\d+$/, "the session exposes its verified browser pid");
     agent(A, `import fs from 'node:fs';process.kill(${pid}, 'SIGTERM');`);
     await wait(() => JSON.parse(admin("session-status", A)).browser === "stopped");

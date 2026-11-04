@@ -23,6 +23,7 @@ export type AgentSettingsData = {
   soulMd: string;
   status: "active" | "paused";
   astraMode: boolean;
+  avatarVariant: number;
   dailyBudgetCents: number;
   monthlyBudgetCents: number;
   tools: string[];
@@ -60,6 +61,9 @@ export function AgentSettings({ agent, desktopStatus, csrfToken }: { agent: Agen
           : action === "pause" ? "Couldn't pause this agent. Try again." : "Couldn't resume this agent. Try again.");
         return;
       }
+      window.dispatchEvent(new CustomEvent("eclipse-notify", {
+        detail: { title: action === "pause" ? `${agent.name} paused` : `${agent.name} resumed`, text: action === "pause" ? "Desktop stopped, files kept. Resume anytime." : "Agent is active again.", agentId: agent.id, actionLabel: "Open chat", actionHref: `/?agent=${agent.id}` },
+      }));
       router.refresh();
     } catch {
       setError("Unable to connect. Try again.");
@@ -94,7 +98,7 @@ export function AgentSettings({ agent, desktopStatus, csrfToken }: { agent: Agen
             onSaved={() => router.refresh()} />
         </div>
       </section>
-      <DesktopLifecycle agentId={agent.id} csrfToken={csrfToken} initial={desktopStatus} />
+      <DesktopLifecycle key={agent.id} agentId={agent.id} csrfToken={csrfToken} initial={desktopStatus} />
       <AstraSettings agentId={agent.id} agentName={agent.name} astraMode={agent.astraMode} csrfToken={csrfToken} />
       <AgentSetup agentId={agent.id} actions={agent.actions} tools={agent.tools} domains={agent.domains} />
       <CrewHandoffSetting csrfToken={csrfToken} />
@@ -107,7 +111,7 @@ export function AgentSettings({ agent, desktopStatus, csrfToken }: { agent: Agen
       <div className="flex flex-wrap gap-4">
         <Link href="/settings/models" className="text-sm underline underline-offset-4">Model settings</Link>
         <Link href="/settings/connections" className="text-sm underline underline-offset-4">Connections</Link>
-        <Link href="/settings/account" className="text-sm underline underline-offset-4">Account settings</Link>
+        <Link href="/profile" className="text-sm underline underline-offset-4">Profile</Link>
       </div>
       {confirmingDelete && <DeleteAgentDialog agent={agent} csrfToken={csrfToken} onClose={() => setConfirmingDelete(false)} />}
     </div>

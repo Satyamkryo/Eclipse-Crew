@@ -113,7 +113,13 @@ test.before(async () => {
     await adminPool.query(readFileSync(new URL(`../drizzle/${file}`, import.meta.url), "utf8").replaceAll("--> statement-breakpoint", ""));
   }
   await adminPool.query(`ALTER TABLE runs ADD COLUMN heartbeat_at timestamptz, ADD COLUMN cancel_requested_at timestamptz;`);
-  await adminPool.query(`CREATE ROLE app_role LOGIN PASSWORD '${password}'; GRANT SELECT, INSERT, UPDATE ON runs TO app_role; GRANT SELECT, INSERT ON steps TO app_role; GRANT SELECT, INSERT ON step_evidence TO app_role; GRANT SELECT, INSERT ON checkpoints TO app_role;`);
+  // TASK-076: history joins run_meta and hides subagent helper runs (parent_run_id). Same columns as db/schema.ts
+  // runMeta; the routine/replay foreign keys are left out because those tables are not part of this fixture.
+  await adminPool.query(`CREATE TABLE run_meta (run_id uuid PRIMARY KEY REFERENCES runs(id), owner_id uuid NOT NULL,
+    agent_id uuid NOT NULL, trigger text NOT NULL, routine_id uuid, execution_id uuid, replay_script_id uuid,
+    retry_of uuid REFERENCES runs(id), handoff_of uuid REFERENCES runs(id), parent_run_id uuid REFERENCES runs(id),
+    label text, created_at timestamptz NOT NULL DEFAULT now());`);
+  await adminPool.query(`CREATE ROLE app_role LOGIN PASSWORD '${password}'; GRANT SELECT, INSERT, UPDATE ON runs TO app_role; GRANT SELECT, INSERT ON steps TO app_role; GRANT SELECT, INSERT ON step_evidence TO app_role; GRANT SELECT, INSERT ON checkpoints TO app_role; GRANT SELECT, INSERT ON run_meta TO app_role;`);
   appPool = new pg.Pool({ host: "127.0.0.1", port, user: "app_role", password, database: "postgres" });
   app = drizzle({ client: appPool });
 });

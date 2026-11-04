@@ -10,7 +10,7 @@ try {
     await requireAdmin(); await checkTools({ supervisor: true });
     console.log(JSON.stringify({ outcome: "healthy" }));
   } else if (["session-start", "session-status", "session-stop", "session-sandbox", "session-desktop-start", "session-desktop-stop",
-    "session-browser-start", "session-browser-stop", "session-fixture", "session-fixture-cookie"].includes(command) && argv.length === 0) {
+    "session-browser-start", "session-browser-stop", "session-fixture", "session-fixture-cookie", "session-fixture-page"].includes(command) && argv.length === 0) {
     console.log(JSON.stringify(await requestSession(command, ownerId, agentId)));
   } else if (["create", "inspect", "exec"].includes(command) && (command === "exec" ? argv.length > 0 : argv.length === 0)) {
     if (command === "exec") process.exitCode = await executeAgent(ownerId, agentId, argv);

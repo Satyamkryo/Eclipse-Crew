@@ -1,7 +1,6 @@
 import { getDatabase } from "@/db/client";
-import { readBoundedJson, requireNoQuery, requireOwnerRequest, requestErrorResponse } from "@/lib/auth/request";
-import { crewReportActionSchema } from "@/lib/crew/schema";
-import { generateReportNow, loadReportSettings, saveReportSettings } from "@/lib/crew/report";
+import { requireNoQuery, requireOwnerRequest, requestErrorResponse, readBoundedJson } from "@/lib/auth/request";
+import { createCrew, crewCreateSchema, listCrews } from "@/lib/crew/custom";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,8 +11,8 @@ export async function GET(request: Request) {
   try {
     const session = await requireOwnerRequest(request);
     requireNoQuery(request);
-    const settings = await loadReportSettings(await getDatabase(), session.ownerId);
-    return Response.json({ settings }, { headers: NO_STORE });
+    const crews = await listCrews(await getDatabase(), session.ownerId);
+    return Response.json({ crews }, { headers: NO_STORE });
   } catch (error) {
     const response = requestErrorResponse(error);
     for (const [key, value] of Object.entries(NO_STORE)) response.headers.set(key, value);
@@ -21,20 +20,18 @@ export async function GET(request: Request) {
   }
 }
 
+// Creates a named crew of up to 6 agents. Only the crew name and each
+// member's name + role are required; persona, budgets and the permission
+// set fill from safe defaults server-side. Repeating is never implicit:
+// each POST creates one new crew.
 export async function POST(request: Request) {
   try {
     const session = await requireOwnerRequest(request, { mutation: true });
     requireNoQuery(request);
-    const parsed = crewReportActionSchema.safeParse(await readBoundedJson(request, 4 * 1024));
+    const parsed = crewCreateSchema.safeParse(await readBoundedJson(request, 8192));
     if (!parsed.success) return Response.json({ error: "invalid_input" }, { status: 400, headers: NO_STORE });
-    const database = await getDatabase();
-    if (parsed.data.action === "save") {
-      const settings = await saveReportSettings(database, session.ownerId, parsed.data);
-      return Response.json({ settings, result: null }, { headers: NO_STORE });
-    }
-    const result = await generateReportNow(database, session.ownerId);
-    const settings = await loadReportSettings(database, session.ownerId);
-    return Response.json({ settings, result }, { headers: NO_STORE });
+    const crew = await createCrew(await getDatabase(), session.ownerId, parsed.data);
+    return Response.json({ crew }, { status: 201, headers: NO_STORE });
   } catch (error) {
     const response = requestErrorResponse(error);
     for (const [key, value] of Object.entries(NO_STORE)) response.headers.set(key, value);

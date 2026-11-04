@@ -50,6 +50,7 @@ Rules for AI agents:
 | 032 | Origin-gated memory auto-save | Accepted |
 | 033 | GitHub App device sign-in for connections | Accepted |
 | 034 | Handoff between agents | Accepted |
+| 035 | Owner-created crews with crew-scoped handoff | Accepted |
 
 ---
 
@@ -241,3 +242,9 @@ Status: Accepted · 2026-11-03 · Owner approved with TASK-085
 Decision: An agent with the `handoff` permission may pass the owner's request to one teammate by exact name with a one-line note of at most 1,000 characters. New agents start with handoff on; existing agents keep their permissions until the owner uses one explicit "Allow handoff for all agents" action. The receiver's task is a copy of the stored owner message (`role = user`), never model text; the sender's note is tagged `agent` as data. The receiver run uses only its own permissions, allowlist, connections and budget. Guards: at most two hops, no return to an agent that already had the request, no self-handoff, and paused, busy or unavailable receivers are refused with `teammate_unavailable`. The sender's run seals `handed_off`; the receiver's run has `run_meta.trigger = 'handoff'` and `run_meta.handoff_of`, and its signed header carries the optional `handoff_of` field only when present. Both events are audited. A leading `@Name ` in a chat message routes the owner's words to that teammate's chat and starts its run there; an unknown name sends nothing; a later `@` is ordinary text. Continue opens the existing rewind dialog at the last complete checkpoint on an interrupted run, with the external-effects notice.
 Reason: Crew delegation in v1 without letting one agent borrow another's access, and without pretending a restarted run can resume in place.
 Rejected: group chats with shared transcripts, borrowing the sender's permissions or connections, same-run resume, one-click Continue that skips the rewind dialog.
+
+## ADR-035: Owner-created crews with crew-scoped handoff
+Status: Accepted · 2026-11-04 · Owner approved (custom crews request)
+Decision: The owner may create named crews of up to 6 agents with only names and roles required; persona, budgets, tools and actions fill from safe defaults (role-based persona, $5/$50 budgets, read/deliver files plus the default-deny screen/memory actions including `handoff`, never tool_call/shell/subagents). An agent-initiated handoff is allowed only when sender and receiver share a crew (`different_crew` refusal otherwise, and the model only sees crewmates); a sender in no crew keeps the legacy open behaviour so individual and starter-crew agents are untouched. Owner-typed `@Name` routing stays open to every teammate. Extends ADR-034, which keeps every other guard.
+Reason: Owner wants one-click topic crews (e.g. Milly + Lilly) that delegate among themselves without leaking requests to unrelated agents, without a heavyweight create form.
+Rejected: global handoff for all agents, crew-wide shared permissions or transcripts, auto-granting tool_call/shell to crew members.

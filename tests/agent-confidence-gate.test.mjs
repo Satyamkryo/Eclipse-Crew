@@ -61,7 +61,10 @@ async function run({ intent = click, observed = { status: "pass", name: "Send", 
     click: async () => input.push("click"), type: async () => input.push("type"), key: async () => input.push("key"), scroll: async () => input.push("scroll"), ...overrides };
   const output = await runTask({ agent: { id: "gate-test", name: "A", role: "R", soulMd: "", actions: ["click", "type", "key", "scroll", "wait"] }, task: "Send the report", model: "mock", timezone: "UTC",
     desktop, provider: { generate: async () => { calls++; return result(calls === 1 ? intent : { action: "finish", summary: "Done" }); } },
-    verification: { samState: "off", visual: visual({ observe: async () => observed }) }, sleep: async () => {}, postCard: async (card) => cards.push(card) });
+    verification: { samState: "off", visual: visual({ observe: async () => observed }) }, sleep: async () => {}, postCard: async (card) => cards.push(card),
+    // TASK-050 runs the owner-approval step before this gate for Send/Delete/Purchase/Payment. Approving here isolates
+    // the confidence gate; without an approvals port the loop correctly stops first (covered in agent-step-loop).
+    approvals: { request: async () => ({ decision: "allow", waitedMs: 0, reason: "allowed_once" }) } });
   return { output, input, cards, calls };
 }
 
@@ -98,7 +101,8 @@ test("production run wiring caps verification calls and adds their usage to the 
     result({ action: "finish", summary: "Done" })];
   const output = await runTask({ agent: { id: "production-wiring", name: "A", role: "R", soulMd: "", actions: ["click"] }, task: "Send report", model: "muse-spark-1.3-contributor", timezone: "UTC",
     provider: { generate: async (request) => { requests.push(request); return replies.shift(); } },
-    desktop: { screenshot: async () => shot, snapshot: async () => snapshot, click: async () => inputs.push("click") }, postCard: async card => cards.push(card) });
+    desktop: { screenshot: async () => shot, snapshot: async () => snapshot, click: async () => inputs.push("click") }, postCard: async card => cards.push(card),
+    approvals: { request: async () => ({ decision: "allow", waitedMs: 0, reason: "allowed_once" }) } });
   assert.equal(output.outcome, "finished"); assert.deepEqual(inputs, ["click"]); assert.equal(cards.length, 1);
   assert.equal(requests.length, 4); assert.equal(output.usage.inputTokens, 4); assert.equal(output.usage.outputTokens, 4);
   assert.deepEqual(requests.map(r => r.tools[0].name), ["next_step", "verification_result", "verification_result", "next_step"]);
