@@ -26,7 +26,7 @@ export type StoredModelRole = {
   provider: StoredProvider | null;
   model: string | null;
   useMainKey: boolean;
-  mode: "active" | "off" | "meta";
+  mode: "active" | "off" | "meta" | "local";
   // Main only (TASK-027).
   routing: "fixed" | "auto";
   hardModel: string | null;
@@ -52,11 +52,13 @@ export type SaveMainRecord = {
 
 export type SaveSamRecord =
   | { mode: "off" }
-  | { mode: "meta"; useMainKey: boolean; model: string; encryptedKey?: string; keyHint?: string };
+  | { mode: "meta"; useMainKey: boolean; model: string; encryptedKey?: string; keyHint?: string }
+  // Self-hosted SAM server (ADR-010). Its provider row is OpenAI-compatible with the server's base URL; the key is optional.
+  | { mode: "local"; baseUrl: string; model: string; encryptedKey?: string; keyHint?: string };
 
 export type SaveBackgroundRecord =
   | { mode: "off" }
-  | { mode: "active"; kind: "meta" | "openai-compatible"; baseUrl: string | null; model: string; encryptedKey?: string; keyHint?: string };
+  | { mode: "active"; kind: "meta" | "openai-compatible"; baseUrl: string | null; model: string; encryptedKey?: string; keyHint?: string; clearKey?: boolean };
 
 export interface ModelSettingsStore {
   load(ownerId: string): Promise<StoredModelSettings>;
@@ -227,7 +229,7 @@ export function createModelSettingsStore(database: MutationStore): ModelSettings
         }
 
         const mainProviderId = await roleProviderId(transaction, ownerId, "main");
-        if (input.useMainKey) {
+        if (input.mode === "meta" && input.useMainKey) {
           if (!mainProviderId) throw new ModelSettingsError("main_key_required");
           const mainProvider = (await transaction.select({
             kind: providers.kind,
@@ -246,9 +248,19 @@ export function createModelSettingsStore(database: MutationStore): ModelSettings
           return;
         }
 
+        const kind = input.mode === "local" ? "openai-compatible" : "meta";
+        const baseUrl = input.mode === "local" ? input.baseUrl : null;
         let providerId = previousProviderId && previousProviderId !== mainProviderId ? previousProviderId : null;
         if (providerId) {
+          const previous = (await transaction.select({ kind: providers.kind, baseUrl: providers.baseUrl }).from(providers)
+            .where(and(eq(providers.ownerId, ownerId), eq(providers.id, providerId))).limit(1))[0];
+          // A key saved for one destination is never sent to another: switching between the Meta API and a local
+          // server, or to a different server address, drops the old key unless a new one is pasted.
+          const clearKey = input.encryptedKey === undefined && Boolean(previous && (previous.kind !== kind || previous.baseUrl !== baseUrl));
           await transaction.update(providers).set({
+            kind,
+            baseUrl,
+            ...(clearKey ? { encryptedKey: null, keyHint: null } : {}),
             ...(input.encryptedKey !== undefined ? { encryptedKey: input.encryptedKey } : {}),
             ...(input.keyHint !== undefined ? { keyHint: input.keyHint } : {}),
             updatedAt: new Date(),
@@ -258,14 +270,14 @@ export function createModelSettingsStore(database: MutationStore): ModelSettings
           await transaction.insert(providers).values({
             id: providerId,
             ownerId,
-            kind: "meta",
-            baseUrl: null,
+            kind,
+            baseUrl,
             encryptedKey: input.encryptedKey ?? null,
             keyHint: input.keyHint ?? null,
           });
         }
         await saveRole(transaction, ownerId, "sam", {
-          providerId, model: input.model, useMainKey: false, mode: "meta",
+          providerId, model: input.model, useMainKey: false, mode: input.mode,
         });
       });
     },
@@ -286,7 +298,7 @@ export function createModelSettingsStore(database: MutationStore): ModelSettings
           : undefined;
         let providerId = previousProviderId;
         if (providerId) {
-          const clearKey = input.encryptedKey === undefined && Boolean(currentProvider && currentProvider.kind !== input.kind);
+          const clearKey = input.encryptedKey === undefined && (Boolean(input.clearKey) || Boolean(currentProvider && currentProvider.kind !== input.kind));
           await transaction.update(providers).set({
             kind: input.kind,
             baseUrl: input.baseUrl,

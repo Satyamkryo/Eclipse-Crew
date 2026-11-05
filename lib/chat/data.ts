@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gt, lt, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { getDatabase } from "../../db/client";
-import { chatSessions, messages } from "../../db/schema";
+import { chatSessions, messages, runMeta } from "../../db/schema";
 import { getAgentIdentity } from "../agents/data";
 import {
   CHAT_PAGE_SIZE,
@@ -25,8 +25,12 @@ export type StoredChatMessage = {
   card: ChatCard;
   sourceTag: ChatSourceTag;
   runId: string | null;
+  background?: boolean;
   createdAt: Date;
 };
+
+// Runs the owner started by chatting read as ordinary replies; every other trigger is shown as a background result.
+const CONVERSATIONAL_TRIGGERS = new Set(["chat", "branch", "subagent"]);
 
 export function serializeMessage(message: StoredChatMessage): ChatMessage {
   return {
@@ -35,6 +39,7 @@ export function serializeMessage(message: StoredChatMessage): ChatMessage {
     card: message.card,
     sourceTag: message.sourceTag,
     runId: message.runId,
+    ...(message.background ? { background: true } : {}),
     createdAt: message.createdAt.toISOString(),
   };
 }
@@ -69,6 +74,7 @@ type MessageRow = {
   content: unknown;
   sourceTag: string;
   runId: string | null;
+  trigger?: string | null;
   createdAt: Date;
 };
 
@@ -78,7 +84,11 @@ function toMessage(row: MessageRow): StoredChatMessage {
   const sourceTag = chatSourceTagSchema.safeParse(row.sourceTag);
   if (!card.success || card.data.type !== row.cardType || !role.success || !sourceTag.success)
     throw new ChatDataError("invalid_card");
-  return { id: row.id, role: role.data, card: card.data, sourceTag: sourceTag.data, runId: row.runId, createdAt: row.createdAt };
+  const background = Boolean(row.runId && row.trigger && !CONVERSATIONAL_TRIGGERS.has(row.trigger));
+  return {
+    id: row.id, role: role.data, card: card.data, sourceTag: sourceTag.data, runId: row.runId,
+    ...(background ? { background } : {}), createdAt: row.createdAt,
+  };
 }
 
 async function requireAgent(database: Database, ownerId: string, agentId: string) {
@@ -122,6 +132,10 @@ async function insertMessage(
   return toMessage(row);
 }
 
+// The run's trigger decides the "Background result" label; run_meta is joined by run id within the owner's scope.
+const listFields = { ...messageFields, trigger: runMeta.trigger };
+const runMetaJoin = (ownerId: string) => and(eq(runMeta.runId, messages.runId), eq(runMeta.ownerId, ownerId));
+
 export async function listAgentMessages(
   database: Database, ownerId: string, agentId: string, query: ChatHistoryQuery = {},
 ): Promise<{ messages: StoredChatMessage[]; hasMore: boolean }> {
@@ -140,7 +154,7 @@ export async function listAgentMessages(
   }
 
   if (query.after && cursor) {
-    rows = await database.select(messageFields).from(messages)
+    rows = await database.select(listFields).from(messages).leftJoin(runMeta, runMetaJoin(ownerId))
       .where(and(
         eq(messages.ownerId, ownerId),
         eq(messages.sessionId, session.id),
@@ -151,7 +165,7 @@ export async function listAgentMessages(
       ))
       .orderBy(asc(messages.createdAt), asc(messages.id)).limit(CHAT_PAGE_SIZE + 1);
   } else if (query.before && cursor) {
-    rows = await database.select(messageFields).from(messages)
+    rows = await database.select(listFields).from(messages).leftJoin(runMeta, runMetaJoin(ownerId))
       .where(and(
         eq(messages.ownerId, ownerId),
         eq(messages.sessionId, session.id),
@@ -163,7 +177,7 @@ export async function listAgentMessages(
       .orderBy(desc(messages.createdAt), desc(messages.id)).limit(CHAT_PAGE_SIZE + 1);
     rows.reverse();
   } else {
-    rows = await database.select(messageFields).from(messages)
+    rows = await database.select(listFields).from(messages).leftJoin(runMeta, runMetaJoin(ownerId))
       .where(and(eq(messages.ownerId, ownerId), eq(messages.sessionId, session.id)))
       .orderBy(desc(messages.createdAt), desc(messages.id)).limit(CHAT_PAGE_SIZE + 1);
     rows.reverse();
@@ -257,6 +271,17 @@ export async function appendOutboxFiles(
     created.push(await insertMessage(database, ownerId, session.id, "agent", parsed.data, "tool", runId));
   }
   return created;
+}
+
+// Inline previews: an image, audio or video card in either direction, scoped to the owner's agent session.
+export async function getMediaFileCard(database: Database, ownerId: string, agentId: string, messageId: string) {
+  await requireAgent(database, ownerId, agentId);
+  const session = await findSession(database, ownerId, agentId);
+  if (!session) return null;
+  const rows = await database.select({ content: messages.content }).from(messages)
+    .where(and(eq(messages.ownerId, ownerId), eq(messages.sessionId, session.id), eq(messages.id, messageId), eq(messages.cardType, "file"))).limit(1);
+  const card = chatCardSchema.safeParse(rows[0]?.content);
+  return card.success && card.data.type === "file" && ["image", "audio", "video"].includes(card.data.kind) ? card.data : null;
 }
 
 export async function getOutboxFileCard(database: Database, ownerId: string, agentId: string, messageId: string): Promise<OutboxCard | null> {

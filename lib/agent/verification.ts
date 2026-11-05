@@ -70,25 +70,57 @@ export async function verifyStep(input: {
     }
   }
   checkCancelled(signal);
-  const after = await desktop.screenshot();
+  // A screenshot taken while the page is still loading shows placeholders, so the check can't succeed yet. Wait (bounded)
+  // until two screenshots in a row match before judging. Pages with video or animation never match; they are judged
+  // when the wait runs out.
+  let after = await settledScreenshot(desktop, sleep, signal);
   // The browser can close between the action and this check. No picture means no independent verification.
   if (!after) {
     evidence.push({ method: "model", status: "unknown", code: "visual_unavailable" });
     return finish("unknown");
   }
-  input.onAfter?.(after);
-  if (parsed?.kind === "object_visible" && services.samState === "on" && services.sam) {
-    try {
-      const masks = await services.sam.masks(after, parsed.value);
-      const matches = masks.filter((mask) => mask.confidence !== null && mask.confidence >= 0.90);
-      const status = matches.length === 1 && masks.length === 1 ? "pass" : "unknown";
-      evidence.push({ method: "sam", status, code: status === "pass" ? "unique_mask" : "ambiguous_or_missing_mask" });
-      if (status === "pass") { const { x1, y1, x2, y2 } = matches[0].box; samBox = { x1, y1, x2, y2, width: after.width, height: after.height }; return finish("pass"); }
-    } catch { checkCancelled(signal); evidence.push({ method: "sam", status: "unknown", code: "sam_unavailable" }); }
+  let status: Verdict = "unknown";
+  for (let attempt = 0; attempt < 2; attempt++) {
+    input.onAfter?.(after);
+    if (parsed?.kind === "object_visible" && services.samState === "on" && services.sam) {
+      try {
+        const masks = await services.sam.masks(after, parsed.value);
+        const matches = masks.filter((mask) => mask.confidence !== null && mask.confidence >= 0.90);
+        const samStatus = matches.length === 1 && masks.length === 1 ? "pass" : "unknown";
+        evidence.push({ method: "sam", status: samStatus, code: samStatus === "pass" ? "unique_mask" : "ambiguous_or_missing_mask" });
+        if (samStatus === "pass") { const { x1, y1, x2, y2 } = matches[0].box; samBox = { x1, y1, x2, y2, width: after.width, height: after.height }; return finish("pass"); }
+      } catch { checkCancelled(signal); evidence.push({ method: "sam", status: "unknown", code: "sam_unavailable" }); }
+    }
+    checkCancelled(signal);
+    status = await services.visual.verify(before, after, expect);
+    evidence.push({ method: "model", status, code: "visual_postcondition" });
+    checkCancelled(signal);
+    // Only "unknown" is worth a second look, and only when the screen has moved on since it was judged (a slow page
+    // finished loading). A "fail" is never re-asked, and a still screen is never judged twice.
+    if (status !== "unknown" || attempt > 0) break;
+    await sleep(RECHECK_DELAY_MS);
+    checkCancelled(signal);
+    const later = await desktop.screenshot();
+    if (!later || later.base64 === after.base64) break;
+    after = later;
   }
-  checkCancelled(signal);
-  const status = await services.visual.verify(before, after, expect);
-  evidence.push({ method: "model", status, code: "visual_postcondition" });
-  checkCancelled(signal);
   return finish(status);
+}
+
+// Bounded wait for the screen to stop changing after an action (TASK-084 navigation, slow single-page apps).
+export const SETTLE_POLL_MS = 750;
+export const SETTLE_MAX_MS = 4_000;
+export const RECHECK_DELAY_MS = 3_000;
+
+async function settledScreenshot(desktop: DesktopPort, sleep: (ms: number) => Promise<void>, signal?: AbortSignal): Promise<Screenshot | null> {
+  let previous = await desktop.screenshot();
+  for (let waited = 0; previous && waited < SETTLE_MAX_MS; waited += SETTLE_POLL_MS) {
+    await sleep(SETTLE_POLL_MS);
+    checkCancelled(signal);
+    const next = await desktop.screenshot();
+    if (!next) return previous;
+    if (next.base64 === previous.base64) return next;
+    previous = next;
+  }
+  return previous;
 }

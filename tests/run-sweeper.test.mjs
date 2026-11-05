@@ -27,6 +27,16 @@ test("heartbeat updates the run, stops on a missing row, and reports a database 
   assert.ok(beats >= 3); assert.equal(cancelled, 1); assert.equal(sealed, 1);
 });
 
+test("a heartbeat that starts before the run row exists does not seal the run", async () => {
+  let beats = 0; let sealed = 0;
+  const database = { update() { const q = { set() { return q; }, where() { return q; }, async returning() {
+    beats += 1; return beats <= 2 ? [] : [{ cancel: null }];
+  } }; return q; } };
+  const stop = startHeartbeat(database, OWNER, RUN, { onCancel: () => {}, onSealed: () => { sealed += 1; }, intervalMs: 5 });
+  await waitForCount(() => beats, 4); stop();
+  assert.equal(sealed, 0);
+});
+
 test("a heartbeat database error never stops a run", async () => {
   let sealed = 0; let calls = 0;
   const database = { update() { const q = { set() { return q; }, where() { return q; }, async returning() { calls += 1; throw Error("db down"); } }; return q; } };

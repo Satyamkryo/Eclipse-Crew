@@ -55,6 +55,57 @@ export function createProxyTransport(options: {
   };
 }
 
+// Local model servers (Ollama, LM Studio, llama.cpp, vLLM, self-hosted SAM). Same contract as createProxyTransport,
+// but through /v1/local-forward: plain HTTP is allowed, the key is optional, and the proxy only connects when the
+// target resolves to the owner's private network. A key, when set, still travels only to the proxy.
+export function createLocalProxyTransport(options: {
+  credential?: string | null;
+  secret?: string;
+  baseUrl?: string;
+  fetchImpl?: typeof fetch;
+}): ProviderTransport {
+  const secret = requireEgressProxySecret(options.secret ?? process.env.EGRESS_PROXY_SECRET);
+  const baseUrl = options.baseUrl ?? EGRESS_PROXY_URL;
+  const send = options.fetchImpl ?? fetch;
+  const credential = options.credential || null;
+  if (credential !== null && !/^[\x21-\x7e]{8,4096}$/.test(credential)) throw new Error("invalid_credential");
+
+  return async (url, init) => {
+    const target = new URL(String(url));
+    if (!["http:", "https:"].includes(target.protocol) || target.username || target.password || target.hash) {
+      throw new Error("egress_target_not_allowed");
+    }
+    const method = (init?.method ?? "GET").toUpperCase();
+    if (method !== "GET" && method !== "POST") throw new Error("egress_method_not_allowed");
+    if (init?.body !== undefined && init.body !== null && typeof init.body !== "string") throw new Error("egress_body_not_allowed");
+
+    const source = new Headers(init?.headers);
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${secret}`,
+      "X-Eclipse-Target": target.href,
+      "X-Eclipse-Method": method,
+      ...(credential ? { "X-Eclipse-Credential": credential } : {}),
+    };
+    for (const name of FORWARDED_HEADERS) {
+      const value = source.get(name);
+      if (value) headers[name] = value;
+    }
+
+    const response = await send(`${baseUrl}/v1/local-forward`, {
+      method: "POST",
+      headers,
+      body: method === "POST" ? (init?.body as string | undefined) : undefined,
+      redirect: "error",
+      signal: init?.signal,
+    });
+    if (response.headers.get("x-eclipse-proxy") !== "ok") {
+      await response.body?.cancel();
+      throw new Error("egress_proxy_error");
+    }
+    return response;
+  };
+}
+
 // Dedicated fixed-destination ASR. Generic ProviderTransport remains string-only.
 export function createAudioProxyTransport(options: {
   credential: string; secret?: string; baseUrl?: string; fetchImpl?: typeof fetch;

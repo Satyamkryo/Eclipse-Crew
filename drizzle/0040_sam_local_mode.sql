@@ -1,0 +1,4 @@
+ALTER TABLE "model_roles" DROP CONSTRAINT "model_roles_mode_check";--> statement-breakpoint
+ALTER TABLE "model_roles" DROP CONSTRAINT "model_roles_sam_shape_check";--> statement-breakpoint
+ALTER TABLE "model_roles" ADD CONSTRAINT "model_roles_mode_check" CHECK ("model_roles"."mode" in ('active', 'off', 'meta', 'local'));--> statement-breakpoint
+ALTER TABLE "model_roles" ADD CONSTRAINT "model_roles_sam_shape_check" CHECK ("model_roles"."role" <> 'sam' or (("model_roles"."mode" = 'off' and "model_roles"."provider_id" is null and "model_roles"."model" is null and "model_roles"."use_main_key" = false) or ("model_roles"."mode" = 'meta' and "model_roles"."provider_id" is not null and "model_roles"."model" is not null) or ("model_roles"."mode" = 'local' and "model_roles"."provider_id" is not null and "model_roles"."model" is not null and "model_roles"."use_main_key" = false)));

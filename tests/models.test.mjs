@@ -127,6 +127,7 @@ test("empty model settings expose a safe required Main AI and SAM off", async ()
     sam: {
       configured: false,
       mode: "off",
+      baseUrl: null,
       useMainKey: false,
       hasKey: false,
       keyHint: null,
@@ -199,7 +200,7 @@ test("changing to Meta requires a Meta key instead of reusing another provider's
   await withEncryptionKey(async () => {
     const store = new MemoryStore();
     await saveMainSettings(store, "owner", {
-      kind: "openai-compatible", model: "muse-glimmer", baseUrl: "http://127.0.0.1:11434/v1", apiKey: "local-key",
+      kind: "openai-compatible", model: "muse-glimmer", baseUrl: "http://host.docker.internal:11434/v1", apiKey: "local-key",
     });
     await expectCode("key_required", () => saveMainSettings(store, "owner", {
       kind: "meta", model: "muse-spark-1.3",
@@ -212,7 +213,7 @@ test("changing away from Meta clears the previous provider key", async () => {
     const store = new MemoryStore();
     await saveMainSettings(store, "owner", { kind: "meta", model: "muse-spark-1.3", apiKey: CANARY });
     const settings = await saveMainSettings(store, "owner", {
-      kind: "openai-compatible", model: "muse-glimmer", baseUrl: "http://127.0.0.1:11434/v1",
+      kind: "openai-compatible", model: "muse-glimmer", baseUrl: "http://host.docker.internal:11434/v1",
     });
     assert.equal(settings.main.hasKey, false);
     assert.equal(settings.main.keyHint, null);
@@ -272,7 +273,7 @@ test("the store rejects a Main provider change when SAM acquired same-key concur
   await expectCode("sam_depends_on_main_key", () => saveMainSettings(facade, "owner", {
     kind: "openai-compatible",
     model: "muse-glimmer",
-    baseUrl: "http://127.0.0.1:11434/v1",
+    baseUrl: "http://host.docker.internal:11434/v1",
   }));
   assert.equal(calls.updates, 0);
 });
@@ -313,7 +314,7 @@ test("Main cannot change provider while SAM depends on its key", async () => {
     await saveMainSettings(store, "owner", { kind: "meta", model: "muse-spark-1.3", apiKey: CANARY });
     await saveSamSettings(store, "owner", { mode: "meta", useMainKey: true });
     await expectCode("sam_depends_on_main_key", () => saveMainSettings(store, "owner", {
-      kind: "openai-compatible", model: "muse-glimmer", baseUrl: "http://127.0.0.1:11434/v1",
+      kind: "openai-compatible", model: "muse-glimmer", baseUrl: "http://host.docker.internal:11434/v1",
     }));
     assert.equal(store.main.provider.kind, "meta");
   });

@@ -90,13 +90,13 @@ export function WorkspaceCenter({ agent, agents, initialTab, children }: {
   );
 }
 
-// Tools and Routines have no dedicated per-agent backend surface in v1; they render honest
-// empty states that open the existing pages instead of inventing data (docs/UI_REFERENCE_MAP.md).
+// Fallback when no per-agent Tools panel is mounted (no agent selected).
+// The mounted AgentToolsPanel shows this agent's GitHub/MCP/Composio rows with icons.
 export function ToolsTabEmpty() {
   return (
-    <EmptyTab title="No tools are connected for this agent yet."
-      body="Tool connections are managed for the whole crew. Connect an MCP server, then grant it to agents there."
-      href="/settings/connections" label="Open Connections" />
+    <EmptyTab title="N/A — no tools connected for this agent yet."
+      body="Connect GitHub for this agent in Integrations, then pin its MCP server in Connectors."
+      href="/settings/integrations" label="Connect GitHub" />
   );
 }
 

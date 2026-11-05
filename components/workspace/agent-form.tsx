@@ -101,7 +101,7 @@ function validateField(name: FieldName, raw: string, onlyListedSites: boolean): 
 }
 
 // Name and role are the only required fields. Instructions and Persona are optional, and everything else sits under
-// Advanced with safe defaults: $5/$50 budgets, any public website, no MCP tools, the standard actions, and USER.md +
+// Advanced with safe defaults: $5/$50 budgets, any public website, every connected tool, the standard actions, and USER.md +
 // the agent's own MEMORY.md.
 export function AgentForm({ mode, agentId, csrfToken, initial, initialTemplate, onSaved, onCancel }: Props) {
   const router = useRouter();
@@ -124,11 +124,11 @@ export function AgentForm({ mode, agentId, csrfToken, initial, initialTemplate, 
   const [savedAvatarVariant, setSavedAvatarVariant] = useState(avatarVariant);
   const avatarUnsaved = mode === "edit" && avatarVariant !== savedAvatarVariant;
   const [avatarStatus, setAvatarStatus] = useState<string | null>(null);
-  const [template, setTemplate] = useState<AgentTemplateId | "blank">(preset?.id ?? "blank");
-  const [templateMessage, setTemplateMessage] = useState<string | null>(
+  // Gallery template cards preselect a template; the fields below are prefilled
+  // with it and this note says so. There is no in-form template picker.
+  const [templateMessage] = useState<string | null>(
     preset ? `Template applied: ${preset.label}. Review the fields before saving.` : null);
   const formRef = useRef<HTMLFormElement>(null);
-  const statusRef = useRef<HTMLParagraphElement>(null);
   const prefix = mode === "create" ? "new-agent" : "agent-settings";
 
   useEffect(() => {
@@ -141,32 +141,6 @@ export function AgentForm({ mode, agentId, csrfToken, initial, initialTemplate, 
     const first = fields.find((field) => errors[field]);
     if (first) document.getElementById(`${prefix}-${fieldIds[first]}`)?.focus();
   }, [errors, prefix]);
-
-  function applyTemplate(id: AgentTemplateId | "blank") {
-    const selected = id === "blank" ? undefined : AGENT_TEMPLATES.find((item) => item.id === id);
-    const form = formRef.current;
-    setTemplate(id);
-    setErrors({});
-    setError(null);
-    if (form) {
-      const set = (name: string, value: string) => {
-        const field = form.elements.namedItem(name);
-        if (field instanceof HTMLInputElement || field instanceof HTMLTextAreaElement) field.value = value;
-      };
-      set("role", selected?.role ?? "");
-      set("instructions", selected?.instructions ?? "");
-      set("dailyBudgetUsd", selected?.dailyBudgetUsd ?? "");
-      set("monthlyBudgetUsd", selected?.monthlyBudgetUsd ?? "");
-      set("tools", (selected?.tools ?? []).join(", "));
-      set("domains", (selected?.domains ?? []).join(", "));
-      set("actions", (selected?.actions ?? KNOWN_ACTIONS).join(", "));
-    }
-    // A template that lists its own sites keeps to them; Blank goes back to any public website.
-    setAnyPublicWeb(!selected || selected.domains.length === 0);
-    setMemoryScopes(selected?.memoryScopes ?? DEFAULT_SCOPES);
-    setTemplateMessage(selected ? `Template applied: ${selected.label}. Review the fields before saving.` : "Blank agent. Add a name and role.");
-    requestAnimationFrame(() => statusRef.current?.focus());
-  }
 
   function validateOne(name: FieldName, value: string) {
     setErrors((current) => {
@@ -284,24 +258,8 @@ export function AgentForm({ mode, agentId, csrfToken, initial, initialTemplate, 
         </div>
       </div>
       {avatarStatus && <p role="status" className="-mt-3 text-xs text-success">{avatarStatus}</p>}
-      {mode === "create" && (
-        <div className="flex flex-col gap-2">
-          <span className="text-sm font-medium">Start from <span className="font-normal text-muted-foreground">(optional)</span></span>
-          <div className="flex flex-wrap gap-2" role="group" aria-label="Agent template">
-            {[{ id: "blank" as const, label: "Blank" }, ...AGENT_TEMPLATES.map((item) => ({ id: item.id, label: item.label }))].map((item) => (
-              <Button key={item.id} type="button" variant="secondary" size="sm" aria-pressed={template === item.id}
-                className={cn(template === item.id && "bg-accent")} onClick={() => applyTemplate(item.id)}>
-                {item.label}
-              </Button>
-            ))}
-          </div>
-          {template !== "blank" && (
-            <p className="text-xs text-muted-foreground">{AGENT_TEMPLATES.find((item) => item.id === template)?.description}</p>
-          )}
-          {templateMessage && (
-            <p ref={statusRef} role="status" aria-live="polite" tabIndex={-1} className="text-sm text-success">{templateMessage}</p>
-          )}
-        </div>
+      {mode === "create" && templateMessage && (
+        <p role="status" className="text-sm text-success">{templateMessage}</p>
       )}
       <div className="grid gap-4 sm:grid-cols-2">
         <Field id={`${prefix}-name`} label="Name" error={errors.name}>
@@ -385,7 +343,7 @@ export function AgentForm({ mode, agentId, csrfToken, initial, initialTemplate, 
               </Field>
             </div>
           </fieldset>
-          <Field id={`${prefix}-tools`} label="Tools" optional error={errors.tools} hint="MCP servers this agent may call, by their pinned key (for example github). Blank means none; connect servers in Connections first.">
+          <Field id={`${prefix}-tools`} label="Tools" optional error={errors.tools} hint="Leave blank to let the agent use every tool connected to it. To limit it, list server keys (for example github).">
             <textarea id={`${prefix}-tools`} name="tools" rows={2} defaultValue={initial ? listText(initial.tools) : preset ? listText(preset.tools) : ""}
               onBlur={(event) => validateOnBlur(event, "tools")}
               aria-invalid={errors.tools ? true : undefined}

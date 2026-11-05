@@ -1,5 +1,5 @@
 import net from "node:net";
-import { chmod, unlink } from "node:fs/promises";
+import { chmod, chown, unlink } from "node:fs/promises";
 
 // TASK-071. The supervisor-side relay is the only thing that knows an agent's egress token. It listens on a pathname
 // socket inside the agent's 0700 directory, replaces any Proxy-Authorization the client sent, and tunnels bytes to the
@@ -23,7 +23,7 @@ export function basicAgentToken(agentId, token) {
 
 export function createEgressRelay({
   agentId, path, token, upstream = { host: "egress-proxy", port: 4321 },
-  log = () => {},
+  log = () => {}, owner,
 }) {
   if (!/^[0-9a-f-]{36}$/.test(agentId) || typeof token !== "string" || !/^[0-9a-f]{64}$/.test(token)) throw new Error("invalid_relay_config");
   if (typeof path !== "string" || !path.startsWith("/")) throw new Error("invalid_relay_path");
@@ -78,6 +78,8 @@ export function createEgressRelay({
       server.once("error", reject);
       server.listen(path, async () => {
         try { await chmod(path, 0o600); } catch { /* the 0700 directory is the boundary */ }
+        // The agent-side forwarder runs as the agent user, so the socket must be theirs; root-owned 0600 refuses it.
+        if (owner) { try { await chown(path, owner.uid, owner.gid); } catch (error) { server.close(); reject(error); return; } }
         resolve();
       });
     }),
@@ -94,7 +96,7 @@ export function createEgressRelay({
 // TASK-073b. The git gateway uses a line preface instead of a proxy header. The relay writes the
 // agent identity itself, so nothing the agent sends can choose or forge it.
 export const MAX_GATEWAY_CONNECTIONS = 16;
-export function createGatewayRelay({ agentId, path, token, upstream = { host: "egress-proxy", port: 4322 }, log = () => {} }) {
+export function createGatewayRelay({ agentId, path, token, upstream = { host: "egress-proxy", port: 4322 }, log = () => {}, owner }) {
   if (!/^[0-9a-f-]{36}$/.test(agentId) || typeof token !== "string" || !/^[0-9a-f]{64}$/.test(token)) throw new Error("invalid_relay_config");
   if (typeof path !== "string" || !path.startsWith("/")) throw new Error("invalid_relay_path");
   const sockets = new Set();
@@ -123,6 +125,8 @@ export function createGatewayRelay({ agentId, path, token, upstream = { host: "e
       server.once("error", reject);
       server.listen(path, async () => {
         try { await chmod(path, 0o600); } catch { /* the 0700 directory is the boundary */ }
+        // The agent-side forwarder runs as the agent user, so the socket must be theirs; root-owned 0600 refuses it.
+        if (owner) { try { await chown(path, owner.uid, owner.gid); } catch (error) { server.close(); reject(error); return; } }
         resolve();
       });
     }),

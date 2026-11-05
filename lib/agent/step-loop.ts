@@ -1,7 +1,7 @@
 import "server-only";
 import type { ProviderConnector, ProviderContent, ProviderUsage } from "../providers/types";
 import { getTime } from "../time/clock";
-import { buildRequest, summarizeIntent, timeSummary, type AgentPersona, type AgentSkill, type DocumentSearch, type HistorySearch, type ReadDocument, type StepSummary, type ToolResultContext, MAX_DOCUMENT_WINDOWS, MAX_SEARCHES } from "./context";
+import { buildRequest, summarizeIntent, timeSummary, type AgentPersona, type AgentSkill, type DocumentSearch, type HistorySearch, type ReadDocument, type StepSummary, type ToolResultContext, type ToolCatalogEntry, MAX_DOCUMENT_WINDOWS, MAX_SEARCHES } from "./context";
 import type { DeliveredFile, DesktopPort, ListedFile, PageSnapshot, Screenshot } from "./desktop-port";
 import { executeIntent, validPoint, type Grounder } from "./executor";
 import { createPageGrounder, suggestNames } from "./grounding";
@@ -108,7 +108,7 @@ export interface RunDeps {
   // Rungs 3-4 (SAM masks, native computer use). Built from `verification`/`samConfig` and the Main model when left out.
   visualGrounders?: VisualGrounders;
   verification?: VerificationServices;
-  samConfig?: { state: SamState; transport?: ProviderTransport; provider?: { providerId: string; kind: "meta" | "openai-compatible"; baseUrl: string | null } };
+  samConfig?: { state: SamState; transport?: ProviderTransport; endpoint?: string; provider?: { providerId: string; kind: "meta" | "openai-compatible"; baseUrl: string | null } };
   costs?: RunCostSink;
   // Proof receipts (TASK-029). When set, every step writes a receipt and the run is sealed at the end. A run that cannot
   // record its proof stops with `receipt_error`. Left out only by tests and callers that do not claim proof.
@@ -119,10 +119,13 @@ export interface RunDeps {
   checkpoints?: CheckpointSink;
   // Code-built data derived from page content (TASK-044 heal labels), sent as a `web`-tagged context part.
   untrustedContext?: string;
+  // ADR-040. Tools this run may call (names and short descriptions; untrusted server text).
+  toolCatalog?: ToolCatalogEntry[];
   // TASK-047. The agent's bait secret. When set, a `type` containing it never reaches execution.
   canary?: string | null;
   // TASK-049. The owner-configured site allowlist. Task scope also comes from the owner's text and the start page.
   allowedHosts?: readonly string[];
+  anyPublicWeb?: boolean;
   // TASK-050. Risky actions wait here for the owner. Without it, a risky action fails closed.
   approvals?: ApprovalGate;
   // TASK-051. Astra Mode skips only the approval prompt; scope, allowlists, budgets, tripwire and receipts still apply.
@@ -356,6 +359,7 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
     ...(samState === "on" && deps.samConfig?.transport ? {
       sam: createSamVerifier({
         transport: deps.samConfig.transport, timezone: deps.timezone, now,
+        ...(deps.samConfig.endpoint ? { endpoint: deps.samConfig.endpoint } : {}),
         usage: (value) => addUsage(usage, value), signal: runSignal,
         ...(deps.costs && deps.samConfig.provider ? { costs: deps.costs, provider: deps.samConfig.provider } : {}),
       }),
@@ -382,6 +386,7 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
   let invalid = 0;
   let repeats = 0;
   let misses = 0;
+  let focusMisses = 0;
   let missedNames: string[] | undefined;
   let previous: Intent | null = null;
   let hardDisabled = false;
@@ -555,6 +560,7 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
           savedValues: [...values].map(([name, value]) => ({ name, value })),
           toolResults: toolResults.slice(-3),
           skills: deps.skills, screenshotBase64: shot?.base64, snapshot, missedNames, untrustedContext: deps.untrustedContext,
+          ...(deps.toolCatalog?.length ? { toolCatalog: deps.toolCatalog } : {}),
           ...(deps.handoffNote ? { handoffNote: deps.handoffNote } : {}), ...(deps.teammates ? { teammates: deps.teammates } : {}),
           ...(deps.offeredActions ? { offeredActions: deps.offeredActions } : {}),
           offerHandoff: Boolean(deps.handoff && allowed.has("handoff")),
@@ -570,13 +576,14 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
       let result;
       try { result = await withinDeadline(ask(route.model)); }
       catch (error) {
+        logModelFailure(route.model, error);
         if (stopForCost(error) || stopIfStopped()) break;
         // The hard-step model (a preview model, or one the key cannot use) failed: Main answers this turn and escalation ends.
         if (route.kind !== "hard") { stop("provider_error"); break; }
         hardDisabled = true;
         route = { model: deps.model, kind: "fallback" };
         try { result = await withinDeadline(ask(route.model)); }
-        catch (error) { if (!stopForCost(error) && !stopIfStopped()) stop("provider_error"); break; }
+        catch (error) { logModelFailure(route.model, error); if (!stopForCost(error) && !stopIfStopped()) stop("provider_error"); break; }
       }
       if (route.kind === "hard") hardTurns += 1;
       const modelInfo = { model: route.model, modelLabel: labelFor(route.model), route: route.kind };
@@ -640,7 +647,12 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
             `${helper.label}: ${helper.state === "running" ? "stopped (no result before finish)" : helper.state}`);
           if (lines.length) helperNote = `\n\nHelpers:\n${lines.join("\n")}`;
         }
-        stop("finished", { type: "message", text: `${intent.summary}${sent}${memoryNote}${helperNote}\n\n${steps.some((step) => step.verified) ? `${steps.filter((step) => step.verified).length} desktop step postcondition(s) passed verification. This summary is the agent's own report; external side effects are not independently proven.` : "This is the agent's own report. Nothing was verified automatically."}` });
+        // A plain conversational reply (no executed step) reads naturally; the honesty note is only for runs that acted.
+        const verifiedCount = steps.filter((step) => step.verified).length;
+        const evidenceNote = verifiedCount > 0
+          ? `\n\n${verifiedCount} desktop step postcondition(s) passed verification. This summary is the agent's own report; external side effects are not independently proven.`
+          : steps.some((step) => step.executed) ? "\n\nThis is the agent's own report. Nothing was verified automatically." : "";
+        stop("finished", { type: "message", text: `${intent.summary}${sent}${memoryNote}${helperNote}${evidenceNote}` });
         break;
       }
       if (intent.action === "ask_owner") {
@@ -887,7 +899,7 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
           continue;
         }
         const text = argumentText(args);
-        const scope = deriveScope({ task: deps.scopeTask ?? deps.task, allowedHosts: deps.allowedHosts, startHref, extraOwnerTexts: deps.scopeTexts });
+        const scope = deriveScope({ task: deps.scopeTask ?? deps.task, allowedHosts: deps.allowedHosts, anyPublicWeb: deps.anyPublicWeb, startHref, extraOwnerTexts: deps.scopeTexts });
         const verdict = checkTyped(text, scope, null);
         if (!verdict.ok) {
           const code = verdict.rule === "recipient" ? "out_of_scope_recipient" : "out_of_scope_host";
@@ -1188,7 +1200,7 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
           stop("security_stop");
           break;
         }
-        const scope = deriveScope({ task: deps.scopeTask ?? deps.task, allowedHosts: deps.allowedHosts, startHref, extraOwnerTexts: deps.scopeTexts });
+        const scope = deriveScope({ task: deps.scopeTask ?? deps.task, allowedHosts: deps.allowedHosts, anyPublicWeb: deps.anyPublicWeb, startHref, extraOwnerTexts: deps.scopeTexts });
         const verdict = checkTyped(intent.value, scope, null);
         if (!verdict.ok) {
           const rule = verdict.rule ?? "host";
@@ -1231,7 +1243,7 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
       // TASK-049. A `type` may only send the run to a host the owner named, or to an email the owner named. A navigate
       // names a host too. A refusal writes one blocked receipt and tells the model; the second refusal stops the run.
       if (intent.action === "type" || intent.action === "navigate") {
-        const scope = deriveScope({ task: deps.scopeTask ?? deps.task, allowedHosts: deps.allowedHosts, startHref, extraOwnerTexts: deps.scopeTexts });
+        const scope = deriveScope({ task: deps.scopeTask ?? deps.task, allowedHosts: deps.allowedHosts, anyPublicWeb: deps.anyPublicWeb, startHref, extraOwnerTexts: deps.scopeTexts });
         const verdict = intent.action === "type" ? checkTyped(intent.text, scope, snapshot?.href ?? null) : checkTyped(intent.url, scope, null);
         if (!verdict.ok) {
           const rule = verdict.rule ?? "host";
@@ -1384,6 +1396,12 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
           emitted = true;
           const blockedCode = gate.evidence[gate.evidence.length - 1]?.code ?? "blocked";
           if (!(await emit(intent, modelInfo, { ...receiptBase, gate: gate.evidence, result: "blocked", executed: false, code: astraAllowed ? "astra_allowed" : blockedCode }))) { stop("receipt_error"); break; }
+          // Typing with no single focused field sent nothing: tell the model once so it can click the field first.
+          if ((intent.action === "type" || intent.action === "key") && risky === "none" &&
+              (blockedCode === "ambiguous_target" || blockedCode === "unsupported_focus") && ++focusMisses < MAX_MISSES_IN_A_ROW) {
+            history.push(summarizeIntent(currentTurn, intent, "failed", "no_focused_field"));
+            continue;
+          }
           stop("needs_owner", { type: "message", text: "I stopped before input because independent target checks did not agree. Please take over this step." });
           break;
         }
@@ -1419,6 +1437,10 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
         }
         if (stopForCost(error) || stopIfStopped()) break;
         if (errorCode(error) === "security") { securityCause = "cancelled"; stop("security_stop"); break; }
+        if (errorCode(error) === "navigation_failed") {
+          stop("needs_owner", { type: "message", text: "I couldn't open that page: the site didn't respond in time or the address was blocked. The desktop is still running; please check the address or try again." });
+          break;
+        }
         stop(errorCode(error) === "takeover_active" ? "paused_by_owner" : errorCode(error) === "aborted" ? "aborted" : "desktop_error");
         break;
       }
@@ -1451,4 +1473,14 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
     // Held until the card is posted, so a second run cannot start mid-report.
     releaseAgent();
   }
+}
+
+// Operator visibility for provider failures: model id, error code and a short message only. Never the request,
+// prompt, screenshot or credentials (the egress proxy injects keys, so they never reach this process's errors).
+function logModelFailure(model: string, error: unknown) {
+  const code = (error as { code?: unknown })?.code;
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(JSON.stringify({ event: "model_call_failed", model, code: typeof code === "string" ? code : undefined,
+    message: message.replace(/\s+/g, " ").slice(0, 200),
+    detail: typeof (error as { detail?: unknown })?.detail === "string" ? (error as { detail: string }).detail : undefined }));
 }

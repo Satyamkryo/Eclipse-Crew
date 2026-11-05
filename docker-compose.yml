@@ -98,6 +98,10 @@ services:
     environment:
       EGRESS_PROXY_SECRET: ${EGRESS_PROXY_SECRET:-}
       EGRESS_DESKTOP_SECRET: ${EGRESS_DESKTOP_SECRET:-}
+    # Local models (Ollama, LM Studio, llama.cpp, vLLM, self-hosted SAM) on the owner's computer. Docker Desktop
+    # provides this name already; Linux needs the host-gateway mapping. Only /v1/local-forward may use it.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4320/healthz').then((r)=>process.exit(r.ok?0:1),()=>process.exit(1))"]
       interval: 10s

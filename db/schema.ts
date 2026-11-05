@@ -466,7 +466,8 @@ export const modelRoles = pgTable(
     index("model_roles_provider_id_idx").on(table.providerId),
     uniqueIndex("model_roles_owner_role_idx").on(table.ownerId, table.role),
     check("model_roles_role_check", sql`${table.role} in ('main', 'sam', 'background')`),
-    check("model_roles_mode_check", sql`${table.mode} in ('active', 'off', 'meta')`),
+    // 'local' is a self-hosted SAM 3.1 server (ADR-010); its provider row is OpenAI-compatible with a base URL.
+    check("model_roles_mode_check", sql`${table.mode} in ('active', 'off', 'meta', 'local')`),
     check("model_roles_routing_check", sql`${table.routing} in ('fixed', 'auto') and (${table.routing} = 'fixed' or ${table.hardModel} is not null) and (${table.role} = 'main' or (${table.routing} = 'fixed' and ${table.hardModel} is null))`),
     check(
       "model_roles_main_shape_check",
@@ -474,7 +475,7 @@ export const modelRoles = pgTable(
     ),
     check(
       "model_roles_sam_shape_check",
-      sql`${table.role} <> 'sam' or ((${table.mode} = 'off' and ${table.providerId} is null and ${table.model} is null and ${table.useMainKey} = false) or (${table.mode} = 'meta' and ${table.providerId} is not null and ${table.model} is not null))`,
+      sql`${table.role} <> 'sam' or ((${table.mode} = 'off' and ${table.providerId} is null and ${table.model} is null and ${table.useMainKey} = false) or (${table.mode} = 'meta' and ${table.providerId} is not null and ${table.model} is not null) or (${table.mode} = 'local' and ${table.providerId} is not null and ${table.model} is not null and ${table.useMainKey} = false))`,
     ),
     // TASK-086. Optional: no row means the memory jobs use Main.
     check(

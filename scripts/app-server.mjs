@@ -15,6 +15,17 @@ const authorizationSchema = z.object({
 }).strict();
 const MAX_FRAME = 8 * 1024 * 1024;
 const PROBE_TIMEOUT = 800;
+// Live revalidation runs every 3s while an agent may be busy (screenshots, model calls), so one slow or failed probe
+// must not drop the stream. A definitive denial still closes at once; only transient failures are retried.
+const REVALIDATE_TIMEOUT = 2500;
+const MAX_TRANSIENT_FAILURES = 5;
+const MAX_MISSED_PONGS = 1;
+export function isTransientProbeFailure(error) {
+  const message = error instanceof Error ? error.message : "";
+  if (message === "authorization_timeout" || /^authorization_status_5\d\d$/.test(message)) return true;
+  // Socket-level errors (ECONNRESET, EPIPE...) carry a code and no authorization_* message.
+  return !message.startsWith("authorization_") && typeof error?.code === "string";
+}
 
 export function canonicalOrigin(value = "http://127.0.0.1:3000") {
   const url = new URL(value);
@@ -35,13 +46,13 @@ export function streamTarget(request, origin) {
 
 // The only HTTP destination for session validation is this very server's loopback
 // listener. Neither the browser URL nor forwarding headers select a destination.
-export function probeAuthorization(port, target, cookie, origin) {
+export function probeAuthorization(port, target, cookie, origin, timeout = PROBE_TIMEOUT) {
   return new Promise((resolve, reject) => {
     const request = httpRequest({ hostname: "127.0.0.1", port, path: target.path, method: "GET", headers: {
       Host: origin.host, Origin: origin.origin, Cookie: cookie,
       Accept: "application/json",
     } });
-    const deadline = setTimeout(() => request.destroy(new Error("authorization_timeout")), PROBE_TIMEOUT);
+    const deadline = setTimeout(() => request.destroy(new Error("authorization_timeout")), timeout);
     request.on("error", reject);
     request.on("close", () => clearTimeout(deadline));
     request.on("response", (response) => {
@@ -128,7 +139,7 @@ export function createAppServer({ handle, origin: originValue = process.env.APP_
   server.desktopUpgrade = async (request, socket, head) => {
     socket.on("error", () => {});
     let upstream; let client; let timer; let finished = false;
-    let clientAlive = true, upstreamAlive = true;
+    let clientAlive = true, upstreamAlive = true; let missedPongs = 0; let transientFailures = 0;
     if (active >= 64) { rejectUpgrade(socket, origin, 503); return; }
     active++;
     const close = () => {
@@ -165,12 +176,23 @@ export function createAppServer({ handle, origin: originValue = process.env.APP_
         upstream.resume();
         const revalidate = async () => {
           try {
-            if (finished || !clientAlive || !upstreamAlive) return close();
-            const current = await probeAuthorization(port, target, cookie, origin);
-            if (current.ownerId !== authorization.ownerId || current.sessionRef !== authorization.sessionRef || current.generation !== authorization.generation) return close();
+            if (finished) return close();
+            missedPongs = clientAlive && upstreamAlive ? 0 : missedPongs + 1;
+            if (missedPongs >= MAX_MISSED_PONGS) { console.warn(JSON.stringify({ event: "desktop_stream_closed", reason: "pong_timeout" })); return close(); }
             if (client.readyState !== WebSocket.OPEN || upstream.readyState !== WebSocket.OPEN) return close();
             clientAlive = false; upstreamAlive = false;
             client.ping(); upstream.ping();
+            let current;
+            try { current = await probeAuthorization(port, target, cookie, origin, REVALIDATE_TIMEOUT); transientFailures = 0; }
+            catch (error) {
+              if (!isTransientProbeFailure(error) || ++transientFailures >= MAX_TRANSIENT_FAILURES) throw error;
+              if (!finished) timer = setTimeout(revalidate, 3000);
+              return;
+            }
+            if (finished) return close();
+            if (current.ownerId !== authorization.ownerId || current.sessionRef !== authorization.sessionRef || current.generation !== authorization.generation) {
+              console.warn(JSON.stringify({ event: "desktop_stream_closed", reason: "session_changed" })); return close();
+            }
             if (!finished) timer = setTimeout(revalidate, 3000);
           } catch (error) { if (!finished) console.warn(JSON.stringify({ event: "desktop_stream_closed", reason: denialReason(error) })); close(); }
         };

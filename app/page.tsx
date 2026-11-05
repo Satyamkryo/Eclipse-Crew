@@ -11,6 +11,7 @@ import { LiveView } from "@/components/desktop/live-view";
 import { createModelSettingsStore } from "@/lib/models/data";
 import { AgentPane, type AgentSummary } from "@/components/workspace/agent-pane";
 import { AgentSettings } from "@/components/workspace/agent-settings";
+import { AgentToolsPanel } from "@/components/workspace/agent-tools";
 import { HistoryPanel } from "@/components/history/history-panel";
 import { MemoryPanel } from "@/components/memory/memory-panel";
 import { CheckInsPanel } from "@/components/routines/check-ins-panel";
@@ -100,7 +101,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{
 
   return (
     <WorkspaceShell
-      key={`${mobileInitialView}:${selectedAgent?.id ?? ""}`}
+      key={mobileInitialView}
       initialMobileView={mobileInitialView}
       initialTab={initialTab}
       agents={agents}
@@ -120,6 +121,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{
       history={<HistoryPanel key={`${selectedAgent?.id ?? "no-agent"}:${initialRun.success ? initialRun.data : ""}`} agentId={selectedAgent?.id} agentName={selectedAgent?.name} astraMode={selectedAgent?.astraMode} timeZone={ownerTimeZone} csrfToken={session.csrfToken}
         initialRunId={initialRun.success ? initialRun.data : undefined} initialContinue={initialContinue} />}
       memory={<MemoryPanel key={`memory-${selectedAgent?.id ?? "no-agent"}`} agentId={selectedAgent?.id} timeZone={ownerTimeZone} csrfToken={session.csrfToken} />}
+      tools={selectedAgent ? <AgentToolsPanel key={`tools-${selectedAgent.id}`} agentId={selectedAgent.id} agentName={selectedAgent.name} csrfToken={session.csrfToken} /> : undefined}
       routines={selectedAgent ? <CheckInsPanel key={`check-ins-${selectedAgent.id}`} agentId={selectedAgent.id} agentName={selectedAgent.name} timeZone={ownerTimeZone} csrfToken={session.csrfToken} /> : undefined}
     />
   );

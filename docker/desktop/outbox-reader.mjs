@@ -127,7 +127,8 @@ async function main() {
     const mode = process.argv[2]; const params = JSON.parse(process.argv[3] ?? "");
     const home = process.env.HOME ?? "";
     if (!/^\/workspace\/homes\/[0-9a-f-]{36}$/.test(home) || !["list", "read"].includes(mode)) fail("scan_failed");
-    const outbox = `${home}/outbox`;
+    // Reads may target inbox/ (owner uploads, for inline media previews); listing stays outbox-only.
+    const outbox = mode === "read" && params.area === "inbox" ? `${home}/inbox` : `${home}/outbox`;
     if (mode === "list") {
       if (!Array.isArray(params.known) || !params.known.every((pair) => Array.isArray(pair) && typeof pair[0] === "string" && Number.isSafeInteger(pair[1]))) fail("scan_failed");
       await out(`${JSON.stringify(await listOutbox({ outbox, known: params.known }))}\n`);

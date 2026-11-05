@@ -54,6 +54,8 @@ Rules for AI agents:
 | 036 | Simple agent creation: public-web default, instructions vs persona, crew-only handoff | Accepted |
 | 037 | Owner-created accounts, one workspace each | Accepted |
 | 038 | Desktop-only AppArmor profile for bootstrap bind mounts | Accepted |
+| 039 | Any-public-web agents may type any public domain | Accepted |
+| 040 | Blank Tools means every tool connected to the agent | Accepted |
 
 ---
 
@@ -269,3 +271,17 @@ Status: Accepted · 2026-11-05 · Owner approved (Oracle rollout) · Extends ADR
 Decision: Only the trusted `desktop` service runs under `apparmor=eclipse-desktop` (`docker/desktop/apparmor/eclipse-desktop`), an enforced copy of Docker's `docker-default` that replaces its blanket `deny mount` with four exact rules: bind `/workspace/.system/downloads` → `/downloads`, bind `/run/eclipse/*` → `/etc/*`, and their protective remounts (`nosuid,nodev,noexec`; `/etc/*` read-only). All other mounts stay denied; `userns` is allowed for Chromium and per-agent namespaces under `kernel.apparmor_restrict_unprivileged_userns=1`. Every other service keeps `docker-default`. On AppArmor hosts the profile must be loaded before `docker compose up`; hosts without AppArmor (Docker Desktop) ignore the option.
 Reason: On Ubuntu 24.04 `docker-default` refuses bootstrap's bind mount (EACCES), so the desktop can't start; `apparmor=unconfined` breaks user namespaces and removes all mediation.
 Rejected: `apparmor=unconfined`, `--privileged`, dropping the protective bind mounts.
+
+## ADR-039: Any-public-web agents may type any public domain
+Status: Accepted · 2026-11-05 · Owner approved · Amends ADR-036 (task scope)
+Decision: For an agent with `any_public_web = true`, the TASK-049 typing check treats every public domain (known TLD, not an IP literal, not localhost or an internal suffix such as .local/.internal/.lan) as in scope, so "search on google" works without naming google.com. Emails must still be ones the owner named, and "Only these sites" agents keep the exact owner-named rule. The egress proxy still refuses private, link-local and metadata destinations.
+Reason: Owners name sites by brand ("google"), and the strict rule blocked ordinary browsing.
+Rejected: mapping brand names to domains; keeping the strict rule for any-public-web agents.
+Residual risk: injected page content could lead the agent to type text into an arbitrary public site; the canary tripwire, approvals and confidence gate still apply.
+
+## ADR-040: Blank Tools means every tool connected to the agent
+Status: Accepted · 2026-11-05 · Owner approved ("if you don't fill that field then the agent can use any tools") · Amends ADR-036 (tools default)
+Decision: When an agent's Tools list (`agent_policies.tools`) is blank, a run grants every pinned MCP server and active Composio account connected to that agent, and offers `tool_call` whenever at least one exists. A non-blank list still limits the agent to the listed server keys. Each run sends the model an `available_tools` list (name, description cut to 200 characters, argument names) tagged `tool` as untrusted data, at most 60 entries. Connections stay per agent, so no agent gains another agent's servers or tokens. Pinning and tools-hash checks, code-side risk classes, approvals, task scope, the canary tripwire and budgets are unchanged.
+Reason: Models choose tools automatically; a blank-means-none text field left connected tools silently unusable.
+Rejected: keeping blank-means-none; granting every server connected to any agent.
+Residual risk: an agent may call any tool connected to it without the owner listing it; write and destructive calls still need approval.

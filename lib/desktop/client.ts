@@ -6,6 +6,8 @@ import { teachResult, type TeachResult } from "../teach/schema";
 
 const uuid = z.string().uuid();
 const FETCH_TIMEOUT_MS = 5000;
+// Above the desktop's own navigation bounds (20 s load, 25 s channel), so the desktop answers first.
+const NAVIGATE_TIMEOUT_MS = 28_000;
 const verificationPredicate = z.object({ kind: z.enum(["control_present", "control_absent", "url_path"]), value: z.string().min(1).max(200).refine((v) => !/[\x00-\x1f\x7f-\x9f]/.test(v)) }).strict();
 export const pageVerificationResult = z.object({ status: z.enum(["pass", "fail", "unknown"]), code: z.enum(["url_path", "unsupported_url", "ambiguous_control", "visible_inventory", "unsupported_expectation"]), source_tag: z.literal("tool"), untrusted: z.literal(true) }).strict();
 
@@ -148,7 +150,7 @@ export async function desktopCommand(agentId: string, ownerId: string, generatio
     : operation === "page.find_text" ? findTextResult : operation === "audio.capture" ? waveResult
     : operation === "browser.locator" && args.action === "inspect" ? locatorResult : inputResult;
   return desktopPost(`/v1/agents/${uuid.parse(agentId)}/commands`, { ...args, ...metadata(agentId, ownerId), ...z.object(generationField).parse({ generation }), operation }, result,
-    operation === "audio.capture" ? (Number(args.seconds) + 10) * 1000 : FETCH_TIMEOUT_MS);
+    operation === "audio.capture" ? (Number(args.seconds) + 10) * 1000 : operation === "browser.navigate" ? NAVIGATE_TIMEOUT_MS : FETCH_TIMEOUT_MS);
 }
 export async function desktopCreateAgent(agentId: string, ownerId: string) {
   const result = await desktopPost(`/v1/agents/${uuid.parse(agentId)}/commands`,
@@ -214,11 +216,12 @@ export async function desktopListOutbox(agentId: string, ownerId: string, known:
     z.object({ files: z.array(outboxFile).max(5), pending: z.number().int().min(0) }).strict(), 60_000, outboxTarget);
 }
 // Streams one outbox file. The desktop re-checks the SHA-256 and size against the card before sending any byte.
-export async function desktopDownloadOutbox(agentId: string, ownerId: string, file: { name: string; size: number; sha256: string }, signal?: AbortSignal) {
+export async function desktopDownloadOutbox(agentId: string, ownerId: string, file: { name: string; size: number; sha256: string }, signal?: AbortSignal,
+  area: "inbox" | "outbox" = "outbox") {
   const response = await fetch(`${outboxTarget.base}/v1/owners/${uuid.parse(ownerId)}/agents/${uuid.parse(agentId)}/outbox/read`, { method: "POST", redirect: "error",
     signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(UPLOAD_TIMEOUT_MS)]) : AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${requireDesktopSecret()}` },
-    body: JSON.stringify({ name: file.name, sha256: file.sha256, size: file.size }) });
+    body: JSON.stringify({ name: file.name, sha256: file.sha256, size: file.size, ...(area === "inbox" ? { area } : {}) }) });
   if (response.headers.get("content-type")?.startsWith("application/json") || !response.ok || !response.body) {
     let code = "download_failed";
     try { const parsed = envelopeSchema.safeParse(JSON.parse((await response.text()).slice(0, 8192))); if (parsed.success && parsed.data.outcome === "error") code = parsed.data.code; } catch { /* keep default */ }

@@ -216,6 +216,8 @@ export const chatMessageSchema = z.object({
   card: chatCardSchema,
   sourceTag: chatSourceTagSchema,
   runId: z.string().uuid().nullable(),
+  // True only for runs the owner did not start by chatting (schedules, routines, replays, heals, handoffs).
+  background: z.boolean().optional(),
   createdAt: z.string().datetime(),
 }).strict();
 

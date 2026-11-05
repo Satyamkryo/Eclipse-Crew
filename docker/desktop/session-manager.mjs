@@ -5,7 +5,7 @@ import { lstat, chmod, readFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { AgentError, createAgent, deleteAgent, ensureNsDirectory, inspectAgent, launchAgent, removeNsDirectory, requireAdmin, validateIds } from "./agent-store.mjs";
 import { createEgressRelay, createGatewayRelay } from "./egress-relay.mjs";
-import { processIdentity, SESSION_FAILURES } from "./session-worker.mjs";
+import { NAVIGATION_TIMEOUT_MS, processIdentity, SESSION_FAILURES } from "./session-worker.mjs";
 import { createChannel, writeFramed } from "./controller-channel.mjs";
 
 export const SESSION_SOCKET = "/run/eclipse/sessions.sock";
@@ -155,11 +155,11 @@ export class SessionManager {
       const egressSecret = process.env.EGRESS_DESKTOP_SECRET ?? "";
       const egressToken = /^[0-9a-f]{64}$/.test(egressSecret) ? agentEgressToken(record.agentId, egressSecret) : null;
       if (!egressToken) throw new AgentError("egress_not_configured");
-      const relay = createEgressRelay({ agentId: record.agentId, path: `${nsDir}/egress.sock`, token: egressToken });
+      const relay = createEgressRelay({ agentId: record.agentId, path: `${nsDir}/egress.sock`, token: egressToken, owner: { uid: record.uid, gid: record.gid } });
       entry.relay = relay;
       await relay.listen().catch(() => { throw new AgentError("egress_not_configured"); });
       if (this.closing) throw new AgentError("supervisor_stopping");
-      const gatewayRelay = createGatewayRelay({ agentId: record.agentId, path: `${nsDir}/gateway.sock`, token: egressToken });
+      const gatewayRelay = createGatewayRelay({ agentId: record.agentId, path: `${nsDir}/gateway.sock`, token: egressToken, owner: { uid: record.uid, gid: record.gid } });
       entry.gatewayRelay = gatewayRelay;
       await gatewayRelay.listen().catch(async () => { await relay.close().catch(() => {}); throw new AgentError("egress_not_configured"); });
       if (this.closing) throw new AgentError("supervisor_stopping");
@@ -487,7 +487,9 @@ export class SessionManager {
       const entry = this.authorize(ownerId, agentId, generation);
       if (this.takeovers.has(agentId)) throw new AgentError("takeover_active");
       const fields = operationFields({ ...params, operation }); this.remember(agentId, requestId);
-      const timeoutMs = operation === "audio.capture" ? (Number(fields.seconds) + 8) * 1000 : undefined;
+      // Longer than the worker's own bound, so the worker reports a clean failure before the channel gives up.
+      const timeoutMs = operation === "audio.capture" ? (Number(fields.seconds) + 8) * 1000
+        : operation === "browser.navigate" ? NAVIGATION_TIMEOUT_MS + 5000 : undefined;
       return this.perform(entry, requestId, operation, fields, false, timeoutMs);
     });
   }

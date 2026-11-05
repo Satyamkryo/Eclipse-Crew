@@ -373,7 +373,7 @@ function lifecycleDesktop(events) {
     desktopCreateAgent: async () => { events.push("create-identity"); },
     desktopDeleteAgent: async () => { events.push("delete-desktop"); },
     desktopSession: async (_agentId, _ownerId, operation) => {
-      if (operation === "session.start") {
+      if (operation === "session.start" || operation === "sandbox.start") {
         events.push("start-begin");
         await new Promise((resolve) => setTimeout(resolve, 20));
         events.push("start-end");

@@ -23,6 +23,7 @@ type Props = {
   desktop?: ReactNode;
   history: ReactNode;
   memory: ReactNode;
+  tools?: ReactNode;
   routines?: ReactNode;
 };
 
@@ -36,7 +37,7 @@ function subscribeViewport(onChange: () => void) {
 const readViewport = () => window.innerWidth;
 const readNoViewport = () => null;
 
-export function WorkspaceShell({ initialMobileView, initialTab, agents, selectedAgent, owner, csrfToken, agentPane, chatPane, settings, desktop, history, memory, routines }: Props) {
+export function WorkspaceShell({ initialMobileView, initialTab, agents, selectedAgent, owner, csrfToken, agentPane, chatPane, settings, desktop, history, memory, tools, routines }: Props) {
   const [mobileView, setMobileView] = useState<MobileView>(initialMobileView);
   const [panelOpen, setPanelOpen] = useState(false);
   const [agentsSheetOpen, setAgentsSheetOpen] = useState(initialMobileView === "agents");
@@ -109,7 +110,7 @@ export function WorkspaceShell({ initialMobileView, initialTab, agents, selected
           {tab === "settings" && <div className="h-full min-h-0 overflow-y-auto p-6">{settings ?? <SettingsEmpty />}</div>}
           {tab === "history" && <div className="h-full min-h-0 overflow-y-auto">{history}</div>}
           {tab === "memory" && <div className="h-full min-h-0 overflow-y-auto">{memory}</div>}
-          {tab === "tools" && <ToolsTabEmpty />}
+          {tab === "tools" && (tools ?? <ToolsTabEmpty />)}
           {tab === "routines" && (routines ? <div className="h-full min-h-0 overflow-y-auto">{routines}</div> : <RoutinesTabEmpty />)}
         </>
       )}
@@ -124,7 +125,7 @@ export function WorkspaceShell({ initialMobileView, initialTab, agents, selected
       </div>
     </div>
   );
-  const column = <DesktopColumn desktop={measured ? desktop : pendingDesktop} agentId={selectedAgent?.id} csrfToken={csrfToken} active={selectedAgent?.status === "active"} />;
+  const column = <DesktopColumn desktop={measured ? desktop : pendingDesktop} agentId={selectedAgent?.id} agentName={selectedAgent?.name} avatarVariant={selectedAgent?.avatarVariant} csrfToken={csrfToken} active={selectedAgent?.status === "active"} />;
 
   return (
     <AppShell owner={owner} agents={agents} selectedAgentId={selectedAgent?.id} agentsSection={agentPane}
@@ -193,7 +194,7 @@ function SettingsEmpty() {
       </div>
       <div className="flex flex-wrap gap-4">
         <a href="/settings/models" className="text-sm underline underline-offset-4">Model settings</a>
-        <a href="/settings/connections" className="text-sm underline underline-offset-4">Connections</a>
+        <a href="/settings/integrations" className="text-sm underline underline-offset-4">Integrations</a>
         <a href="/profile" className="text-sm underline underline-offset-4">Profile</a>
       </div>
     </div>

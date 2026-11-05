@@ -64,7 +64,7 @@ export function WorkspacePanel({ initialTab, desktop, settings, history, memory 
             </div>
             <div className="flex flex-wrap gap-4">
               <Link href="/settings/models" className="text-sm underline underline-offset-4">Model settings</Link>
-              <Link href="/settings/connections" className="text-sm underline underline-offset-4">Connections</Link>
+              <Link href="/settings/integrations" className="text-sm underline underline-offset-4">Integrations</Link>
               <Link href="/profile" className="text-sm underline underline-offset-4">Profile</Link>
             </div>
           </div>

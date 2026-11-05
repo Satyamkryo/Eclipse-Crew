@@ -1,13 +1,15 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import dns from "node:dns/promises";
 import { createServer } from "node:http";
+import http from "node:http";
 import https from "node:https";
 import net from "node:net";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 
 import { createRegistry, POLICY_TTL_MS } from "./registry.mjs";
 import { createEventLog } from "./events.mjs";
-import { isBlockedAddress } from "./addresses.mjs";
+import { isBlockedAddress, isLocalModelAddress, ownSubnets } from "./addresses.mjs";
 import { canaryHash, findCanary } from "./canary.mjs";
 import { CredentialError, createCredentialStore } from "./credentials.mjs";
 import { DEVICE_HOST, MAX_DEVICE_BODY, parseDeviceRequest, sanitizeDeviceResponse } from "./github-device.mjs";
@@ -27,6 +29,9 @@ export const MAX_ACTIVE = 8;
 export const MAX_TOOL_ACTIVE = 4;
 export const MAX_TOOL_BODY_BYTES = 4 * 1024 * 1024;
 export const REDACTION = "[redacted]";
+// Local models (CPU or one consumer GPU) answer far slower than hosted APIs. The app's own provider timeout
+// (at most 120 s) stays below this, so the app always reports the timeout first.
+export const LOCAL_TIMEOUT_MS = 150_000;
 
 export class ProxyError extends Error {
   constructor(code, status) { super(code); this.code = code; this.status = status; }
@@ -42,6 +47,32 @@ export function parseTarget(value) {
     throw new ProxyError("forbidden_target", 403);
   }
   return { host, path: `${url.pathname}${url.search}` };
+}
+
+// Local model route: http or https, any port, an IP literal or a hostname (single-label Docker/LAN names included).
+// Where the name resolves is checked separately with isLocalModelAddress; this only validates the URL's shape.
+export function parseLocalTarget(value) {
+  let url;
+  try { url = new URL(value); } catch { throw new ProxyError("forbidden_target", 403); }
+  const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  const literal = net.isIP(host) !== 0;
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.hash ||
+      (!literal && (host.length > 253 || !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/.test(host))) ||
+      url.pathname.length + url.search.length > 2048 || /[\\\u0000-\u001f\u007f]/.test(value)) {
+    throw new ProxyError("forbidden_target", 403);
+  }
+  const port = url.port ? Number(url.port) : url.protocol === "https:" ? 443 : 80;
+  return { host, literal, port, secure: url.protocol === "https:", path: `${url.pathname}${url.search}` };
+}
+
+async function resolveLocal(target, resolve, own) {
+  let addresses;
+  if (target.literal) addresses = [{ address: target.host, family: net.isIP(target.host) }];
+  else {
+    try { addresses = await resolve(target.host); } catch { throw new ProxyError("upstream_error", 502); }
+  }
+  if (!addresses.length || addresses.some(({ address }) => !isLocalModelAddress(address, own))) throw new ProxyError("forbidden_target", 403);
+  return addresses[0];
 }
 
 const digest = (value) => createHash("sha256").update(value).digest();
@@ -136,12 +167,12 @@ async function resolvePublic(host, resolve) {
   return addresses[0];
 }
 
-function forwardUpstream({ upstream, host, path, method, headers, body, address, signal, timeoutMs }) {
+function forwardUpstream({ upstream, host, path, method, headers, body, address, signal, timeoutMs, port = 443, servername = host }) {
   return new Promise((resolve, reject) => {
     const chunks = []; let size = 0; let settled = false;
     const finish = (fn, value) => { if (!settled) { settled = true; fn(value); } };
     const request = upstream({
-      host, port: 443, method, path, headers, servername: host, signal, timeout: timeoutMs,
+      host, port, method, path, headers, ...(servername ? { servername } : {}), signal, timeout: timeoutMs,
       // Connect to the address that was already checked, so a second lookup cannot change it.
       // Node 24 asks for `all: true` (an array) when it picks between address families.
       autoSelectFamily: false,
@@ -165,7 +196,9 @@ function forwardUpstream({ upstream, host, path, method, headers, body, address,
 }
 
 export function createProxy({ secret, registry, credentials = null, events = createEventLog(), resolve = (host) => dns.lookup(host, { all: true, verbatim: true }), upstream = https.request,
-  log = (event) => console.log(JSON.stringify(event)), timeoutMs = TOTAL_TIMEOUT_MS } = {}) {
+  log = (event) => console.log(JSON.stringify(event)), timeoutMs = TOTAL_TIMEOUT_MS,
+  localUpstream = { http: http.request, https: https.request }, localTimeoutMs = LOCAL_TIMEOUT_MS, interfaces = os.networkInterfaces() } = {}) {
+  const own = ownSubnets(interfaces);
   const configured = typeof secret === "string" && /^[0-9a-f]{64}$/.test(secret);
   let active = 0;
   let toolActive = 0;
@@ -344,6 +377,44 @@ export function createProxy({ secret, registry, credentials = null, events = cre
           }
           return send(result.status, clean, headers);
         } finally { clearTimeout(timer); toolActive -= 1; }
+      }
+      // Owner-configured local model servers (Settings → Models). Same secret and header contract as /v1/forward, but
+      // the key is optional and the target must resolve to the owner's private network (isLocalModelAddress).
+      if (path === "/v1/local-forward") {
+        if (request.method !== "POST") throw new ProxyError("not_found", 404);
+        const method = request.headers["x-eclipse-method"];
+        if (method !== "GET" && method !== "POST") throw new ProxyError("forbidden_target", 403);
+        const target = parseLocalTarget(String(request.headers["x-eclipse-target"] ?? ""));
+        const credential = request.headers["x-eclipse-credential"];
+        if (credential !== undefined && (typeof credential !== "string" || !TOKEN_HEADER.test(credential))) throw new ProxyError("invalid_credential", 400);
+        const outgoing = { "user-agent": "eclipse-crew-egress/1", "accept-encoding": "identity" };
+        for (const name of ["content-type", "accept"]) {
+          const value = request.headers[name];
+          if (value !== undefined) { if (typeof value !== "string" || !SIMPLE_HEADER.test(value)) throw new ProxyError("invalid_request", 400); outgoing[name] = value; }
+        }
+        if (credential) outgoing.authorization = `Bearer ${credential}`;
+        const body = await readBody(request);
+        if (method === "GET" && body.length) throw new ProxyError("invalid_request", 400);
+        outgoing["content-length"] = String(body.length);
+        if (active >= MAX_ACTIVE) throw new ProxyError("busy", 503);
+        active += 1;
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), localTimeoutMs);
+        // A caller that gives up (a Detect probe, a stopped run) frees the slot instead of waiting out the timeout.
+        const abandon = () => { if (!response.writableEnded) controller.abort(); };
+        response.on("close", abandon);
+        try {
+          const address = await resolveLocal(target, resolve, own);
+          const hostHeader = target.host.includes(":") ? `[${target.host}]:${target.port}` : `${target.host}:${target.port}`;
+          const result = await forwardUpstream({
+            upstream: target.secure ? localUpstream.https : localUpstream.http, host: target.host, path: target.path, method,
+            headers: { ...outgoing, host: hostHeader }, body, address, signal: controller.signal, timeoutMs: localTimeoutMs,
+            port: target.port, servername: target.secure && !target.literal ? target.host : null,
+          });
+          const clean = redact(result.body, credential);
+          const type = typeof result.contentType === "string" && SIMPLE_HEADER.test(result.contentType) ? result.contentType : "application/octet-stream";
+          return send(result.status, clean, { "Content-Type": type, "X-Eclipse-Proxy": "ok" });
+        } finally { clearTimeout(timer); response.off("close", abandon); active -= 1; }
       }
       if (!["/v1/forward", "/v1/teach-asr", "/v1/policy"].includes(path) || request.method !== "POST") throw new ProxyError("not_found", 404);
       if (active >= MAX_ACTIVE) throw new ProxyError("busy", 503);

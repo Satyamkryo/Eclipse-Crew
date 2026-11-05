@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Activity, Bot, CalendarClock, FileText, Plug, Search, Settings2, ShieldCheck, UserRound, X } from "lucide-react";
+import { Activity, Blocks, Bot, CalendarClock, Plug, Search, Settings2, ShieldCheck, UserRound, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { AgentSummary } from "@/components/workspace/agent-pane";
 
@@ -14,9 +14,9 @@ export const APP_NAV_ITEMS = [
   { href: "/", label: "Agents", Icon: UserRound, match: (path: string) => path === "/" },
   { href: "/crew", label: "Crew", Icon: Bot, match: (path: string) => path.startsWith("/crew") },
   { href: "/mission-control", label: "Mission Control", Icon: Activity, match: (path: string) => path.startsWith("/mission-control") || path.startsWith("/jobs") },
-  { href: "/?panel=history", label: "Evidence", Icon: FileText, match: () => false },
   { href: "/settings/models", label: "Models", Icon: Settings2, match: (path: string) => path.startsWith("/settings/models") },
-  { href: "/settings/connections", label: "Connections", Icon: Plug, match: (path: string) => path.startsWith("/settings/connections") },
+  { href: "/settings/connections", label: "Connectors", Icon: Plug, match: (path: string) => path.startsWith("/settings/connections") },
+  { href: "/settings/integrations", label: "Integrations", Icon: Blocks, match: (path: string) => path.startsWith("/settings/integrations") },
   { href: "/schedules", label: "Schedules", Icon: CalendarClock, match: (path: string) => path.startsWith("/schedules") },
   { href: "/security", label: "Security", Icon: ShieldCheck, match: (path: string) => path.startsWith("/security") },
 ] as const;
