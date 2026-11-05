@@ -1,6 +1,6 @@
 # Architecture Decisions
 
-Permanent technical decisions for Eclipse Crew. Current project state lives in `docs/MEMORY.md`; full design in `docs/ARCHITECTURE.md`.
+Permanent technical decisions for Eclipse Crew. Full design lives in `docs/ARCHITECTURE.md`; security rules in `docs/SECURITY.md`.
 
 <!--
 Rules for AI agents:
@@ -46,7 +46,7 @@ Rules for AI agents:
 | 028 | Shell action for software development | Accepted |
 | 029 | Composio integration, opt-in | Accepted |
 | 030 | Screenless subagents | Accepted |
-| 031 | Chrome for Testing as the desktop browser | Accepted (supersedes ADR-006 after the TASK-078 spike passes) |
+| 031 | Chrome for Testing as the desktop browser | Accepted (supersedes ADR-006 after the Chrome for Testing spike passes) |
 | 032 | Origin-gated memory auto-save | Accepted |
 | 033 | GitHub App device sign-in for connections | Accepted |
 | 034 | Handoff between agents | Accepted |
@@ -68,13 +68,13 @@ Rejected: Hosted SaaS, Vercel deployment, per-agent cloud sandboxes (E2B).
 ## ADR-002: Next.js full-stack + TypeScript
 Status: Accepted · 2026-10-28
 Decision: Next.js (App Router) for UI and API route handlers, plus TypeScript worker processes in the same `app` service. Tailwind CSS, shadcn/ui, Zod at every boundary.
-Reason: Chosen in the PRD tech stack (§7.3); no alternative was compared.
+Reason: Chosen as part of the original tech stack; no alternative was compared.
 Rejected: NextAuth/Vercel (from the earlier Gemini spec).
 
 ## ADR-003: PostgreSQL + Drizzle ORM
 Status: Accepted · 2026-10-28
 Decision: All structured data in a local PostgreSQL accessed through Drizzle. Postgres full-text search for conversation search. Every table carries `owner_id`.
-Reason: Postgres holds all structured data and the pg-boss queue (ADR-004). `owner_id` lets team mode come later without a migration. Drizzle is from the PRD tech stack (§7.3).
+Reason: Postgres holds all structured data and the pg-boss queue (ADR-004). `owner_id` lets team mode come later without a migration. Drizzle is from the original tech stack.
 Rejected: Vector DB for memory.
 
 ## ADR-004: pg-boss for jobs
@@ -225,25 +225,25 @@ Reason: Owner decision to support delegation in v1 without per-agent screen cont
 Rejected: nested subagents, subagents with their own screens in v1 (an [L] item), privilege borrowing.
 
 ## ADR-031: Chrome for Testing as the desktop browser
-Status: Accepted · 2026-11-01 · Owner approved · Supersedes ADR-006 once the TASK-078 spike passes
+Status: Accepted · 2026-11-01 · Owner approved · Supersedes ADR-006 once the Chrome for Testing spike passes
 Decision: Use a pinned Chrome for Testing build, downloaded on the owner's machine at image build time and checked by SHA-256, as the agents' browser. It is never redistributed. Until the spike confirms codecs, grounding and clicks, the pinned Chromium build stays.
 Reason: Owner needs a real browser; Chromium lacks H.264/AAC, which many sites use. Chrome for Testing has fixed versions and permanent download URLs, so it can be pinned.
 Rejected: building Chromium with proprietary codecs (hours per build), swapping a third-party codec library into Chromium, an unpinned Google Chrome stable package, browser forks.
 
 ## ADR-032: Origin-gated memory auto-save
-Status: Accepted · 2026-11-03 · Owner approved with TASK-086
+Status: Accepted · 2026-11-03 · Owner approved
 Decision: Memory can save what the owner states, automatically, but only when code proves the origin. A change applies without asking only when the agent's memory mode is `auto`, the change carries a quote of at least 12 characters that is an exact substring of one of the owner's own stored messages, at least 90% of the change's content words appear in that message, the injection scan allows it, and the target entry is not pinned. Everything else goes to the existing approval queue. Auto-saved changes are `trusted` with source label "From your message", have a version and an Undo, and an audit event. New agents start on `auto` with `global` + `agent` scopes; the migration puts existing agents on `ask` and the Memory tab offers one audited upgrade action. Caps rise to USER.md 1,500, MEMORY.md 3,000, private 2,200 and the snapshot 8,000 characters. A background `memory.review` job runs once per agent 120 s after chat activity (cursor per agent, at most 5 changes, Background model or Main) and a `memory.tidy` job runs per document at 03:00 local or at 85% of cap, at most every 6 h, accepting merge/shorten/archive only when 95% of their words come from the sources; one card and one Undo cover a tidy batch. `search_history` uses Postgres full-text search over the agent's own chat. No vector database.
 Reason: The owner wants memory that behaves like ChatGPT's and Hermes's without turning a web page or a document into a durable instruction. Code checks provenance; the model's own claim is never trusted.
 Rejected: auto-saving facts from web pages, emails, documents or tool output; trusting the model's claimed source; auto-saving into pinned entries; nightly rewrites without a source-coverage check.
 
 ## ADR-033: GitHub App device sign-in for connections
-Status: Accepted · 2026-11-03 · Owner approved with TASK-088
+Status: Accepted · 2026-11-03 · Owner approved
 Decision: A GitHub connection may come from a GitHub App device sign-in instead of a pasted token. The app shows GitHub's short code, the owner approves it on github.com and picks repositories; the access token (`ghu_`) and the refresh token (`ghr_`) are encrypted with ADR-027, refreshed by a pg-boss job 30 minutes before expiry, and injected only by the egress proxy. The device code stays server-side, encrypted and single-use. The proxy exposes one fixed route, `POST /v1/github-device`, with only the two GitHub endpoints (`/login/device/code` and `/login/oauth/access_token`); host, paths, redirects, size and time are pinned. Only the GitHub App's public client ID is configured; no client secret is stored. A rejected refresh token marks the connection `expired`, drops the refresh token and stops injection until the owner reconnects. Disconnect deletes the row; GitHub revocation is a link to the owner's app authorizations, stated in the UI. Pasting a fine-grained token keeps working exactly as before.
 Reason: The owner wants one-click GitHub for a self-hosted install without a public callback URL and without creating a token by hand. Device flow needs no callback and a GitHub App limits the token to the installed repositories, matching the least-privilege of a fine-grained token.
 Rejected: a plain OAuth app (its token reaches every repository), storing a client secret, a public callback URL, sending either token to the browser, model or desktop, revoking through an endpoint that needs the client secret.
 
 ## ADR-034: Handoff between agents
-Status: Accepted · 2026-11-03 · Owner approved with TASK-085
+Status: Accepted · 2026-11-03 · Owner approved
 Decision: An agent with the `handoff` permission may pass the owner's request to one teammate by exact name with a one-line note of at most 1,000 characters. New agents start with handoff on; existing agents keep their permissions until the owner uses one explicit "Allow handoff for all agents" action. The receiver's task is a copy of the stored owner message (`role = user`), never model text; the sender's note is tagged `agent` as data. The receiver run uses only its own permissions, allowlist, connections and budget. Guards: at most two hops, no return to an agent that already had the request, no self-handoff, and paused, busy or unavailable receivers are refused with `teammate_unavailable`. The sender's run seals `handed_off`; the receiver's run has `run_meta.trigger = 'handoff'` and `run_meta.handoff_of`, and its signed header carries the optional `handoff_of` field only when present. Both events are audited. A leading `@Name ` in a chat message routes the owner's words to that teammate's chat and starts its run there; an unknown name sends nothing; a later `@` is ordinary text. Continue opens the existing rewind dialog at the last complete checkpoint on an interrupted run, with the external-effects notice.
 Reason: Crew delegation in v1 without letting one agent borrow another's access, and without pretending a restarted run can resume in place.
 Rejected: group chats with shared transcripts, borrowing the sender's permissions or connections, same-run resume, one-click Continue that skips the rewind dialog.
@@ -256,12 +256,12 @@ Rejected: global handoff for all agents, crew-wide shared permissions or transcr
 
 ## ADR-036: Simple agent creation, public-web default, instructions vs persona, crew-only handoff
 Status: Accepted · 2026-11-04 · Owner approved (agent-creation redesign request) · Amends ADR-034/035 handoff scope and the domain part of the default-deny rule
-Decision: (1) Creating an agent or crew member needs only a name and a role. Instructions and Persona are optional; budgets ($5/$50), tools (none), websites, actions (the standard set) and memory scopes (`global`, `agent`) default when left blank and sit under Advanced. (2) Websites: a new agent's `agent_policies.any_public_web` is true, so the egress proxy allows any public hostname for it; `isBlockedAddress` still refuses loopback, RFC 1918, link-local and cloud-metadata targets on every connection, IP-literal hosts are still rejected, and plain HTTP is still only redirected to HTTPS. The owner can switch an agent to "Only these sites" (`any_public_web = false` + `domains`). Existing agents and starter-crew templates keep their allowlists (`false`). Task scope (TASK-049), approvals, the confidence gate, the canary tripwire, budgets and Astra rules are unchanged. (3) The old single "persona" field is split: `agents.instructions` (what the agent is expert in; blank saves the role-based expert default) and `agents.soul_md` (Persona: identity, backstory, voice; may be empty; shown as PERSONA.md). Migration 0037 moves the existing text into `instructions` and starts Persona empty. Both go into the stable prompt after the safety rules, labelled as never changing permissions. (4) Agent-initiated handoff exists only inside a crew (the starter crew or an owner-created crew): a standard agent is never offered handoff and is refused with `not_in_crew`; owner `@Name` routing stays open to every agent. The crew handoff switch is shown only on crew agents, turns `handoff` on or off for that crew's members, and replaces the global "Allow handoff for all agents" button.
+Decision: (1) Creating an agent or crew member needs only a name and a role. Instructions and Persona are optional; budgets ($5/$50), tools (none), websites, actions (the standard set) and memory scopes (`global`, `agent`) default when left blank and sit under Advanced. (2) Websites: a new agent's `agent_policies.any_public_web` is true, so the egress proxy allows any public hostname for it; `isBlockedAddress` still refuses loopback, RFC 1918, link-local and cloud-metadata targets on every connection, IP-literal hosts are still rejected, and plain HTTP is still only redirected to HTTPS. The owner can switch an agent to "Only these sites" (`any_public_web = false` + `domains`). Existing agents and starter-crew templates keep their allowlists (`false`). Task scope, approvals, the confidence gate, the canary tripwire, budgets and Astra rules are unchanged. (3) The old single "persona" field is split: `agents.instructions` (what the agent is expert in; blank saves the role-based expert default) and `agents.soul_md` (Persona: identity, backstory, voice; may be empty; shown as PERSONA.md). Migration 0037 moves the existing text into `instructions` and starts Persona empty. Both go into the stable prompt after the safety rules, labelled as never changing permissions. (4) Agent-initiated handoff exists only inside a crew (the starter crew or an owner-created crew): a standard agent is never offered handoff and is refused with `not_in_crew`; owner `@Name` routing stays open to every agent. The crew handoff switch is shown only on crew agents, turns `handoff` on or off for that crew's members, and replaces the global "Allow handoff for all agents" button.
 Reason: The owner wants an agent that can do any task out of the box, with a two-field create form; default-deny domains made a new agent unable to browse. Crew delegation should not leak to unrelated agents.
 Rejected: allowing private or internal addresses, widening task scope to "any host", auto-granting tool_call/shell, keeping a single persona field, letting standard agents hand off on their own.
 
 ## ADR-037: Owner-created accounts, one workspace each
-Status: Accepted · 2026-11-04 · Owner approved with TASK-092 · Amends ADR-014
+Status: Accepted · 2026-11-04 · Owner approved · Amends ADR-014
 Decision: The owner creates extra sign-in accounts from the host CLI only (`account:create`; never HTTP). Every account is a full, separate workspace: its own agents, crews, chats, runs, memory, skills, receipts, routines, connections, model keys and budgets. No signup, no invites, no admin role. Migration 0039 drops the one-row `owner_singleton_idx`; the login stays unique.
 Reason: Judges need isolated workspaces without weakening the no-signup, localhost, server-side-session model. Isolation is enforced by the existing `owner_id` scoping and desktop `owner_mismatch` checks, not by the prompt.
 Rejected: web signup, admin UI or roles, copying model keys between accounts, per-account desktop containers.
@@ -274,7 +274,7 @@ Rejected: `apparmor=unconfined`, `--privileged`, dropping the protective bind mo
 
 ## ADR-039: Any-public-web agents may type any public domain
 Status: Accepted · 2026-11-05 · Owner approved · Amends ADR-036 (task scope)
-Decision: For an agent with `any_public_web = true`, the TASK-049 typing check treats every public domain (known TLD, not an IP literal, not localhost or an internal suffix such as .local/.internal/.lan) as in scope, so "search on google" works without naming google.com. Emails must still be ones the owner named, and "Only these sites" agents keep the exact owner-named rule. The egress proxy still refuses private, link-local and metadata destinations.
+Decision: For an agent with `any_public_web = true`, the task-scope typing check treats every public domain (known TLD, not an IP literal, not localhost or an internal suffix such as .local/.internal/.lan) as in scope, so "search on google" works without naming google.com. Emails must still be ones the owner named, and "Only these sites" agents keep the exact owner-named rule. The egress proxy still refuses private, link-local and metadata destinations.
 Reason: Owners name sites by brand ("google"), and the strict rule blocked ordinary browsing.
 Rejected: mapping brand names to domains; keeping the strict rule for any-public-web agents.
 Residual risk: injected page content could lead the agent to type text into an arbitrary public site; the canary tripwire, approvals and confidence gate still apply.

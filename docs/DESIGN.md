@@ -99,7 +99,7 @@ Agent avatars are the 12 voxel bot SVGs in `public/avatars/voxel/` on a `surface
 - Padding: controls `px-3`, cards `p-4`, panels `p-6`.
 - Tight inside a group (`gap-2`), clear between groups (`gap-6` or more).
 
-**App shell (per `designs/Eclipse_Crew_02/05/39`)**
+**App shell**
 
 | Region | Width |
 |---|---|
@@ -186,7 +186,7 @@ Test at 375, 768, 1280 and 1440 px. On phones, approvals, skill diffs and the Jo
 | **Receipt step** | Row with step number, action, before/after thumbnails, method, confidence, cost (mono) and a ✓ / ✕ status. Expands to full screenshots with the SAM highlight as a 2 px `corona` outline. |
 | **Diff view** | Memory and skill diffs in mono: added lines on a `success` tint, removed lines on a `danger` tint. |
 | **Live desktop frame** | `rounded-xl`, 1 px `border`, black letterbox. Top bar with the screen name, a green live dot, Take over / Hand back and Full screen. During takeover the frame border turns `corona` and a "You're in control" bar shows at the top. |
-| **Expanded desktop view** | Opened by Full screen on the live desktop frame (`designs/Eclipse_Crew_04_Live_Desktop.png`; the button and phone expand icon are in `designs/Eclipse_Crew_39_Workspace_1280.png` and `designs/Eclipse_Crew_44_Mobile_Desktop_View_Only.png`). It fills the app window below the app header and never uses the browser Fullscreen API. The same stream moves into it, so nothing reconnects and an active takeover stays active. The header shows the agent, a live dot, the time, Take over / Hand back and Exit full screen (same as Back to workspace); a side column holds status, current task and control-safety cards. Esc exits, except during a takeover, when Esc goes to the desktop and only the buttons exit. On phones it is view-only unless the keyboard-and-mouse input check passes (takeover eligibility — see the Live desktop and takeover docs; an actual keyboard/mouse-equipped phone or tablet can take over). |
+| **Expanded desktop view** | Opened by the Full screen button on the live desktop frame (an expand icon on phones). It fills the app window below the app header and never uses the browser Fullscreen API. The same stream moves into it, so nothing reconnects and an active takeover stays active. The header shows the agent, a live dot, the time, Take over / Hand back and Exit full screen (same as Back to workspace); a side column holds status, current task and control-safety cards. Esc exits, except during a takeover, when Esc goes to the desktop and only the buttons exit. On phones it is view-only unless the keyboard-and-mouse input check passes (takeover eligibility — see the Live desktop and takeover docs; an actual keyboard/mouse-equipped phone or tablet can take over). |
 | **Tables** (Jobs, History) | 40 px rows, 1 px `border` between rows, sticky header in `text-xs text-muted`. |
 | **Inputs** | 32 px high, `surface` background, `border-input`, `rounded-md`. Focus: `text` ring. Error: `danger` border plus a message below. |
 | **Toasts** | Bottom-right, `surface-raised`, auto-dismiss after 5 s, except errors and approvals, which stay until dismissed. |
