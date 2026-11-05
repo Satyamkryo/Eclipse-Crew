@@ -28,7 +28,7 @@ Eclipse Crew gives you a crew of named AI agents that share one Linux desktop wi
 4. **Self-healing routines.** When a site changes, the agent finds the new path and proposes an update for you to approve.
 5. **Isolation and leak tripwire.** Agents can't read each other's files or keys. A planted canary secret stops the agent if it ever tries to leave.
 
-**Also included:** live desktop with takeover · routines with schedules and catch-up · Sundance/Moondance check-ins that only wake the agent when a page changes · model-free replay of verified runs · readable memory with undo · approvals (Allow once / Always allow / Deny) · Astra Mode · budgets and cost receipts · crew handoff · Mission Control · Security Center with kill switches · chat attachments · MCP, GitHub and Composio connections.
+**Also included:** live desktop with one-click takeover · 20 agent templates and custom crews with handoff · routines with schedules and catch-up · Sundance/Moondance check-ins that only wake the agent when a page changes · model-free replay of verified runs · readable memory with undo · approvals (Allow once / Always allow / Deny) · Astra Mode · budgets and cost receipts · Mission Control · Security Center with kill switches · chat attachments with image, audio and video previews · agents that read, search and hand back files · MCP servers, GitHub and Composio · local models such as Muse Glimmer.
 
 ---
 
@@ -84,7 +84,7 @@ Open **<http://127.0.0.1:3000>** (always this address, not `localhost`).
 1. Create the owner account (signup closes afterwards; there is never a signup page).
 2. Confirm your timezone. It's used for schedules and the clock every agent sees.
 3. **Settings → Models:** add your Main AI provider and key.
-4. **Create agent:** name, role, persona, allowed sites/actions and a daily/monthly budget.
+4. **Create an agent:** only a name and a role are required, or start from a template in the gallery. Instructions and Persona are optional. **Advanced** has safe defaults: $5/day and $50/month budgets, any public website, every connected tool, the standard actions, and the shared `USER.md` plus the agent's own `MEMORY.md`.
 
 **Extra accounts** (one isolated workspace each, e.g. for judges) come only from the host CLI — never from the web. Run these on the host, in the repo folder, with the stack up (they reach the app container themselves):
 
@@ -145,13 +145,16 @@ Limits: one login per judge (separate isolated workspaces), runs stop if the app
 
 ## Using Eclipse Crew
 
-The workspace has three panes: **Agents**, **Chat**, and a panel with **Desktop**, **Settings**, **Tools**, **Routines**, **History** and **Memory**.
+The left navigation has **Agents** (the workspace), **Crew**, **Mission Control**, **Models**, **Connectors**, **Integrations**, **Schedules** and **Security**; your avatar opens **Profile**. The workspace has three panes: your agents, **Chat**, and a panel with **Desktop**, **Settings**, **Tools**, **Routines**, **History** and **Memory**. On a phone, the bottom bar switches between Agents, Chat and the panel.
 
 | Feature | How to use it |
 |---|---|
 | **Chat** | Describe a task in plain language. Replies arrive as cards (message, question, routine, approval, file). Start with `@Name` to send to a teammate. |
-| **Attachments** | Paperclip, drag-and-drop or paste. Documents, images, audio, video and text, up to **250 MB** each (`MAX_UPLOAD_MB`). Files land in the agent's `inbox/`; files it writes to `outbox/` appear as cards. |
-| **Take over** | Desktop tab → **Take over** → **Hand back**. Nothing is recorded while you're in control. |
+| **Attachments** | Paperclip, drag-and-drop or paste. Documents, images, audio, video and text, up to **250 MB** each (`MAX_UPLOAD_MB`). Files land in the agent's `inbox/`; files it writes to `outbox/` appear as cards. Images, audio and video play inline in the chat. |
+| **Agent files** | Agents read uploaded documents (text, PDF with a text layer, Word, Excel, PowerPoint), search long ones and cite the page, and send results back as file cards. With the **shell** action enabled (off by default), an agent can also create files such as a PDF (it writes HTML and prints it with the desktop's Chrome). |
+| **Take over** | Desktop tab → **Take over** (one click) → **Hand back**. **Full screen** opens a larger view without disconnecting. Touch-only devices are view-only and show "Use a mouse to take over". Nothing is recorded while you're in control. |
+| **Crews** | **Crew** page: the starter crew and your own crews. Agents in a crew can hand work to each other (switch it on per crew); `@Name` works for every agent. Live status and spend are on **Mission Control**. |
+| **Tools** | Workspace → **Tools**: connect GitHub or a plugin app to this agent and see everything it can use. An agent may use every tool connected to it; to limit that, list tools under **Advanced** in its settings. |
 | **Teach a skill** | Take over → **Record** → do the task → **Stop** → **Generate skill** → **Approve**. Passwords and OTP fields are masked; capture pauses on login/CAPTCHA pages. |
 | **Routines** | Ask in chat ("every weekday at 9am…"), confirm the card. **Schedules** shows upcoming runs; missed runs follow your catch-up choice. |
 | **Check-ins** | Routines tab → **New check-in**: a page to watch, hours and an optional task. **Sundance** (day) alerts you in chat right away; **Moondance** (night) works quietly and sends one morning summary. The check itself uses no AI; the agent wakes only when the page changed. If the page needs a login, you take over once and sign in; later checks use the agent’s browser. |
@@ -160,9 +163,10 @@ The workspace has three panes: **Agents**, **Chat**, and a panel with **Desktop*
 | **Rewind** | History → step → **Rewind to here**, add a correction, **Create branch**. Restores agent state and files, not external side effects (sent emails, orders). |
 | **Approvals** | Download/send/post/delete/purchase/submit pauses for **Allow once**, **Always allow** (per agent + site + action, 20/day) or **Deny**. |
 | **Astra Mode** | Per-agent switch in Settings that skips approval prompts. Receipts, budgets, scope checks and the tripwire stay on. |
-| **Memory** | `SOUL.md` (persona), `USER.md` (facts about you), `MEMORY.md` (agent notes). Every change is a diff with **Undo**; pin facts to protect them. |
-| **Budgets** | Daily/monthly per agent; warns at 80%, pauses at 100%. Every run has a cost receipt. Edit rates in **Settings → Models**. |
-| **Connectors** | **Settings → Connectors:** MCP tab (Step 1 connect GitHub / paste scoped tokens, Step 2 pin MCP servers) and Plugins tab (Composio). Tokens are encrypted and injected by the proxy, never shown to the model. |
+| **Memory** | `PERSONA.md` (who the agent is and how it talks), `USER.md` (facts about you, shared by the crew), `MEMORY.md` (this agent's notes) and private notes. Facts you state in chat can save automatically; every change is a diff with **Undo**, and pinned facts are protected. |
+| **Budgets** | Daily/monthly per agent; warns at 80%, pauses at 100%. Every run has a cost receipt. Edit rates in **Models**. |
+| **Connectors** | **Connectors:** pin MCP servers and turn on Composio plugin apps for an agent. |
+| **Integrations** | **Integrations:** connect GitHub (app sign-in or a scoped token) and save your Composio API key. Tokens are encrypted, added only by the egress proxy for the hosts they belong to, and never shown to the model, logs or receipts. |
 | **Security** | **Security Center** shows events and the signed audit log. **Stop agent** / **Stop crew** halt everything at once. |
 
 ---
@@ -200,7 +204,7 @@ Notes:
 - Use `host.docker.internal`, not `localhost`: inside Docker, `localhost` is the Eclipse Crew container. Eclipse Crew refuses `localhost` addresses and says so.
 - On Linux, the server must listen on all interfaces, for example `OLLAMA_HOST=0.0.0.0 ollama serve`. Docker Desktop on Windows and macOS reaches `127.0.0.1` servers without this.
 - **Model on another computer:** install Tailscale on both machines (same account), make the model server listen on `0.0.0.0`, and enter `http://<machine>.<tailnet>.ts.net:11434/v1`. A LAN IP such as `http://192.168.1.20:11434/v1` also works. Never open the model port on your router: Ollama has no password.
-- Local models are slower than hosted APIs. Eclipse Crew waits up to 120 s per call for a local server (30 s for hosted ones).
+- Local models are slower than hosted APIs. Eclipse Crew waits up to 120 s per call for a local server (55 s for hosted ones).
 - The model must support **tool calling**; vision is strongly recommended. Glimmer has no built-in computer use, so it drives the screen through Eclipse Crew's grounding layer and asks more often on hard pages.
 
 ### Local SAM 3.1 (vision precision on your own GPU)
@@ -249,6 +253,8 @@ Step screenshots and checkpoints auto-delete after 32 days; receipts and the aud
 | Local model times out | It's still loading or too slow for this GPU. Try a smaller quantization, or use it as the Background model only |
 | Windows: slow or permission errors | Use Docker Desktop's WSL 2 backend; keep agent files in Docker volumes |
 | Agent keeps asking for approval | The confidence gate is working. Enable SAM, use a vision model, or grant **Always allow** |
+| Agent stops after opening a site ("expected result was not verified") | It couldn't confirm the page. Look at the Desktop tab, then ask again. Pages are given a few seconds to finish loading before they are checked |
+| **Take over** is missing on a phone or tablet | Touch-only devices are view-only. Use a mouse or trackpad |
 | "Receipt signing is not set up" | `npm run receipt-key`, then `docker compose up -d` |
 | Agent paused: budget reached | Raise its budget or wait for the next period |
 | Run says **Interrupted** | The app restarted mid-run. Press **Continue** to branch from the last checkpoint |
@@ -261,11 +267,12 @@ Step screenshots and checkpoints auto-delete after 32 days; receipts and the aud
 
 | Shipped in v1 | Next |
 |---|---|
-| Docker setup, owner login, agents, chat, live desktop + takeover | Files tab, phone app (PWA), one-command installer |
+| Docker setup, owner login, host-created extra accounts, agents and templates, crews, chat with media previews, live desktop + one-click takeover | Files tab, phone app (PWA), one-command installer |
 | Teach from video, receipts + verifier, rewind, self-healing, isolation + tripwire | Native desktop capture, video-model skill drafting |
 | Routines, replay, Sundance/Moondance check-ins, Mission Control, Schedules | Webhooks, push notifications |
 | Meta models, SAM 3.1 (Meta API or your own server), OpenAI-compatible and local models (Ollama, LM Studio, llama.cpp, vLLM, SGLang), price table | Anthropic connector, voice, bundled local SAM server |
 | Approvals, Astra Mode, budgets, egress allowlist, audit log, kill switches | 2FA, backups, booking assistant |
+| MCP servers, GitHub and Composio (Connectors and Integrations), agent file reading, search and delivery | More built-in file actions (for example a PDF maker without the shell) |
 
 ---
 
