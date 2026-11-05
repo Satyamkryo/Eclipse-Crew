@@ -80,7 +80,7 @@ const toolCall = z.object({
 }).strict();
 // TASK-054 / TASK-086. Add, replace or forget one memory entry. `quote` is the owner's exact words; code checks it
 // against the owner's stored messages before a change may apply without asking. Text may wrap; title and reason are lines.
-const remember = z.object({
+const rememberFields = z.object({
   action: z.literal("remember"),
   op: z.enum(["add", "replace", "forget"]).default("add"),
   scope: z.enum(["global", "agent", "private"]),
@@ -88,7 +88,8 @@ const remember = z.object({
   text: z.string().trim().min(1).max(600).refine(noControls, "contains unsupported control characters").optional(),
   reason: line(120),
   quote: z.string().trim().min(12).max(600).refine(noControls, "contains unsupported control characters").optional(),
-}).strict().refine((value) => value.op === "forget" || Boolean(value.text), "add and replace need the fact text");
+}).strict();
+const remember = rememberFields.refine((value) => value.op === "forget" || Boolean(value.text), "add and replace need the fact text");
 // The agent may acquire its own graphical desktop or browser. Identity, executable and paths are server-bound;
 // the model only names the lifecycle step it needs.
 const startDesktop = z.object({ action: z.literal("start_desktop"), expect: expectation.optional() }).strict();
@@ -188,16 +189,87 @@ export function resolvePlaceholders(text: string, values: PlaceholderValues):
   return missing ? { ok: false, missing } : { ok: true, text: resolved, used };
 }
 
-export type ParsedStep = { ok: true; intent: Intent } | { ok: false };
+// Why a reply was not a usable step. The code (never model text) goes back to the model in previous_steps so the next
+// reply can be corrected, and into the operator log.
+export type InvalidStepReason = "no_step" | "computer_call" | "wrong_tool" | "too_long" | "not_json" | "schema";
+export type ParsedStep = { ok: true; intent: Intent } | { ok: false; reason: InvalidStepReason; field?: string };
 
-// Accepts exactly one `next_step` function call. Anything else is invalid and never executed.
-export function parseNextStep(outputs: ProviderOutput[]): ParsedStep {
-  const calls = outputs.filter((output) => output.type === "function_call" || output.type === "computer_call");
-  if (calls.length !== 1) return { ok: false };
-  const call = calls[0];
-  if (call.type !== "function_call" || call.name !== NEXT_STEP_TOOL_NAME || call.arguments.length > 8192) return { ok: false };
+// The fields each action may carry, from the strict schemas above.
+const ACTION_FIELDS: ReadonlyMap<string, ReadonlySet<string>> = new Map(
+  [click, type, key, scroll, wait, getTime, readDocument, searchDocument, searchHistory, deliverFile, extract, navigate, select,
+    rememberFields, toolCall, shell, startDesktop, startBrowser, hearAudio, handoff, spawnSubagent, finish, askOwner]
+    .map((schema): [string, ReadonlySet<string>] => [schema.shape.action.value, new Set(Object.keys(schema.shape))]));
+const STEP_FIELDS: ReadonlySet<string> = new Set(Object.keys((NEXT_STEP_TOOL.parameters as { properties: object }).properties));
+const NUMBER_FIELDS = new Set(["offset", "timeout", "seconds"]);
+// Outer bound on the raw JSON only; each action's schema enforces its real limits. It fits the longest valid step:
+// 6000 characters of tool_call args plus a 300-character expect, each character at most 6 when written as \uXXXX.
+const MAX_ARGUMENTS = 40_000;
+
+// Models that fill every declared property send unused ones as "", null or [] and sometimes another action's field.
+// Those are dropped, a numeric string becomes a number and tool_call args given as an object become a JSON string.
+// Only fields declared on the next_step tool are ever dropped: anything else (x, y, coordinate, selector...) is kept
+// so the strict schema still rejects the whole step (ADR-008).
+function normalizeStep(raw: unknown): unknown {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+  let value = raw as Record<string, unknown>;
+  // { "name": "next_step", "arguments": {...} } or { "parameters": {...} } written by models that echo the call.
+  if (!("action" in value)) {
+    const inner = value.arguments ?? value.parameters ?? value.input;
+    if (typeof inner === "string") { try { return normalizeStep(JSON.parse(inner)); } catch { return raw; } }
+    if (inner && typeof inner === "object") return normalizeStep(inner);
+    return raw;
+  }
+  const fields = typeof value.action === "string" ? ACTION_FIELDS.get(value.action) : undefined;
+  value = { ...value };
+  for (const [key, item] of Object.entries(value)) {
+    if (key === "action") continue;
+    const empty = item === null || item === undefined || (typeof item === "string" && item.trim() === "") || (Array.isArray(item) && item.length === 0);
+    if ((empty || (fields && !fields.has(key))) && STEP_FIELDS.has(key)) { delete value[key]; continue; }
+    if (NUMBER_FIELDS.has(key) && typeof item === "string" && /^\d{1,9}$/.test(item.trim())) value[key] = Number(item.trim());
+    if (key === "args" && item && typeof item === "object" && !Array.isArray(item)) value[key] = JSON.stringify(item);
+  }
+  return value;
+}
+
+function parseArguments(text: string): ParsedStep {
+  if (text.length > MAX_ARGUMENTS) return { ok: false, reason: "too_long" };
   let raw: unknown;
-  try { raw = JSON.parse(call.arguments); } catch { return { ok: false }; }
-  const parsed = intentSchema.safeParse(raw);
-  return parsed.success ? { ok: true, intent: parsed.data } : { ok: false };
+  try { raw = JSON.parse(text); } catch { return { ok: false, reason: "not_json" }; }
+  const parsed = intentSchema.safeParse(normalizeStep(raw));
+  if (parsed.success) return { ok: true, intent: parsed.data };
+  const path = parsed.error.issues[0]?.path.map(String).join(".");
+  const unknown = parsed.error.issues.find((issue) => issue.code === "unrecognized_keys") as { keys?: string[] } | undefined;
+  const field = (unknown?.keys?.[0] ?? path ?? "").replace(/[^A-Za-z0-9_.]/g, "").slice(0, 40);
+  return { ok: false, reason: "schema", ...(field ? { field } : {}) };
+}
+
+// A step written as JSON in the reply text (a fenced block or a bare object) instead of a tool call.
+function stepFromText(text: string): string | null {
+  const fenced = /```(?:json)?\s*(\{[\s\S]*?\})\s*```/i.exec(text);
+  const candidate = fenced?.[1] ?? (() => {
+    const start = text.indexOf("{"); const end = text.lastIndexOf("}");
+    return start >= 0 && end > start ? text.slice(start, end + 1) : null;
+  })();
+  return candidate && /"action"\s*:/.test(candidate) ? candidate : null;
+}
+
+const isNextStep = (name: string) => /^(?:functions\.)?next_step$/.test(name.trim());
+
+// Accepts the first `next_step` function call (a model that emits several runs only the first; each step is checked on
+// its own). A reply without a call may carry the step as JSON in its text. Everything still passes the strict schema;
+// anything else is invalid and never executed.
+export function parseNextStep(outputs: ProviderOutput[]): ParsedStep {
+  if (outputs.some((output) => output.type === "computer_call")) return { ok: false, reason: "computer_call" };
+  const calls = outputs.filter((output) => output.type === "function_call");
+  if (calls.length) {
+    const call = calls.find((item) => isNextStep(item.name));
+    if (!call) return { ok: false, reason: "wrong_tool" };
+    return parseArguments(call.arguments);
+  }
+  for (const output of outputs) {
+    if (output.type !== "message") continue;
+    const json = stepFromText(output.text);
+    if (json) return parseArguments(json);
+  }
+  return { ok: false, reason: "no_step" };
 }
