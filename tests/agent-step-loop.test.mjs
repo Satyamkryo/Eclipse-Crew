@@ -96,16 +96,66 @@ test("intent schema accepts only described targets and rejects coordinates, sele
   assert.equal(NEXT_STEP_TOOL.parameters.additionalProperties, false);
 });
 
-test("parseNextStep needs exactly one valid next_step call", () => {
+test("parseNextStep takes the first valid next_step call and rejects everything else", () => {
   const valid = step({ action: "wait", expect: "loaded" }).outputs;
   assert.equal(parseNextStep(valid).ok, true);
-  assert.equal(parseNextStep([...valid, ...valid]).ok, false);
-  assert.equal(parseNextStep([{ type: "message", text: "I will click now" }]).ok, false);
-  assert.equal(parseNextStep([{ ...valid[0], name: "other" }]).ok, false);
+  assert.deepEqual(parseNextStep([...valid, ...step({ action: "finish", summary: "x" }).outputs]), { ok: true, intent: { action: "wait", expect: "loaded" } });
+  assert.deepEqual(parseNextStep([{ type: "message", text: "I will click now" }]), { ok: false, reason: "no_step" });
+  assert.deepEqual(parseNextStep([{ ...valid[0], name: "other" }]), { ok: false, reason: "wrong_tool" });
   assert.equal(parseNextStep(step("not json").outputs).ok, false);
   assert.equal(parseNextStep(step("[]").outputs).ok, false);
   assert.equal(parseNextStep([{ type: "computer_call", callId: "c", actions: [{ type: "click", x: 1, y: 2 }], pendingSafetyChecks: [], replayItems: [] }]).ok, false);
   assert.equal(parseNextStep([{ type: "message", text: "ok" }, ...valid]).ok, true);
+});
+
+test("parseNextStep forgives unused empty fields and other wrappers but never coordinates or selectors", () => {
+  const parse = (args) => parseNextStep(step(args).outputs);
+  // A model that fills every declared property with "" or null, or adds another action's field.
+  assert.deepEqual(parse({ action: "navigate", url: "https://news.example/", expect: "headlines", target: "", text: null, keys: "", tools: [], summary: "" }),
+    { ok: true, intent: { action: "navigate", url: "https://news.example/", expect: "headlines" } });
+  assert.deepEqual(parse({ action: "finish", summary: "Top 5 stories", target: "Search box", expect: "done" }),
+    { ok: true, intent: { action: "finish", summary: "Top 5 stories" } });
+  assert.deepEqual(parse({ action: "shell", command: "ls", timeout: "30", expect: "listing" }),
+    { ok: true, intent: { action: "shell", command: "ls", timeout: 30, expect: "listing" } });
+  assert.deepEqual(parse({ action: "tool_call", name: "github.list", args: { q: "is:open" }, expect: "issues" }),
+    { ok: true, intent: { action: "tool_call", name: "github.list", args: "{\"q\":\"is:open\"}", expect: "issues" } });
+  assert.deepEqual(parse({ name: "next_step", arguments: { action: "wait", expect: "loaded" } }), { ok: true, intent: { action: "wait", expect: "loaded" } });
+  assert.deepEqual(parseNextStep([{ type: "function_call", callId: "c", name: "functions.next_step", arguments: JSON.stringify({ action: "wait", expect: "x" }) }]).ok, true);
+  // The step written as JSON in the reply text instead of a tool call.
+  const fence = "`".repeat(3);
+  assert.deepEqual(parseNextStep([{ type: "message", text: `Here is my step:\n${fence}json\n{"action": "finish", "summary": "Hi!"}\n${fence}` }]),
+    { ok: true, intent: { action: "finish", summary: "Hi!" } });
+  // Undeclared fields still reject the whole step (ADR-008), including inside a text reply.
+  for (const bad of [{ action: "click", target: "Submit", expect: "ok", x: 5, y: 6 }, { action: "navigate", url: "https://a.example/", expect: "x", selector: "#a" },
+    { action: "click", target: "", expect: "ok" }]) assert.equal(parse(bad).ok, false, JSON.stringify(bad));
+  assert.deepEqual(parse({ action: "click", target: "Submit", expect: "ok", coordinate: [1, 2] }), { ok: false, reason: "schema", field: "coordinate" });
+  assert.equal(parseNextStep([{ type: "message", text: '{"action":"click","target":"A","expect":"b","x":1}' }]).ok, false);
+  assert.deepEqual(parse("not json"), { ok: false, reason: "not_json" });
+});
+
+test("parseNextStep treats inherited object names as unknown actions instead of throwing", () => {
+  for (const action of ["toString", "constructor", "__proto__", "hasOwnProperty"]) {
+    const parsed = parseNextStep(step({ action, expect: "x", target: "y" }).outputs);
+    assert.equal(parsed.ok, false, action);
+    assert.equal(parsed.reason, "schema", action);
+  }
+});
+
+test("parseNextStep admits tool_call args up to their limit after JSON escaping and rejects oversized input", () => {
+  const padded = (fill, size) => { const base = JSON.stringify({ q: "" }); return JSON.stringify({ q: fill.repeat(Math.floor((size - base.length) / JSON.stringify(fill).slice(1, -1).length)) }); };
+  // Every quote doubles when args travels as a JSON string.
+  const quotes = padded('"', 6000);
+  assert.ok(quotes.length <= 6000);
+  const quoted = parseNextStep(step({ action: "tool_call", name: "github.list", args: quotes, expect: "issues" }).outputs);
+  assert.equal(quoted.ok, true);
+  assert.equal(quoted.intent.args, quotes);
+  // The worst case: every character written as a \uXXXX escape.
+  const raw = "x".repeat(6000 - JSON.stringify({ q: "" }).length);
+  const unicode = `{"action":"tool_call","name":"github.list","expect":"issues","args":"{\\"q\\":\\"${raw.replace(/x/g, "\\u0078")}\\"}"}`;
+  assert.equal(parseNextStep([{ type: "function_call", callId: "c", name: "next_step", arguments: unicode }]).ok, true);
+  // Past the schema's own limit the action schema refuses it; far past the outer limit it is never parsed.
+  assert.equal(parseNextStep(step({ action: "tool_call", name: "github.list", args: JSON.stringify({ q: "x".repeat(6000) }), expect: "x" }).outputs).ok, false);
+  assert.deepEqual(parseNextStep(step({ action: "wait", expect: "x".repeat(50_000) }).outputs), { ok: false, reason: "too_long" });
 });
 
 test("placeholders fill from saved values and fail closed on an unknown or empty name", () => {
@@ -167,7 +217,7 @@ test("each request keeps the owner task trusted, screenshot and history untruste
   assert.match(clockBlock(NOW, "Not/AZone"), /User timezone: Etc\/UTC/);
 });
 
-test("invalid, coordinate-bearing or non-completed model output executes nothing; two in a row stop the run", async () => {
+test("invalid, coordinate-bearing or non-completed model output executes nothing; three in a row stop the run", async () => {
   const invalid = [step({ action: "click", target: "Submit", expect: "ok", x: 5, y: 6 }), step("garbage"),
     { ...step({ action: "wait", expect: "x" }), status: "incomplete" }];
   for (const bad of invalid) {
@@ -177,6 +227,16 @@ test("invalid, coordinate-bearing or non-completed model output executes nothing
   }
   const { result, deps } = await run({ provider: fakeProvider([step("garbage"), step({ action: "wait", expect: "x" }), step({ action: "finish", summary: "ok" })]) });
   assert.equal(result.outcome, "finished"); assert.equal(noInput(deps.desktop.calls).length, 0);
+  // Two unusable replies in a row no longer end the run; the model sees why and can correct itself.
+  const prose = { ...step({}), outputs: [{ type: "message", text: "Let me look up the news." }] };
+  const recovering = fakeProvider([prose, step({ action: "click", target: "Submit", expect: "ok", x: 1 }), step({ action: "finish", summary: "ok" })]);
+  const recovered = await run({ provider: recovering });
+  assert.equal(recovered.result.outcome, "finished");
+  assert.deepEqual(JSON.parse(recovering.requests[2].messages[0].content[1].text).previous_steps.map((item) => item.code),
+    ["no_step", "schema:x"]);
+  // A reply cut at the output limit still counts when the step inside it is whole.
+  const cut = await run({ provider: fakeProvider([{ ...step({ action: "finish", summary: "ok" }), status: "incomplete", incompleteReason: "max_output_tokens" }]) });
+  assert.equal(cut.result.outcome, "finished");
 });
 
 test("the default-deny action allowlist stops the run before any input", async () => {
@@ -789,7 +849,7 @@ test("the instructions carry the delivery rule and the document-is-data rule", a
   assert.match(text, /call search_document first/);
   assert.match(text, /try 2-3 other phrasings/);
   assert.match(text, /When the text shows --- page N ---, cite the page/);
-  assert.equal(provider.requests[0].maxOutputTokens, 2048);
+  assert.equal(provider.requests[0].maxOutputTokens, 4096);
 });
 // ---- TASK-027: optional routing and the model on every step ----
 const MAIN = "muse-spark-1.3-contributor"; const HARD = "muse-wonder-1.0";

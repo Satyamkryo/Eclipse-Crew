@@ -7,7 +7,7 @@ import { executeIntent, validPoint, type Grounder } from "./executor";
 import { createPageGrounder, suggestNames } from "./grounding";
 import { notAllowedText } from "../agents/actions";
 import { containsCanary } from "../security/canary";
-import { DESKTOP_ACTIONS, FILE_ACTIONS, parseNextStep, resolvePlaceholders, type Intent } from "./intent";
+import { DESKTOP_ACTIONS, FILE_ACTIONS, parseNextStep, resolvePlaceholders, type Intent, type ParsedStep } from "./intent";
 import { labelFor, pickRoute, type RouteKind } from "./routing";
 import { checkTyped, deriveScope, hostFromUrl, type ScopeRule } from "./scope";
 import { classifyAction, type ActionClass, type RiskClass } from "./risk";
@@ -58,7 +58,7 @@ export function weightedTokens(usage: Pick<ProviderUsage, "inputTokens" | "outpu
   const cached = Math.max(0, usage.cachedInputTokens);
   return Math.max(0, usage.inputTokens - cached) + usage.outputTokens + Math.ceil(cached / 10);
 }
-const MAX_INVALID_IN_A_ROW = 2;
+const MAX_INVALID_IN_A_ROW = 3;
 // A click whose target is not found gets one more turn with the visible names; the next miss hands off.
 const MAX_MISSES_IN_A_ROW = 2;
 
@@ -264,7 +264,7 @@ const hearingFailure = (code: string) => HEARING_FAILURE_TEXT[code] ?? "I could 
 const FIXED_TEXT: Record<Exclude<RunOutcome, "finished" | "asked_owner" | "busy" | "handed_off">, string> = {
   needs_owner: "I stopped and need you to take this step.",
   paused_by_owner: "I stopped because you took over the desktop.",
-  invalid_output: "I stopped because the model did not return a usable step twice in a row.",
+  invalid_output: "I stopped because the model did not return a usable step three times in a row.",
   step_limit: "I stopped because this run reached its step limit.",
   token_limit: "I stopped because this run reached its token limit.",
   time_limit: "I stopped because this run reached its time limit.",
@@ -594,9 +594,14 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
       if (stopIfStopped()) break;
       if (weightedTokens(usage) >= tokenLimit) { stop("token_limit"); break; }
 
-      const parsed = result.status === "completed" ? parseNextStep(result.outputs) : { ok: false as const };
+      // A reply cut at the output limit still counts when its step arrived whole (truncated JSON fails to parse).
+      const readable = result.status === "completed" || (result.status === "incomplete" && result.incompleteReason === "max_output_tokens");
+      const parsed: ParsedStep = readable ? parseNextStep(result.outputs) : { ok: false, reason: "no_step" };
       if (!parsed.ok) {
-        history.push({ step: currentTurn, action: "wait", result: "invalid_output" });
+        logInvalidStep(route.model, result, parsed);
+        // The fixed code tells the model what was wrong so its next reply can be corrected; no model text is kept.
+        history.push({ step: currentTurn, action: "wait", result: "invalid_output",
+          code: parsed.field ? `${parsed.reason}:${parsed.field}` : result.status === "incomplete" ? `${parsed.reason}:${result.status}` : parsed.reason });
         if (++invalid >= MAX_INVALID_IN_A_ROW) { stop("invalid_output"); break; }
         continue;
       }
@@ -1473,6 +1478,13 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
     // Held until the card is posted, so a second run cannot start mid-report.
     releaseAgent();
   }
+}
+
+// Operator visibility for an unusable reply: model id, status, output kinds and the fixed reason only, never model text.
+function logInvalidStep(model: string, result: { status: string; incompleteReason?: string | null; outputs: { type: string }[] },
+  parsed: { reason: string; field?: string }) {
+  console.error(JSON.stringify({ event: "model_step_invalid", model, status: result.status, incompleteReason: result.incompleteReason ?? null,
+    outputs: result.outputs.map((output) => output.type).slice(0, 8), reason: parsed.reason, field: parsed.field }));
 }
 
 // Operator visibility for provider failures: model id, error code and a short message only. Never the request,

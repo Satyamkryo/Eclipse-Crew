@@ -183,7 +183,7 @@ export function shortRunId(runId: string): string {
 export const END_NOTE: Record<string, string> = {
   needs_owner: "The run stopped and needs you to take the next step.",
   paused_by_owner: "The run stopped because the desktop was taken over.",
-  invalid_output: "The run stopped because the model did not return a usable step twice in a row.",
+  invalid_output: "The run stopped because the model did not return a usable step three times in a row.",
   step_limit: "The run stopped after its step limit.",
   token_limit: "The run stopped because it reached its token limit.",
   time_limit: "The run stopped because it reached its time limit.",
