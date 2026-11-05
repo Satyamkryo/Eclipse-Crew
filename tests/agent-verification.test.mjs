@@ -29,10 +29,59 @@ test("supported DOM success skips screenshots and providers; failures poll bound
   assert.equal(result.status, "fail"); assert.equal(reads, 3); assert.equal(sleeps, 2); assert.deepEqual(calls, ["dom"]);
 });
 test("SAM off makes no SAM calls; unsupported prose falls back to model once", async () => {
+  // Two screenshots: the second confirms the screen has settled (identical), then one model check.
   const { input, calls } = setup("object_visible: button");
-  assert.equal((await verifyStep(input)).sam, "off"); assert.deepEqual(calls, ["shot", "model"]);
+  assert.equal((await verifyStep(input)).sam, "off"); assert.deepEqual(calls, ["shot", "shot", "model"]);
   const prose = setup("Confirmation is visible");
-  assert.equal((await verifyStep(prose.input)).status, "pass"); assert.deepEqual(prose.calls, ["shot", "model"]);
+  assert.equal((await verifyStep(prose.input)).status, "pass"); assert.deepEqual(prose.calls, ["shot", "shot", "model"]);
+});
+
+// Distinct valid PNGs: a 1x1 grey and a 1x1 white pixel.
+const LOADING = { base64: PNG, width: 1, height: 1 };
+const LOADED = { base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==", width: 1, height: 1 };
+const screens = (...sequence) => { let i = 0; return async () => sequence[Math.min(i++, sequence.length - 1)]; };
+
+test("a loading page is judged only after the screen settles, within a bounded wait", async () => {
+  const judged = []; const sleeps = [];
+  const result = await verifyStep({ before: shot, expect: "Range Rover homepage is visible", sleep: async (ms) => { sleeps.push(ms); },
+    desktop: { screenshot: screens(LOADING, LOADED, LOADED) },
+    services: { samState: "off", visual: { verify: async (_b, after) => { judged.push(after.base64); return "pass"; } } } });
+  assert.equal(result.status, "pass");
+  assert.deepEqual(judged, [LOADED.base64]);
+  assert.deepEqual(sleeps, [750, 750]);
+  // A screen that never stops changing (video, animation) is judged when the wait runs out (six 750 ms polls).
+  let flip = 0; const capped = [];
+  await verifyStep({ before: shot, expect: "Video page", sleep: async (ms) => { capped.push(ms); },
+    desktop: { screenshot: async () => (flip++ % 2 ? LOADED : LOADING) },
+    services: { samState: "off", visual: { verify: async () => "pass" } } });
+  assert.equal(capped.reduce((a, b) => a + b, 0), 4500);
+});
+
+test("an unknown verdict is re-checked once only when the screen changed since it was judged; fail is never re-asked", async () => {
+  // Settles on a skeleton (two identical shots), judged unknown, then the page finishes loading: one more look passes.
+  const verdicts = ["unknown", "pass"]; const judged = [];
+  const changed = await verifyStep({ before: shot, expect: "object_visible: Build your own", sleep: async () => {},
+    desktop: { screenshot: screens(LOADING, LOADING, LOADED) },
+    services: { samState: "off", visual: { verify: async (_b, after) => { judged.push(after.base64); return verdicts.shift(); } } } });
+  assert.equal(changed.status, "pass");
+  assert.deepEqual(judged, [LOADING.base64, LOADED.base64]);
+  assert.deepEqual(changed.evidence.map((e) => e.status), ["unknown", "pass"]);
+  // Still screen: no second model call.
+  let still = 0;
+  const same = await verifyStep({ before: shot, expect: "Thing", sleep: async () => {}, desktop: { screenshot: async () => LOADING },
+    services: { samState: "off", visual: { verify: async () => { still++; return "unknown"; } } } });
+  assert.equal(same.status, "unknown"); assert.equal(still, 1);
+  // A fail is final even when the screen moves.
+  let failed = 0;
+  const fail = await verifyStep({ before: shot, expect: "Thing", sleep: async () => {}, desktop: { screenshot: screens(LOADING, LOADING, LOADED) },
+    services: { samState: "off", visual: { verify: async () => { failed++; return "fail"; } } } });
+  assert.equal(fail.status, "fail"); assert.equal(failed, 1);
+  // The receipt's "after" picture is the one that was judged last.
+  const afters = [];
+  await verifyStep({ before: shot, expect: "Thing", sleep: async () => {}, onAfter: (s) => afters.push(s.base64),
+    desktop: { screenshot: screens(LOADING, LOADING, LOADED) },
+    services: { samState: "off", visual: { verify: async () => (afters.length === 1 ? "unknown" : "pass") } } });
+  assert.deepEqual(afters, [LOADING.base64, LOADED.base64]);
 });
 // A decoded SAM mask always has a box and image size; the verifier reads box for the History outline.
 const samMask = (confidence, box = { x1: 1, y1: 1, x2: 2, y2: 2 }) => ({
@@ -143,4 +192,23 @@ test("page.verify is closed, generation scoped and validates only fixed result c
   assert.equal(verifySnapshot({ url: "https://x.test/a", elements: [] }, predicate).status, "fail");
   assert.equal(verifySnapshot({ url: "https://x.test/a", elements: [{ name: "Save" }, { name: "Save" }] }, predicate).status, "unknown");
   assert.equal(verifySnapshot({ url: "https://x.test/a", elements: [] }, { kind: "url_path", value: "/a" }).status, "pass");
+});
+
+test("navigate retries once after a transient failure, never for other errors, and never more than once", async () => {
+  const { executeIntent, NAVIGATE_RETRY_MS } = await import("../lib/agent/executor.ts");
+  const intent = { action: "navigate", url: "https://www.rangerover.com/en-in/index.html", expect: "Range Rover homepage" };
+  const transient = (code) => Object.assign(new Error(code), { code });
+  let calls = 0; const sleeps = [];
+  await executeIntent(intent, { navigate: async () => { if (calls++ === 0) throw transient("navigation_failed"); } }, null, async (ms) => { sleeps.push(ms); });
+  assert.equal(calls, 2); assert.deepEqual(sleeps, [NAVIGATE_RETRY_MS]);
+  // The app-side deadline has no code; its message names it.
+  calls = 0;
+  await executeIntent(intent, { navigate: async () => { if (calls++ === 0) throw new Error("desktop_timeout"); } }, null, async () => {});
+  assert.equal(calls, 2);
+  calls = 0;
+  await assert.rejects(executeIntent(intent, { navigate: async () => { calls++; throw transient("forbidden_target"); } }, null, async () => {}), /forbidden_target/);
+  assert.equal(calls, 1);
+  calls = 0;
+  await assert.rejects(executeIntent(intent, { navigate: async () => { calls++; throw transient("uncertain_outcome"); } }, null, async () => {}), /uncertain_outcome/);
+  assert.equal(calls, 2);
 });

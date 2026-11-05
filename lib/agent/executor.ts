@@ -28,6 +28,14 @@ export function validPoint(point: GroundedPoint | null, screenshot: Screenshot):
 
 const SCROLL_COUNT = 3;
 const WAIT_MS = 1500;
+export const NAVIGATE_RETRY_MS = 2_000;
+const TRANSIENT_NAVIGATION = new Set(["navigation_failed", "uncertain_outcome", "queue_full", "desktop_timeout"]);
+
+function isTransientNavigationError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const code = (error as { code?: unknown }).code;
+  return TRANSIENT_NAVIGATION.has(typeof code === "string" ? code : error.message);
+}
 
 export async function executeIntent(
   intent: Intent,
@@ -43,9 +51,18 @@ export async function executeIntent(
       if (!point) throw new Error("ungrounded_select");
       if (!port.select) throw new Error("select_unavailable");
       return port.select(point, intent.option);
-    case "navigate":
+    case "navigate": {
       if (!port.navigate) throw new Error("navigate_unavailable");
-      return port.navigate(intent.url);
+      // Opening a page is safe to repeat, so one transient failure (a slow first response on a cold browser, a busy
+      // desktop queue) gets one more try before the run stops. Any other error, or a second failure, stops as before.
+      try {
+        return await port.navigate(intent.url);
+      } catch (error) {
+        if (!isTransientNavigationError(error)) throw error;
+        await sleep(NAVIGATE_RETRY_MS);
+        return port.navigate(intent.url);
+      }
+    }
     case "type": return port.type(intent.text);
     case "key": return port.key(intent.keys);
     case "scroll": return port.scroll(intent.direction, SCROLL_COUNT);
