@@ -10,44 +10,46 @@ import { fileURLToPath } from "node:url";
 const root = fileURLToPath(new URL("..", import.meta.url));
 const read = (path) => readFile(`${root}${path}`, "utf8");
 
-test("takeover eligibility never uses viewport width, user-agent or maxTouchPoints", async () => {
-  const eligibility = await read("components/desktop/use-takeover-eligibility.ts");
-  assert.ok(eligibility.includes("(any-pointer: fine)"), "uses the pointer capability hint");
-  assert.ok(eligibility.includes("isTrusted"), "requires trusted events");
-  assert.ok(eligibility.includes("isComposing"), "rejects composing keyboard events");
+test("takeover availability uses only the pointer capability hint", async () => {
+  const availability = await read("components/desktop/use-takeover-eligibility.ts");
+  assert.ok(availability.includes("(any-pointer: fine)"), "uses the pointer capability hint");
   for (const needle of ["maxTouchPoints", "user-agent", "userAgent", "innerWidth", "max-width: 767px"]) {
-    assert.ok(!eligibility.includes(needle), `eligibility must not use ${needle}`);
+    assert.ok(!availability.includes(needle), `availability must not use ${needle}`);
   }
 });
 
-test("the live view forwards only real mouse pointers and guards input with eligibility", async () => {
+test("take over is one click: no Enter confirmation, and only real mouse pointers drive the desktop", async () => {
   const liveView = await read("components/desktop/live-view.tsx");
+  const expanded = await read("components/desktop/expanded-view.tsx");
   assert.ok(!liveView.includes("(max-width: 767px)"), "no viewport-based takeover gating");
   assert.ok(liveView.includes('pointerType !== "mouse"'), "touch/pen pointers are ignored for the remote desktop");
-  assert.ok(liveView.includes("isTakeoverEligible()"), "takeover and queued input check eligibility");
-  assert.ok(liveView.includes("resetTakeoverEvidence()"), "evidence resets on stream loss");
-  assert.ok(liveView.includes("takenOver && !eligible"), "eligibility loss releases the lease");
-  assert.ok(liveView.includes("Connect a keyboard and mouse"), "compact inline check is named");
-});
-
-test("the expanded view shares the same takeover check instead of a phone flag", async () => {
-  const expanded = await read("components/desktop/expanded-view.tsx");
+  for (const source of [liveView, expanded]) {
+    assert.ok(!source.includes("Press Enter to confirm"), "no Enter confirmation step");
+    assert.ok(!source.includes("awaitingKey"), "no keyboard evidence step");
+  }
+  assert.ok(liveView.includes("onClick={() => void takeOver()}"), "the inline button takes over on click");
+  assert.ok(expanded.includes("onClick={onTakeOver}"), "the full-screen button takes over on click");
   assert.ok(!/phone[:.]/.test(expanded), "no width-based phone prop");
-  assert.ok(expanded.includes("takeover"), "uses the shared takeover check");
 });
 
-test("the teach recorder can only run during an eligible takeover", async () => {
+test("the takeover views no longer show the recording controls", async () => {
   const liveView = await read("components/desktop/live-view.tsx");
-  assert.match(liveView, /canRecord=\{takenOver && status === "live" && eligible\}/);
+  const expanded = await read("components/desktop/expanded-view.tsx");
+  assert.ok(!liveView.includes("TeachControls") && !liveView.includes("useTeachCapture"));
+  assert.ok(!expanded.includes("teachControls"));
 });
 
 test("the shared shell renders the reference navigation and the workspace uses central tabs", async () => {
   const nav = await read("components/workspace/app-navigation.tsx");
-  // Nov 4 restructure: Jobs merged into Mission Control (Runs), MCP servers live under Connections, Schedules has its
-  // own page, Account moved to Profile (header chip).
-  for (const label of ["Agents", "Crew", "Mission Control", "Evidence", "Models", "Connections", "Schedules", "Security"]) {
+  // Nov 4 restructure: Jobs merged into Mission Control (Runs), MCP servers live under Connectors,
+  // GitHub + Composio API keys live under Integrations, Schedules has its own page,
+  // Account moved to Profile (header chip).
+  for (const label of ["Agents", "Crew", "Mission Control", "Models", "Connectors", "Integrations", "Schedules", "Security"]) {
     assert.ok(nav.includes(`label: "${label}"`), `navigation includes ${label}`);
   }
+  // Run history lives in each agent workspace's History tab, not the sidebar: without an agent the link
+  // could only land on the agent gallery.
+  assert.ok(!nav.includes('label: "Evidence"'));
   // Skills has no v1 backend: no dead link. Jobs is a redirect, not a nav entry.
   assert.ok(!nav.includes('label: "Skills"'));
   assert.ok(!nav.includes('label: "Jobs"'));
@@ -76,19 +78,27 @@ test("the workspace passes a full agent identity to the center heading", async (
 });
 
 test("every standalone page composes the shared shell", async () => {
+  // The sidebar + top bar mount once in the route-group layout, so navigating
+  // swaps only the main area instead of remounting the whole shell per page.
+  const layout = await read("app/(app)/layout.tsx");
+  assert.ok(layout.includes("ShellChrome"), "route-group layout renders the persistent shell");
+  const chrome = await read("components/workspace/shell-chrome.tsx");
+  assert.ok(chrome.includes("AppShell"), "persistent shell renders the shared AppShell");
   for (const [path, title] of [
-    ["app/mission-control/page.tsx", "Mission Control"],
-    ["app/schedules/page.tsx", "Schedules"],
-    ["app/security/page.tsx", "Security Center"],
-    ["app/crew/page.tsx", "Crew"],
-    ["app/profile/page.tsx", "Profile"],
-    ["app/settings/models/page.tsx", "Models"],
-    ["app/settings/connections/page.tsx", "Connections"],
+    ["app/(app)/mission-control/page.tsx", "Mission Control"],
+    ["app/(app)/schedules/page.tsx", "Schedules"],
+    ["app/(app)/security/page.tsx", "Security Center"],
+    ["app/(app)/crew/page.tsx", "Crew"],
+    ["app/(app)/profile/page.tsx", "Profile"],
+    ["app/(app)/settings/models/page.tsx", "Models"],
+    ["app/(app)/settings/connections/page.tsx", "Connectors"],
+    ["app/(app)/settings/integrations/page.tsx", "Integrations"],
+    ["app/(app)/jobs/[runId]/page.tsx", "Run detail"],
   ]) {
     const source = await read(path);
-    assert.ok(source.includes("AppShell"), `${title} uses the shared shell`);
+    assert.ok(!source.includes("AppShell"), `${title} renders inner content only (shell persists in layout)`);
   }
-  // Old addresses stay as redirects for bookmarks; run detail pages under /jobs/[runId] are unchanged.
-  assert.match(await read("app/jobs/page.tsx"), /redirect\(`\/mission-control\$\{query\}`\)/);
-  assert.match(await read("app/settings/account/page.tsx"), /redirect\("\/profile"\)/);
+  // Old addresses stay as redirects for bookmarks.
+  assert.match(await read("app/(app)/jobs/page.tsx"), /redirect\(`\/mission-control\$\{query\}`\)/);
+  assert.match(await read("app/(app)/settings/account/page.tsx"), /redirect\("\/profile"\)/);
 });

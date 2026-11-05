@@ -17,8 +17,8 @@ export default async function JobDetailPage({ params }: { params: Promise<{ runI
   const parsed = z.string().uuid().safeParse((await params).runId);
   if (!parsed.success) {
     return (
-      <main className="mx-auto flex min-h-screen w-full max-w-3xl flex-col gap-4 px-4 py-10 sm:px-6">
-        <Link href="/jobs" className="text-sm underline underline-offset-4">All jobs</Link>
+      <main className="mx-auto flex w-full max-w-3xl flex-col gap-4 px-4 py-10 sm:px-6">
+        <Link href="/mission-control" className="text-sm underline underline-offset-4">Runs</Link>
         <p role="alert" className="text-sm text-danger">This run is no longer available.</p>
       </main>
     );

@@ -90,3 +90,15 @@ test("TASK-083 earlier owner text extends scope; agent replies never do", () => 
   assert.equal(hostInScope("shop.example.org", base), false);
   assert.deepEqual(base.emails, []);
 });
+
+test("an any-public-web agent may type any public domain but never IPs, internal names or unnamed emails", () => {
+  const scope = deriveScope({ task: "go on google search for top 5 geopolitical news", anyPublicWeb: true });
+  assert.equal(checkTyped("google.com", scope, "about:blank").ok, true);
+  assert.equal(checkTyped("https://news.google.com/topics", scope, "https://www.google.com/").ok, true);
+  assert.equal(hostInScope("10.0.0.5", scope), false);
+  assert.equal(hostInScope("printer.local", scope), false);
+  assert.equal(hostInScope("localhost", scope), false);
+  assert.equal(checkTyped("mail stranger@example.com", scope, "https://www.google.com/").ok, false);
+  const strict = deriveScope({ task: "go on google search for top 5 geopolitical news" });
+  assert.equal(checkTyped("google.com", strict, "about:blank").ok, false);
+});

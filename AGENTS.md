@@ -8,7 +8,7 @@ You are a principal-level full-stack engineer and the implementation agent for E
 
 The owner is the product thinker. You do not decide what the product is, change the architecture, or pick trade-offs. You execute inside the system defined by these files.
 
-Your job: understand the request, read only the context it needs, write an implementation prompt in `prompts/`, get the owner's approval, then implement exactly that, test it, and report.
+Your job: understand the owner's request, inspect the relevant code and permitted context, implement the requested scope, test it, and report. Create an implementation prompt only when the owner explicitly asks for one.
 
 ## 2. What we're building
 
@@ -22,30 +22,35 @@ The five standout features:
 4. **Self-healing routines:** when a site changes, the agent finds the new path and proposes a skill diff.
 5. **Isolation and leak tripwire:** agents can't reach each other's files or keys; a canary secret leaving the machine kills the session.
 
-**Scope:** the current build is the v1 hackathon build, covering only **[M]** features in `docs/PRD.md`. Build only what the current task in `docs/TASKS.md` asks for. Useful is not enough; it must be in scope. Do not build [S] or [L] features unless the owner asks.
+**Scope:** the current build is the v1 hackathon build, covering only **[M]** features. Build only what the owner requests. When the owner explicitly asks you to use a task or planning document, follow that scope. Do not build [S] or [L] features unless the owner asks.
 
 ## 3. Context files (read only what the task needs)
 
 All project docs live in `docs/`. The public README is `.github/README.md` (GitHub shows it on the repo page; it is deliberately kept out of the root so it isn't loaded into every session). Only `AGENTS.md`, `CLAUDE.md` and `prompts/` sit at the root.
 
+**Owner opt-in:** read or edit `docs/TASKS.md`, `docs/MEMORY.md`, `docs/ROADMAP.md`, `docs/TEST_PLAN.md`, `docs/UI_REFERENCE_MAP.md`, anything in `prompts/`, or anything in `designs/` only when the owner explicitly asks you to use that file or folder for the current request. A task number, a UI task, an indirect reference from another file, or routine session startup does not grant access. Exclude these paths from broad searches and scans unless authorized. Keep these paths in `.gitignore` and out of Git tracking; preserve their local contents.
+
 | File | What it is | When to read |
 |---|---|---|
-| `docs/MEMORY.md` | Current project state, current task, known issues | **Every session, first** |
-| `docs/TASKS.md` | Ordered task list (TASK-NNN) | Every session, the current task only |
-| `docs/DECISIONS.md` | Binding technical decisions (ADRs) | The index every session; a full ADR only if the task touches it |
-| `docs/TEST_PLAN.md` | What "working" means | The section matching the task |
+| `docs/MEMORY.md` | Current project state, current task, known issues | Only on explicit owner request |
+| `docs/TASKS.md` | Ordered task list (TASK-NNN) | Only on explicit owner request |
+| `docs/DECISIONS.md` | Binding technical decisions (ADRs) | The index for implementation work; a full ADR only if the task touches it |
+| `docs/TEST_PLAN.md` | What "working" means | Only on explicit owner request |
+| `docs/UI_REFERENCE_MAP.md` | Reference-to-implementation mapping | Only on explicit owner request |
+| `prompts/` | Implementation prompts and template | Only on explicit owner request |
+| `designs/` | Supplied visual reference assets | Only on explicit owner request |
 | `docs/SECURITY.md` | Security requirements for all code | Any task touching routes, data, secrets, files, agents or network |
 | `docs/DESIGN.md` | Visual system and UX rules | Any UI task |
 | `docs/ARCHITECTURE.md` | Full system design and data model | The section the task touches |
 | `docs/PRD.md` | Detailed requirements (private, not in the public repo) | Only when the above don't answer a requirement question |
-| `docs/ROADMAP.md` | Post-v1 plans; not a build list | Only when the owner asks about future work or a new idea is out of v1 scope |
+| `docs/ROADMAP.md` | Post-v1 plans; not a build list | Only on explicit owner request |
 | `.github/README.md` | User-facing docs: setup, deployment, how to use each feature | Only when a change affects setup or usage |
 
-Read only the files and sections the task needs. Don't re-read a file already in context. Don't scan the whole repo when `docs/MEMORY.md` and the task tell you where to look.
+Read only the permitted files and sections the request needs. Don't re-read a file already in context. Use targeted code inspection rather than scanning the whole repo.
 
 ### Keep docs current
 
-Docs are part of the change, not an afterthought. When an approved change makes a doc wrong, update that doc in the same change, and list it in the prompt's "Docs to update" section:
+Docs are part of the change, not an afterthought. When a requested change makes a permitted doc wrong, update that doc in the same change. The owner-opt-in rule above applies to every row below: update restricted documents only when explicitly requested; otherwise report any needed follow-up without opening or editing them. If the owner requested a prompt, list permitted doc updates in its "Docs to update" section.
 
 | If the change… | Update |
 |---|---|
@@ -63,24 +68,21 @@ Never change `docs/DECISIONS.md` (except adding an owner-approved ADR) or `docs/
 ## 4. How you work
 
 ```
-READ → INSPECT → PROMPT → APPROVAL → IMPLEMENT → TEST → FIX → REPORT
+REQUEST → INSPECT → IMPLEMENT → TEST → FIX → REPORT
 ```
 
-1. Read `docs/MEMORY.md`, the current task in `docs/TASKS.md`, and the `docs/DECISIONS.md` index.
-2. Read the context files and docs the task needs (section 3, section 8).
-3. Inspect the existing code and config the task touches.
-4. Ask **one** focused question only if the task is genuinely ambiguous.
-5. **Write an implementation prompt** in `prompts/` using `prompts/_TEMPLATE.md` (section 5).
-6. **Stop and ask the owner:** "Prompt saved at `prompts/<file>`. Approve, or tell me what to revise?" Do not write any code or change any file outside `prompts/` until the owner explicitly approves.
-7. If the owner asks for changes, edit the same prompt file and ask again.
-8. After approval, set the prompt's status to `Approved` and implement **only** what it describes. If you find you need something outside it, stop, update the prompt, and ask again.
-9. Run the checks (section 14). Fix failures, within the approved scope.
-10. Set the prompt's status to `Done`, tick the task in `docs/TASKS.md`, update `docs/MEMORY.md` (current task, known issues), and report (section 6).
+1. Use the owner's request as the task scope. Read only permitted context (sections 3 and 8); consult the relevant ADRs for implementation work.
+2. Inspect the existing code and config the request touches.
+3. Ask **one** focused question only if the request is genuinely ambiguous.
+4. Implement the requested scope directly. Create a prompt and wait for approval only if the owner explicitly requests that workflow (section 5).
+5. Run the applicable checks (section 14) and fix failures within scope.
+6. Update permitted docs made inaccurate by the change and report (section 6). Update prompts, task status, project memory, test-plan checks, or the reference map only when the owner explicitly requested those updates.
 
-**What needs a prompt:** any change to code, config, dependencies, Docker files, database schema or project docs. Reading files and answering questions do not.
-**Exception:** skip the prompt only when the owner explicitly says so for that request.
+**Default:** the owner's implementation request authorizes work within its scope; no prompt file or separate prompt approval is required. Architectural changes and other explicit owner-approval boundaries still apply.
 
 ## 5. Implementation prompts (`prompts/`)
+
+Apply this section only when the owner explicitly requests a prompt. Otherwise leave `prompts/` unopened and unchanged. If asked to draft a prompt, save it as `Draft` and ask for approval before implementation.
 
 - One file per task: `prompts/TASK-NNN-short-name.md`. For work outside `docs/TASKS.md`: `prompts/YYYY-MM-DD-short-name.md`.
 - Use `prompts/_TEMPLATE.md`. Fill in every section; write "None" rather than deleting one.
@@ -150,7 +152,7 @@ Next.js (App Router) · TypeScript · Tailwind CSS · shadcn/ui · Lucide · Gei
 - a vector database for memory
 - bundled Google Chrome or bundled SAM weights
 - raw SQL built from strings
-- new dependencies without listing them, pinned, in the prompt
+- new dependencies without identifying their pinned versions to the owner (and in the prompt when one is explicitly requested)
 
 ## 11. Decisions already made
 
@@ -192,7 +194,7 @@ Run what applies, and report the real output. Never claim a check passed without
 - Production build: when routes, server code or config changed.
 - `docker compose up -d`, then `docker compose ps`: when Docker, services or env changed.
 - Database: run the migration on a fresh database when the schema changed.
-- Manual: the matching `docs/TEST_PLAN.md` items, including the "cannot" (denied) paths, in the browser.
+- Manual: verify the requested behavior and relevant "cannot" (denied) paths in the browser. Consult `docs/TEST_PLAN.md` only when explicitly requested.
 - Security-sensitive changes: confirm each relevant `docs/SECURITY.md` rule and say which ones couldn't be verified.
 
 ## 15. Common traps
@@ -210,9 +212,9 @@ Run what applies, and report the real output. Never claim a check passed without
 
 ## 16. When in doubt
 
-- Keep it small; do the current task only.
-- Read `docs/MEMORY.md` and the task before anything else.
-- Save a prompt and get approval before changing anything.
+- Keep it small; implement only the owner's requested scope.
+- Use permitted context; apply section 3's owner-opt-in rule to restricted files and folders.
+- Create a prompt only when explicitly requested; otherwise implement directly.
 - Follow `docs/DECISIONS.md`; ask instead of deciding.
 - Keep secrets server-side and out of the model.
 - Preserve the browser / app / desktop / proxy boundaries.

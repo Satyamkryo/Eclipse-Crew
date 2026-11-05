@@ -56,7 +56,8 @@ const ToolRequests = {
   // TASK-043: move a file that did not exist at the rewound checkpoint aside. Never deletes it.
   "checkpoint/aside": z.object({ area: z.enum(["inbox", "work", "downloads", "outbox"]), path: z.string().min(1).max(1024), bucket: z.string().regex(UUID_PATTERN) }).strict(),
 };
-const ReadRequest = z.object({ name: plainName, sha256: z.string().regex(/^[0-9a-f]{64}$/), size: z.number().int().min(1).max(MAX_UPLOAD_BYTES) }).strict();
+const ReadRequest = z.object({ name: plainName, sha256: z.string().regex(/^[0-9a-f]{64}$/), size: z.number().int().min(1).max(MAX_UPLOAD_BYTES),
+  area: z.enum(["inbox", "outbox"]).optional() }).strict();
 // Waits for the response to drain or close, and removes both listeners either way.
 const drained = (res) => new Promise((resolve) => {
   const done = () => { res.off("drain", done); res.off("close", done); resolve(); };

@@ -2,11 +2,12 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Check, Copy, ExternalLink, GitBranch, LoaderCircle, Plus } from "lucide-react";
+import { Check, Copy, ExternalLink, LoaderCircle, Plus } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { ModalDialog } from "@/components/workspace/modal-dialog";
+import { ConnectionPresetIcon, ConnectorIconTile } from "@/components/workspace/connector-icons";
 import { CONNECTION_PRESETS } from "@/lib/connections/presets";
 import type { ConnectionBinding, ConnectionPreset } from "@/lib/connections/schema";
 import { cn } from "@/lib/utils";
@@ -66,8 +67,8 @@ function testLabel(state: TestState | undefined) {
   return { text: "Unreachable: check the network and try again.", tone: "text-muted-foreground" as const };
 }
 
-export function ConnectionsSettings({ initial, agents, csrfToken, installUrl }: {
-  initial: ConnectionView[]; agents: AgentOption[]; csrfToken: string; installUrl: string;
+export function ConnectionsSettings({ initial, agents, csrfToken, installUrl, defaultAgentId }: {
+  initial: ConnectionView[]; agents: AgentOption[]; csrfToken: string; installUrl: string; defaultAgentId?: string;
 }) {
   const router = useRouter();
   const [connections, setConnections] = useState(initial);
@@ -228,7 +229,7 @@ export function ConnectionsSettings({ initial, agents, csrfToken, installUrl }: 
   }
 
   function openConnect(agentId?: string, label?: string) {
-    const target = agentId ?? agents[0]?.id;
+    const target = agentId ?? (defaultAgentId && agents.some((agent) => agent.id === defaultAgentId) ? defaultAgentId : agents[0]?.id);
     if (!target) return;
     setConnecting({ agentId: target, label: label ?? "GitHub" });
     setFlow(null);
@@ -337,9 +338,6 @@ export function ConnectionsSettings({ initial, agents, csrfToken, installUrl }: 
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-muted-foreground">One token per agent and tool host. Nothing is shared between agents.</p>
         <div className="flex flex-wrap gap-2">
-          <Button type="button" variant="secondary" size="sm" onClick={() => openConnect()} disabled={agents.length === 0}>
-            <GitBranch aria-hidden="true" className="size-3.5" /> Connect GitHub
-          </Button>
           <Button type="button" size="sm" onClick={() => { setAdding(true); setError(null); }} disabled={agents.length === 0}>
             <Plus aria-hidden="true" className="size-3.5" /> Add connection
           </Button>
@@ -368,8 +366,12 @@ export function ConnectionsSettings({ initial, agents, csrfToken, installUrl }: 
                   return (
                     <li key={connection.id} className="flex flex-col gap-2 py-3">
                       <div className="flex flex-wrap items-start justify-between gap-2">
-                        <div className="min-w-0">
-                          <p className="text-sm font-medium">{connection.label}</p>
+                        <div className="flex min-w-0 items-start gap-3">
+                          <ConnectorIconTile label={CONNECTION_PRESETS[connection.preset].label}>
+                            <ConnectionPresetIcon preset={connection.preset} host={connection.bindings[0]?.host} />
+                          </ConnectorIconTile>
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium">{connection.label}</p>
                           <p className="truncate font-mono text-xs text-muted-foreground">
                             {CONNECTION_PRESETS[connection.preset].label} · {connection.bindings.map((binding) => binding.host).join(", ")}
                           </p>
@@ -381,6 +383,7 @@ export function ConnectionsSettings({ initial, agents, csrfToken, installUrl }: 
                               Expired. Reconnect GitHub to keep using this connection.
                             </p>
                           )}
+                          </div>
                         </div>
                         <div className="flex flex-wrap gap-2">
                           {connection.status === "expired" && (
@@ -419,6 +422,7 @@ export function ConnectionsSettings({ initial, agents, csrfToken, installUrl }: 
             <div className="flex flex-col gap-2">
               <label htmlFor="connection-agent" className="text-sm font-medium">Agent</label>
               <Select label="Agent" id="connection-agent" name="agentId" required
+                defaultValue={defaultAgentId && agents.some((agent) => agent.id === defaultAgentId) ? defaultAgentId : agents[0]?.id}
                 className="w-full [&>span]:w-full" selectClassName={cn(inputClass, "w-full")}>
                 {agents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}
               </Select>

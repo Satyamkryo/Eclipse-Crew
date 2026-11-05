@@ -55,7 +55,8 @@ export async function provisionAgentForOwner(
 ): Promise<{ ready: boolean; code?: AgentLifecycleCode }> {
   try {
     await desktop.desktopCreateAgent(agentId, ownerId);
-    const status = await desktop.desktopSession(agentId, ownerId, "session.start");
+    // Sandbox only: the screen and browser start on demand, so a new agent is not left paused by a slow first browser launch.
+    const status = await desktop.desktopSession(agentId, ownerId, "sandbox.start");
     if (status.state !== "running" || !status.generation) throw new Error("agent_not_running");
     if (!await setAgentStatus(database, ownerId, agentId, "active")) throw new Error("agent_missing");
     await syncEgress(() => syncAgentEgress(database, ownerId, agentId));
@@ -168,7 +169,8 @@ export async function resumeAgentForOwner(
     if (budget.state === "paused") throw new AgentLifecycleError("budget_exhausted");
     try {
       await desktop.desktopCreateAgent(agentId, ownerId);
-      const status = await desktop.desktopSession(agentId, ownerId, "session.start");
+      // Sandbox only: the screen and browser start on demand, so a new agent is not left paused by a slow first browser launch.
+      const status = await desktop.desktopSession(agentId, ownerId, "sandbox.start");
       if (status.state !== "running" || !status.generation) throw new Error("agent_not_running");
     } catch {
       throw new AgentLifecycleError("desktop_setup_failed");

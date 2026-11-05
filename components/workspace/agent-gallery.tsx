@@ -1,7 +1,7 @@
 "use client";
 import { useState } from "react";
 import Link from "next/link";
-import { Plus } from "lucide-react";
+import { Plus, Shuffle } from "lucide-react";
 import { AGENT_TEMPLATES, type AgentTemplate, type AgentTemplateId } from "@/lib/agents/templates";
 import { AgentAvatar, randomAvatarVariant } from "@/components/workspace/agent-avatar";
 import { StatusChip } from "@/components/ui/status-chip";
@@ -37,7 +37,7 @@ function shuffled<T>(items: readonly T[]): T[] {
 // The no-agent workspace: owned agents as cards, five random templates, and a
 // create card. The picks randomize per render like the form's shuffled avatar.
 export function AgentGallery({ agents }: { agents: GalleryAgent[] }) {
-  const [templates] = useState<AgentTemplate[]>(() => shuffled(AGENT_TEMPLATES).slice(0, 5));
+  const [templates, setTemplates] = useState<AgentTemplate[]>(() => shuffled(AGENT_TEMPLATES).slice(0, 5));
   const [createAvatar] = useState(() => randomAvatarVariant());
 
   // No own scroll container: AppShell already scrolls this page, so a second
@@ -51,7 +51,14 @@ export function AgentGallery({ agents }: { agents: GalleryAgent[] }) {
           <p className="mt-1 text-sm text-muted-foreground">Start from a template, pick up where you left off, or create someone new.</p>
         </div>
         <section aria-labelledby="gallery-templates">
-          <h2 id="gallery-templates" className="mb-3 text-base font-semibold tracking-tight">Start from a template</h2>
+          <div className="mb-3 flex items-center justify-between gap-2">
+            <h2 id="gallery-templates" className="text-base font-semibold tracking-tight">Start from a template</h2>
+            <button type="button" onClick={() => setTemplates(shuffled(AGENT_TEMPLATES).slice(0, 5))}
+              aria-label="Shuffle templates"
+              className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-border bg-surface px-2.5 text-xs font-medium transition-colors duration-150 hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-ring">
+              <Shuffle aria-hidden="true" className="size-3.5" />Shuffle
+            </button>
+          </div>
           <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
             {templates.map((template) => (
               <li key={template.id} className="min-w-0">

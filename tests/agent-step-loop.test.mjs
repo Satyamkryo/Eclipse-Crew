@@ -605,6 +605,16 @@ test("navigate opens an allowed http(s) page, refuses another host, and the sche
   assert.equal(intentSchema.safeParse({ action: "navigate", url: "javascript:alert(1)", expect: "x" }).success, false);
 });
 
+test("a page that never loads hands back to the owner instead of reporting a desktop error", async () => {
+  const desktop = actionDesktop();
+  desktop.navigate = async () => { throw Object.assign(new Error("navigation_failed"), { code: "navigation_failed" }); };
+  const { result } = await run({ agent: fileAgent(["click", "type"]), desktop, task: "Open the settings page.", allowedHosts: ["a.example"],
+    provider: fakeProvider([step({ action: "navigate", url: "https://a.example/settings", expect: "loaded" })]) });
+  assert.equal(result.outcome, "needs_owner");
+  assert.match(result.finalCard.text, /couldn't open that page/);
+  assert.match(result.finalCard.text, /desktop is still running/);
+});
+
 test("select grounds the dropdown and chooses the option", async () => {
   const desktop = actionDesktop({ snapshot: async () => page([["combobox", "Country"]]) });
   const provider = fakeProvider([
@@ -1709,15 +1719,27 @@ test("TASK-079: hear_audio intent bounds seconds and requires an expectation", (
   assert.equal(intentSchema.safeParse({ action: "hear_audio" }).success, false);
 });
 
-test("TASK-083 earlier conversation parts follow the task and keep their tags", async () => {
+test("TASK-083 earlier conversation parts come before the latest task and keep their tags", async () => {
   const requests = [];
   const provider = fakeProvider([(request) => { requests.push(request); return step({ action: "finish", summary: "Done." }); }]);
   await run({ provider, conversation: [{ type: "text", text: "Earlier conversation, for context only.", sourceTag: "user" },
     { type: "text", text: "Earlier answer", sourceTag: "agent" }] });
   const content = requests[0].messages[0].content;
-  assert.equal(content[0].text, "Open the settings page.");
+  assert.equal(content[0].text, "Earlier conversation, for context only.");
   assert.equal(content[0].sourceTag, "user");
-  assert.equal(content[1].text, "Earlier conversation, for context only.");
-  assert.equal(content[1].sourceTag, "user");
-  assert.equal(content[2].sourceTag, "agent");
+  assert.equal(content[1].sourceTag, "agent");
+  assert.match(content[2].text, /latest message follows/);
+  assert.equal(content[3].text, "Open the settings page.");
+  assert.equal(content[3].sourceTag, "user");
+});
+
+test("ADR-040 the available tool list is sent as untrusted tool data", async () => {
+  const requests = [];
+  const provider = fakeProvider([(request) => { requests.push(request); return step({ action: "finish", summary: "Done." }); }]);
+  await run({ provider, toolCatalog: [{ name: "github.create_issue", description: "Create an issue", args: ["title*", "body"] }] });
+  const part = requests[0].messages[0].content.find((item) => typeof item.text === "string" && item.text.includes("available_tools"));
+  assert.ok(part);
+  assert.equal(part.sourceTag, "tool");
+  assert.match(part.text, /github\.create_issue/);
+  assert.doesNotMatch(requests[0].instructions, /Create an issue/);
 });

@@ -126,8 +126,20 @@ async function readJsonResponse(
   setCancel: (cancel: (() => Promise<void>) | undefined) => void,
 ): Promise<unknown> {
   if (!response.ok) {
-    await response.body?.cancel();
-    throw providerHttpError(response.status);
+    const error = providerHttpError(response.status);
+    // Keep only the provider's own short explanation (message/param/code) for operator logs; never shown to the model.
+    if (response.status >= 400 && response.status < 500) {
+      try {
+        const text = (await response.text()).slice(0, 4096);
+        const body = JSON.parse(text) as { error?: { message?: unknown; param?: unknown; code?: unknown } | string; message?: unknown };
+        const source = typeof body.error === "object" && body.error ? body.error : body;
+        const parts = [source.message ?? (typeof body.error === "string" ? body.error : undefined),
+          "param" in source ? source.param : undefined, "code" in source ? source.code : undefined]
+          .filter((value): value is string => typeof value === "string" && value.length > 0);
+        if (parts.length) Object.assign(error, { detail: parts.join(" | ").replace(/\s+/g, " ").slice(0, 300) });
+      } catch { /* no readable detail */ }
+    } else await response.body?.cancel();
+    throw error;
   }
   const declared = Number(response.headers.get("content-length"));
   if (Number.isFinite(declared) && declared > maxResponseBytes) {
@@ -164,7 +176,33 @@ async function readJsonResponse(
   }
 }
 
+// Transient failures (network reset, 5xx, 429) are retried briefly so one blip does not end a whole run.
+const RETRYABLE_CODES = new Set(["network_error", "provider_unavailable", "rate_limited"]);
+const RETRY_DELAYS_MS = [800, 2_000];
+
 export async function requestJson(
+  transport: ProviderTransport,
+  url: string,
+  init: RequestInit,
+  limits: RuntimeLimits,
+): Promise<unknown> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await requestJsonOnce(transport, url, init, limits);
+    } catch (error) {
+      const code = error instanceof ProviderError ? error.code : undefined;
+      if (!code || !RETRYABLE_CODES.has(code) || attempt >= RETRY_DELAYS_MS.length || init.signal?.aborted) throw error;
+      const waited = await new Promise<boolean>((resolve) => {
+        const timer = setTimeout(() => { init.signal?.removeEventListener("abort", onAbort); resolve(true); }, RETRY_DELAYS_MS[attempt]);
+        const onAbort = () => { clearTimeout(timer); resolve(false); };
+        init.signal?.addEventListener("abort", onAbort, { once: true });
+      });
+      if (!waited) throw new ProviderError("aborted");
+    }
+  }
+}
+
+async function requestJsonOnce(
   transport: ProviderTransport,
   url: string,
   init: RequestInit,

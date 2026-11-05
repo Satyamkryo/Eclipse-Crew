@@ -153,6 +153,7 @@ Test at 375, 768, 1280 and 1440 px. On phones, approvals, skill diffs and the Jo
 
 - Lucide only, 16 px in UI and 20 px in empty states, stroke 1.5, `currentColor`.
 - Icon-only buttons need an `aria-label` and a tooltip.
+- Exception (owner-approved 2026-11-05): connector toolkit tiles may show the service's real brand mark (vendored SVG, `currentColor`, no new colours) so agents' tools are recognizable; unknown or custom services fall back to the generic mark or the pinned host's own favicon.
 
 ## Buttons
 
@@ -195,7 +196,7 @@ Test at 375, 768, 1280 and 1440 px. On phones, approvals, skill diffs and the Jo
 - Compact single-row composer: paperclip button, borderless input ("Message {agent}…"), send icon button (sheet 36). Attachments, hints, and errors render above it. Enter sends, Shift+Enter adds a line.
 
 **Takeover eligibility (input policy, not width)**
-- Takeover is offered only when the owner has demonstrated keyboard plus mouse/trackpad input in the current viewer session (trusted pointer + trusted non-composing keyboard event on the takeover control; `(any-pointer: fine)` is only a hint). Touch-only devices stay view-only at any width; keyboard+mouse devices can take over at any width. View-only by default; the check never forwards events to the desktop or stores key values. See `docs/UI_REFERENCE_MAP.md` for the full rule and `docs/SECURITY.md` for the server boundary.
+- Take over is one click and Hand back is one click (owner change 2026-11-05; no Enter confirmation step). Touch-only devices stay view-only (`(any-pointer: fine)` hint) and see "Use a mouse to take over". View-only by default. See `docs/SECURITY.md` for the server boundary.
 
 ## UX Requirements
 

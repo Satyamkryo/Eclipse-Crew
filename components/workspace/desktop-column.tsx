@@ -6,9 +6,11 @@ import { LiveRunCard } from "@/components/chat/live-run-card";
 // Workspace right column (images 05/39): the single live stream plus current run activity.
 // The stream element itself is owned by LiveView and passed in as `desktop`, so exactly one
 // instance exists across center tabs, expansion and layout changes.
-export function DesktopColumn({ desktop, agentId, csrfToken, active }: {
+export function DesktopColumn({ desktop, agentId, agentName, avatarVariant, csrfToken, active }: {
   desktop?: ReactNode;
   agentId?: string;
+  agentName?: string;
+  avatarVariant?: number;
   csrfToken?: string;
   active: boolean;
 }) {
@@ -33,7 +35,7 @@ export function DesktopColumn({ desktop, agentId, csrfToken, active }: {
       {agentId && (
         <section aria-label="Current activity" className="px-4 pb-4">
           <h3 className="mb-2 text-sm font-semibold tracking-tight">Current activity</h3>
-          <LiveRunCard agentId={agentId} csrfToken={csrfToken ?? ""} active={active} />
+          <LiveRunCard agentId={agentId} csrfToken={csrfToken ?? ""} active={active} agentName={agentName} avatarVariant={avatarVariant} layout="full" />
           <p className="text-xs text-muted-foreground">Live steps appear here while a run is executing. Finished runs are listed in History.</p>
         </section>
       )}

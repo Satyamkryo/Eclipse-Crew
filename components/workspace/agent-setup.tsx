@@ -32,7 +32,7 @@ export function AgentSetup({ agentId, actions, tools, domains, anyPublicWeb = fa
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h3 id="agent-setup-heading" className="text-sm font-semibold">Setup</h3>
         {needsRemote && (
-          <Link href="/settings/connections" className="text-sm underline underline-offset-4">Open Connections</Link>
+          <Link href="/settings/integrations" className="text-sm underline underline-offset-4">Open Integrations</Link>
         )}
       </div>
       {loading ? (

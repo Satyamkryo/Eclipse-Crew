@@ -7,6 +7,7 @@ import { LoaderCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { ModalDialog } from "@/components/workspace/modal-dialog";
+import { ConnectorIconTile, ToolkitIcon } from "@/components/workspace/connector-icons";
 import { COMPOSIO_TOOLKITS } from "@/lib/composio/schema";
 import type { ComposioAccountView, ComposioDiscovery, ComposioKeyView } from "@/lib/composio/view";
 import { cn } from "@/lib/utils";
@@ -41,11 +42,14 @@ function statusLabel(status: ComposioAccountView["status"]) {
   }
 }
 
-export function ComposioSettings({ initialKey, initialAccounts, agents, csrfToken }: {
+export function ComposioSettings({ initialKey, initialAccounts, agents, csrfToken, defaultAgentId, showKeySection = true, showAccountsSection = true }: {
   initialKey: ComposioKeyView;
   initialAccounts: ComposioAccountView[];
   agents: AgentOption[];
   csrfToken: string;
+  defaultAgentId?: string;
+  showKeySection?: boolean;
+  showAccountsSection?: boolean;
 }) {
   const router = useRouter();
   const [keyView, setKeyView] = useState(initialKey);
@@ -56,7 +60,9 @@ export function ComposioSettings({ initialKey, initialAccounts, agents, csrfToke
   const [redirect, setRedirect] = useState<string | null>(null);
   const [discovery, setDiscovery] = useState<{ account: ComposioAccountView; data: ComposioDiscovery } | null>(null);
   const [removing, setRemoving] = useState<ComposioAccountView | null>(null);
-  const [agentId, setAgentId] = useState(agents[0]?.id ?? "");
+  const [agentId, setAgentId] = useState(
+    defaultAgentId && agents.some((agent) => agent.id === defaultAgentId) ? defaultAgentId : (agents[0]?.id ?? ""),
+  );
   const [toolkit, setToolkit] = useState<string>(COMPOSIO_TOOLKITS[0].slug);
   const errorRef = useRef<HTMLParagraphElement>(null);
 
@@ -218,18 +224,21 @@ export function ComposioSettings({ initialKey, initialAccounts, agents, csrfToke
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h2 className="text-lg font-semibold tracking-tight">Composio (optional)</h2>
-        <p className="mt-2 max-w-[70ch] text-sm text-muted-foreground">
-          Apps you connect through Composio are stored by Composio, not on this computer. Eclipse Crew only keeps your
-          Composio API key, encrypted. Arguments and results of these tools pass through Composio&apos;s servers. To keep
-          tokens on your machine, use an MCP server instead.
-        </p>
-      </div>
+      {showKeySection && showAccountsSection && (
+        <div>
+          <h2 className="text-lg font-semibold tracking-tight">Composio (optional)</h2>
+          <p className="mt-2 max-w-[70ch] text-sm text-muted-foreground">
+            Apps you connect through Composio are stored by Composio, not on this computer. Eclipse Crew only keeps your
+            Composio API key, encrypted. Arguments and results of these tools pass through Composio&apos;s servers. To keep
+            tokens on your machine, use an MCP server instead.
+          </p>
+        </div>
+      )}
 
       {error && <p ref={errorRef} role="alert" tabIndex={-1} className="text-sm text-danger">{error}</p>}
       {status && <p role="status" aria-live="polite" className="text-sm text-success">{status}</p>}
 
+      {showKeySection && (
       <section className="rounded-lg border border-border bg-card p-4" aria-labelledby="composio-key-heading">
         <h3 id="composio-key-heading" className="text-sm font-semibold">API key</h3>
         <p className="mt-1 text-sm text-muted-foreground">
@@ -265,8 +274,19 @@ export function ComposioSettings({ initialKey, initialAccounts, agents, csrfToke
           </div>
         </form>
       </section>
+      )}
 
-      {keyView.hasKey && (
+      {showAccountsSection && (
+        <>
+          {!keyView.hasKey ? (
+            <section className="rounded-lg border border-border bg-card p-4" aria-labelledby="composio-accounts-heading">
+              <h3 id="composio-accounts-heading" className="text-sm font-semibold">Connected apps</h3>
+              <p className="mt-2 text-sm text-muted-foreground">
+                Save a Composio API key in Integrations first, then connect apps here.{" "}
+                <a href="/settings/integrations" className="underline underline-offset-4">Open Integrations</a>
+              </p>
+            </section>
+          ) : (
         <section className="rounded-lg border border-border bg-card p-4" aria-labelledby="composio-accounts-heading">
           <h3 id="composio-accounts-heading" className="text-sm font-semibold">Connected apps</h3>
           <div className="mt-3 flex flex-wrap items-end gap-3">
@@ -279,10 +299,15 @@ export function ComposioSettings({ initialKey, initialAccounts, agents, csrfToke
             </div>
             <div className="flex flex-col gap-2">
               <label htmlFor="composio-toolkit" className="text-xs font-medium">App</label>
-              <Select label="App" id="composio-toolkit" value={toolkit} onChange={setToolkit}
-                selectClassName={inputClass}>
-                {COMPOSIO_TOOLKITS.map((item) => <option key={item.slug} value={item.slug}>{item.label}</option>)}
-              </Select>
+              <span className="flex items-center gap-2">
+                <ConnectorIconTile label={COMPOSIO_TOOLKITS.find((item) => item.slug === toolkit)?.label ?? toolkit}>
+                  <ToolkitIcon slug={toolkit} />
+                </ConnectorIconTile>
+                <Select label="App" id="composio-toolkit" value={toolkit} onChange={setToolkit}
+                  selectClassName={inputClass}>
+                  {COMPOSIO_TOOLKITS.map((item) => <option key={item.slug} value={item.slug}>{item.label}</option>)}
+                </Select>
+              </span>
             </div>
             <Button type="button" size="sm" onClick={connect} disabled={busy || agents.length === 0}>
               {busy && <LoaderCircle aria-hidden="true" className="size-3.5 animate-spin" />}
@@ -307,11 +332,16 @@ export function ComposioSettings({ initialKey, initialAccounts, agents, csrfToke
                     {rows.map((account) => (
                       <li key={account.id} className="flex flex-col gap-2 py-3">
                         <div className="flex flex-wrap items-start justify-between gap-2">
-                          <div>
-                            <p className="text-sm font-medium">{COMPOSIO_TOOLKITS.find((item) => item.slug === account.toolkit)?.label ?? account.toolkit}</p>
-                            <p className="mt-0.5 text-xs text-muted-foreground">
-                              {statusLabel(account.status)}{account.status === "active" ? ` · ${account.toolCount} tools pinned` : ""}
-                            </p>
+                          <div className="flex min-w-0 items-start gap-3">
+                            <ConnectorIconTile label={COMPOSIO_TOOLKITS.find((item) => item.slug === account.toolkit)?.label ?? account.toolkit}>
+                              <ToolkitIcon slug={account.toolkit} />
+                            </ConnectorIconTile>
+                            <div className="min-w-0">
+                              <p className="text-sm font-medium">{COMPOSIO_TOOLKITS.find((item) => item.slug === account.toolkit)?.label ?? account.toolkit}</p>
+                              <p className="mt-0.5 text-xs text-muted-foreground">
+                                {statusLabel(account.status)}{account.status === "active" ? ` · ${account.toolCount} tools pinned` : ""}
+                              </p>
+                            </div>
                           </div>
                           <div className="flex flex-wrap gap-2">
                             <Button type="button" variant="secondary" size="sm" disabled={busy} onClick={() => refresh(account)}>Check status</Button>
@@ -327,6 +357,8 @@ export function ComposioSettings({ initialKey, initialAccounts, agents, csrfToke
             </div>
           )}
         </section>
+          )}
+        </>
       )}
 
       {discovery && (

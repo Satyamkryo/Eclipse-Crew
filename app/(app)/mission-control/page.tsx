@@ -6,8 +6,6 @@ import { getDatabase } from "@/db/client";
 import { owner } from "@/db/schema";
 import { listAgentRecords } from "@/lib/agents/data";
 import { validateSession } from "@/lib/auth/session";
-import { loadShellContext } from "@/lib/shell/context";
-import { AppShell } from "@/components/workspace/app-shell";
 import { PageHeader } from "@/components/ui/page-header";
 import { loadCrewStatus, type CrewStatusView } from "@/lib/crew/status";
 import { validTimezone } from "@/lib/crew/time";
@@ -42,22 +40,17 @@ export default async function MissionControlPage({ searchParams }: { searchParam
     status = null;
   }
 
-  let shellContext: Awaited<ReturnType<typeof loadShellContext>> | null = null;
-  try { shellContext = await loadShellContext(await getDatabase(), session.ownerId); } catch { shellContext = null; }
-
   return (
-    <AppShell owner={shellContext ? { email: shellContext.ownerEmail, timezone: shellContext.ownerTimeZone } : null} agents={shellContext?.agents ?? []} csrfToken={session.csrfToken} pageTitle="Mission Control">
-      <div className="mx-auto flex w-full max-w-7xl flex-col gap-8 px-4 py-6 sm:px-6">
-        <PageHeader icon={Activity} title="Mission Control" subtitle="Live status, current step and spend for this owner only. Everything here is owner-only." />
-        <MissionControl initial={status} />
-        <section aria-labelledby="runs-heading">
-          <h2 id="runs-heading" className="text-lg font-semibold tracking-tight">Runs</h2>
-          <p className="mt-1 text-sm text-muted-foreground">Tracker of what your agents already ran — what succeeded and what failed.</p>
-          <div className="mt-4">
-            <JobsDashboard agents={agents} csrfToken={session.csrfToken} timeZone={timezone} bare initialRange={initialRange} />
-          </div>
-        </section>
-      </div>
-    </AppShell>
+    <div className="mx-auto flex w-full max-w-7xl flex-col gap-8 px-4 py-6 sm:px-6">
+      <PageHeader icon={Activity} title="Mission Control" subtitle="Live status, current step and spend for this owner only. Everything here is owner-only." />
+      <MissionControl initial={status} />
+      <section aria-labelledby="runs-heading">
+        <h2 id="runs-heading" className="text-lg font-semibold tracking-tight">Runs</h2>
+        <p className="mt-1 text-sm text-muted-foreground">Tracker of what your agents already ran — what succeeded and what failed.</p>
+        <div className="mt-4">
+          <JobsDashboard agents={agents} csrfToken={session.csrfToken} timeZone={timezone} bare initialRange={initialRange} />
+        </div>
+      </section>
+    </div>
   );
 }

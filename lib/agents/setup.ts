@@ -26,14 +26,14 @@ export function setupRows(
       {
         label: "GitHub connection saved",
         done: state.connections.some((connection) => connection.preset === "github" || connection.bindings.some((binding) => binding.host === "github.com")),
-        detail: "Settings → Connections → Add connection",
+        detail: "Settings → Integrations → GitHub API → Add connection",
       },
       {
         label: "GitHub MCP server pinned",
         done: state.servers.some((server) => server.key === "github" && server.status === "pinned"),
         detail: state.servers.some((server) => server.key === "github" && server.status === "changed")
-          ? "The tool list changed — review and re-pin it in Settings → Connections"
-          : "Settings → Connections → MCP servers → Add MCP server",
+          ? "The tool list changed — review and re-pin it in Settings → Connectors"
+          : "Settings → Connectors → Add MCP server",
       },
     );
   } else if (usesTools) {
@@ -41,14 +41,14 @@ export function setupRows(
       {
         label: "A connection saved for this agent",
         done: state.connections.length > 0,
-        detail: "Settings → Connections → Add the mail or calendar account you use",
+        detail: "Settings → Integrations → add the account you use",
       },
       {
         label: "The account's MCP server pinned",
         done: tools.length > 0 && state.servers.some((server) => tools.includes(server.key) && server.status === "pinned"),
         detail: state.servers.some((server) => tools.includes(server.key) && server.status === "changed")
-          ? "The tool list changed — review and re-pin it in Settings → Connections"
-          : "Settings → Connections → MCP servers → pin the server you use",
+          ? "The tool list changed — review and re-pin it in Settings → Connectors"
+          : "Settings → Connectors → pin the server you use",
       },
       {
         label: "Its server key added under Tools",

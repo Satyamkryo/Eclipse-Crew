@@ -7,6 +7,7 @@ import { LoaderCircle, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
 import { ModalDialog } from "@/components/workspace/modal-dialog";
+import { ConnectorIconTile, McpServerIcon } from "@/components/workspace/connector-icons";
 import type { McpDiscoveryView, McpServerView } from "@/lib/mcp/view";
 import { cn } from "@/lib/utils";
 
@@ -36,8 +37,8 @@ function errorMessage(code: string | undefined): string {
   return "Couldn't complete the request. Try again.";
 }
 
-export function McpSettings({ initial, agents, connections, csrfToken }: {
-  initial: McpServerView[]; agents: AgentOption[]; connections: ConnectionOption[]; csrfToken: string;
+export function McpSettings({ initial, agents, connections, csrfToken, defaultAgentId }: {
+  initial: McpServerView[]; agents: AgentOption[]; connections: ConnectionOption[]; csrfToken: string; defaultAgentId?: string;
 }) {
   const router = useRouter();
   const [servers, setServers] = useState(initial);
@@ -47,7 +48,9 @@ export function McpSettings({ initial, agents, connections, csrfToken }: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<string | null>(null);
-  const [agentId, setAgentId] = useState(agents[0]?.id ?? "");
+  const [agentId, setAgentId] = useState(
+    defaultAgentId && agents.some((agent) => agent.id === defaultAgentId) ? defaultAgentId : (agents[0]?.id ?? ""),
+  );
   const errorRef = useRef<HTMLParagraphElement>(null);
 
   const agentConnections = useMemo(() => connections.filter((connection) => connection.agentId === agentId), [connections, agentId]);
@@ -227,14 +230,19 @@ export function McpSettings({ initial, agents, connections, csrfToken }: {
                 {rows.map((server) => (
                   <li key={server.id} className="flex flex-col gap-2 py-3">
                     <div className="flex flex-wrap items-start justify-between gap-2">
-                      <div className="min-w-0">
-                        <p className="text-sm font-medium">
-                          <span className="font-mono">{server.key}</span> · {server.serverName}
-                        </p>
-                        <p className="truncate font-mono text-xs text-muted-foreground">{server.url}</p>
-                        <p className="mt-0.5 text-xs text-muted-foreground">
-                          {server.status === "pinned" ? `Pinned · ${server.tools.length} tools` : server.status === "changed" ? "Changed — review" : "Disabled"}
-                        </p>
+                      <div className="flex min-w-0 items-start gap-3">
+                        <ConnectorIconTile label={server.key}>
+                          <McpServerIcon url={server.url} />
+                        </ConnectorIconTile>
+                        <div className="min-w-0">
+                          <p className="text-sm font-medium">
+                            <span className="font-mono">{server.key}</span> · {server.serverName}
+                          </p>
+                          <p className="truncate font-mono text-xs text-muted-foreground">{server.url}</p>
+                          <p className="mt-0.5 text-xs text-muted-foreground">
+                            {server.status === "pinned" ? `Pinned · ${server.tools.length} tools` : server.status === "changed" ? "Changed — review" : "Disabled"}
+                          </p>
+                        </div>
                       </div>
                       <div className="flex flex-wrap gap-2">
                         <Button type="button" variant="secondary" size="sm" disabled={busy}
@@ -286,7 +294,7 @@ export function McpSettings({ initial, agents, connections, csrfToken }: {
                   <option key={connection.id} value={connection.id}>{connection.label} · {connection.preset}</option>
                 ))}
               </Select>
-              {agentConnections.length === 0 && <p className="text-xs text-muted-foreground">Add a connection for this agent first.</p>}
+                {agentConnections.length === 0 && <p className="text-xs text-muted-foreground">Add a connection for this agent in Integrations first.</p>}
             </div>
             <div className="flex flex-col gap-2">
               <label htmlFor="mcp-preset" className="text-sm font-medium">Server</label>

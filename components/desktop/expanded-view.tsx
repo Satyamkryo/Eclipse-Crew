@@ -7,15 +7,6 @@ import { Button } from "@/components/ui/button";
 import { AgentAvatar } from "@/components/workspace/agent-avatar";
 import { AstraBadge } from "@/components/ui/astra-badge";
 
-type TakeoverCheck = {
-  available: boolean;
-  eligible: boolean;
-  awaitingKey: boolean;
-  onPointerDown: (event: React.PointerEvent) => void;
-  onKeyDown: (event: React.KeyboardEvent) => void;
-  onRequest: () => void;
-};
-
 type Props = {
   agentName: string;
   astraMode: boolean;
@@ -23,8 +14,9 @@ type Props = {
   status: "connecting" | "live" | "error";
   takenOver: boolean;
   busy: boolean;
-  // The shared keyboard+mouse input check from LiveView (same state inline and expanded).
-  takeover: TakeoverCheck;
+  // False on touch-only devices, which stay view-only.
+  canTakeOver: boolean;
+  onTakeOver: () => void;
   modelName?: string;
   // Epoch ms when the stream became live, or null.
   connectedAt: number | null;
@@ -33,7 +25,6 @@ type Props = {
   slotRef: (element: HTMLDivElement | null) => void;
   // Takeover input layer and connecting/offline overlay, built by LiveView so the inline and expanded views behave the same.
   overlay: ReactNode;
-  teachControls?: ReactNode;
   // Start/stop desktop and browser, so they stay reachable in full screen.
   controls?: ReactNode;
   // Forwards keys to the desktop during a takeover (the same handler the inline view uses).
@@ -60,7 +51,7 @@ function elapsedText(from: number | null, now: number) {
 }
 // The expanded desktop view (docs/DESIGN.md). It fills the app window, never uses the browser Fullscreen API, and holds
 // the same stream element as the inline view, so nothing reconnects and a takeover stays active.
-export function ExpandedView({ agentName, astraMode, avatarVariant, status, takenOver, busy, takeover, modelName, connectedAt, error, slotRef, overlay, teachControls, controls, onScreenKeyDown, onHandBack, onExit }: Props) {
+export function ExpandedView({ agentName, astraMode, avatarVariant, status, takenOver, busy, canTakeOver, onTakeOver, modelName, connectedAt, error, slotRef, overlay, controls, onScreenKeyDown, onHandBack, onExit }: Props) {
   const layer = useRef<HTMLDivElement>(null);
   // The desktop/browser controls render once: in the side panel when it is shown (lg), otherwise under the screen.
   const wide = useSyncExternalStore(subscribeWide, readWide, () => true);
@@ -98,14 +89,13 @@ export function ExpandedView({ agentName, astraMode, avatarVariant, status, take
       {busy ? <Loader2 aria-hidden="true" className="size-4 animate-spin" /> : <Hand aria-hidden="true" className="size-4" />}
       Hand back
     </Button>
-  ) : takeover.available ? (
-    <Button size="sm" variant="secondary" disabled={busy} aria-describedby="expanded-takeover-check"
-      onPointerDown={takeover.onPointerDown} onKeyDown={takeover.onKeyDown} onClick={takeover.onRequest}>
+  ) : canTakeOver ? (
+    <Button size="sm" variant="secondary" disabled={busy} onClick={onTakeOver}>
       {busy ? <Loader2 aria-hidden="true" className="size-4 animate-spin" /> : <Hand aria-hidden="true" className="size-4" />}
-      {takeover.awaitingKey ? "Press Enter to confirm" : "Take over"}
+      Take over
     </Button>
   ) : (
-    <span id="expanded-takeover-check" className="max-w-40 text-right text-xs text-muted-foreground">Connect a keyboard and mouse to take over</span>
+    <span id="expanded-takeover-check" className="max-w-40 text-right text-xs text-muted-foreground">Use a mouse to take over</span>
   ));
 
   return createPortal(
@@ -139,18 +129,12 @@ export function ExpandedView({ agentName, astraMode, avatarVariant, status, take
       <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] gap-4 p-4 lg:grid-cols-[minmax(0,1fr)_360px] lg:grid-rows-1">
         <div className={`flex min-h-0 flex-col overflow-hidden rounded-xl border bg-black ${takenOver ? "border-corona" : "border-border"}`}>
           {takenOver && <p className="bg-corona/12 px-3 py-2 text-center text-xs text-corona">You&apos;re in control. The agent is paused. Hand back to resume.</p>}
-          {teachControls}
           <div className="relative min-h-0 flex-1" onKeyDown={onScreenKeyDown}>
             <div ref={slotRef} className="absolute inset-0" />
             {overlay}
             {status === "live" && !takenOver && <span className="pointer-events-none absolute bottom-2 right-2 rounded-md bg-surface px-2 py-1 text-xs text-muted-foreground">view-only</span>}
           </div>
           {error && status === "live" && <p role="alert" className="border-t border-border bg-background px-3 py-2 text-xs text-danger">{error}</p>}
-          {status === "live" && !takenOver && takeover.available && !takeover.eligible && (
-            <p id="expanded-takeover-check" className="sr-only">
-              Click Take over with your mouse, then press Enter to confirm your keyboard.
-            </p>
-          )}
         </div>
 
         {controls && !wide && <div className="shrink-0">{controls}</div>}

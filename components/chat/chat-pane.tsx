@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import { FileText, LoaderCircle, MessageSquare, Paperclip, RefreshCw, SendHorizontal, X } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
@@ -16,7 +16,7 @@ import {
 } from "@/lib/chat/schema";
 import { ATTACHMENT_ACCEPT, formatBytes, precheckFile, uploadErrorMessage, uploadFile, UploadError } from "@/lib/chat/upload";
 
-type Upload = { key: string; file: File; loaded: number; state: "queued" | "uploading" | "error"; error?: string };
+type Upload = { key: string; file: File; loaded: number; state: "staged" | "queued" | "uploading" | "error"; error?: string };
 const MAX_FILES_AT_ONCE = 10;
 type ChatAgent = { id: string; name: string; status: "active" | "paused"; astraMode: boolean; avatarVariant: number; ownerEmail?: string };
 type LoadState = "idle" | "loading" | "ready" | "error";
@@ -27,6 +27,22 @@ export function ChatPane({ agent, csrfToken, maxUploadBytes, ownerEmail }: { age
   const errorRef = useRef<HTMLParagraphElement>(null);
   const loadingEarlier = useRef(false);
   const previousLength = useRef(0);
+  // True while the owner is pinned to the bottom. Any scroll-up unpins so
+  // history reading is never yanked; sending or scrolling back down re-pins.
+  const stickToBottom = useRef(true);
+  const fetchNow = useRef<(() => Promise<void>) | null>(null);
+  const onRunEnd = useCallback(async () => { await fetchNow.current?.(); }, []);
+
+  function scrollTimelineToBottom() {
+    const element = timeline.current;
+    if (element) element.scrollTop = element.scrollHeight;
+  }
+
+  function handleTimelineScroll() {
+    const element = timeline.current;
+    if (!element) return;
+    stickToBottom.current = element.scrollHeight - element.scrollTop - element.clientHeight < 80;
+  }
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [loadState, setLoadState] = useState<LoadState>(agent ? "loading" : "idle");
   const [hasMore, setHasMore] = useState(false);
@@ -44,6 +60,12 @@ export function ChatPane({ agent, csrfToken, maxUploadBytes, ownerEmail }: { age
   const active = agent?.status === "active";
   const agentId = agent?.id;
   const lastId = messages.at(-1)?.id;
+
+  // Switching agents starts a fresh conversation pinned to the bottom.
+  useEffect(() => {
+    stickToBottom.current = true;
+    previousLength.current = 0;
+  }, [agentId]);
 
   useEffect(() => {
     if (!agentId) return;
@@ -92,10 +114,7 @@ export function ChatPane({ agent, csrfToken, maxUploadBytes, ownerEmail }: { age
       } catch { /* retried on the next poll */ }
     };
     void refreshOutbox();
-    const poll = async () => {
-      if (polling || document.visibilityState !== "visible") return;
-      polling = true;
-      void refreshOutbox();
+    const fetchNewer = async () => {
       try {
         const query = lastId ? `?after=${encodeURIComponent(lastId)}` : "";
         const response = await fetch(`/api/agents/${agentId}/messages${query}`, {
@@ -119,14 +138,21 @@ export function ChatPane({ agent, csrfToken, maxUploadBytes, ownerEmail }: { age
         }
       } catch {
         if (!controller.signal.aborted) setRefreshError("Couldn't refresh this conversation. Retrying.");
-      } finally {
-        polling = false;
       }
     };
+    const poll = async () => {
+      if (polling || document.visibilityState !== "visible") return;
+      polling = true;
+      void refreshOutbox();
+      try { await fetchNewer(); } finally { polling = false; }
+    };
+    // A run just ended: fetch its reply now (merge drops duplicates) instead of waiting for the next tick.
+    fetchNow.current = async () => { void refreshOutbox(); await fetchNewer(); };
     const interval = window.setInterval(() => { void poll(); }, 5000);
     const onVisibility = () => { if (document.visibilityState === "visible") void poll(); };
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
+      fetchNow.current = null;
       controller.abort();
       window.clearInterval(interval);
       document.removeEventListener("visibilitychange", onVisibility);
@@ -144,14 +170,46 @@ export function ChatPane({ agent, csrfToken, maxUploadBytes, ownerEmail }: { age
       return;
     }
     const nextLength = messages.length;
-    if (nextLength > previousLength.current) {
+    const grew = nextLength > previousLength.current;
+    previousLength.current = nextLength;
+    // Scroll on new rows AND on in-place updates (streamed text replaces the
+    // same id, so length is unchanged). Only when pinned so reading history
+    // above is never yanked away.
+    const last = messages.at(-1);
+    if (grew && stickToBottom.current && last && last.sourceTag !== "user") {
+      // A new reply taller than the view opens at its header (avatar + name), the way people read; the owner
+      // scrolls on from there. Shorter replies keep the usual pin to the bottom.
       requestAnimationFrame(() => {
         const element = timeline.current;
-        if (element) element.scrollTop = element.scrollHeight;
+        const row = element?.querySelector<HTMLElement>(`[data-message-id="${CSS.escape(last.id)}"]`);
+        if (!element || !row) return;
+        if (row.offsetHeight > element.clientHeight - 48) {
+          stickToBottom.current = false;
+          element.scrollTop += row.getBoundingClientRect().top - element.getBoundingClientRect().top - 24;
+        } else scrollTimelineToBottom();
       });
+    } else if (grew || stickToBottom.current) {
+      requestAnimationFrame(scrollTimelineToBottom);
+    } else if (grew && nextLength <= 2) {
+      // First messages after empty state: pin even before a scroll event ran.
+      stickToBottom.current = true;
+      requestAnimationFrame(scrollTimelineToBottom);
     }
-    previousLength.current = nextLength;
   }, [messages]);
+
+  // The typing row (LiveRunCard layout="inline") and streamed text grow the
+  // timeline without changing messages.length, so observe content height and
+  // keep the scrollbar pinned while the owner sits at the bottom.
+  useEffect(() => {
+    const element = timeline.current;
+    const inner = element?.firstElementChild as HTMLElement | null | undefined;
+    if (!element || !inner) return;
+    const observer = new ResizeObserver(() => {
+      if (stickToBottom.current) scrollTimelineToBottom();
+    });
+    observer.observe(inner);
+    return () => observer.disconnect();
+  }, [loadState, agentId]);
 
   useEffect(() => {
     if (sendError) errorRef.current?.focus();
@@ -190,7 +248,8 @@ export function ChatPane({ agent, csrfToken, maxUploadBytes, ownerEmail }: { age
     for (const file of files.slice(0, MAX_FILES_AT_ONCE)) {
       const problem = precheckFile(file, maxUploadBytes);
       if (problem) rejected.push(`${file.name}: ${uploadErrorMessage(problem.code, maxUploadBytes)}`);
-      else added.push({ key: crypto.randomUUID(), file, loaded: 0, state: "queued" });
+      // Files wait in the composer until the owner presses Send.
+      else added.push({ key: crypto.randomUUID(), file, loaded: 0, state: "staged" });
     }
     // Oversized or unsupported files never start uploading; the owner gets one clear warning instead.
     if (rejected.length > 0) setSendError(rejected.length === 1 ? `Not attached. ${rejected[0]}` : `${rejected.length} files not attached. ${rejected.join(" ")}`);
@@ -240,10 +299,17 @@ export function ChatPane({ agent, csrfToken, maxUploadBytes, ownerEmail }: { age
   async function send(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const value = text.trim();
-    if (!agent || !active || !value || sending) return;
+    const staged = uploads.some((upload) => upload.state === "staged");
+    if (!agent || !active || (!value && !staged) || sending) return;
+    // The owner just wrote: re-pin so the new message and the agent's
+    // typing row that follows stay in view.
+    stickToBottom.current = true;
+    requestAnimationFrame(scrollTimelineToBottom);
     setSending(true);
     setSendError(null);
     setNotice(null);
+    const releaseStaged = () => setUploads((list) => list.map((upload) => upload.state === "staged" ? { ...upload, state: "queued" } : upload));
+    if (!value) { releaseStaged(); setSending(false); return; }
     try {
       const response = await fetch(`/api/agents/${agent.id}/messages`, {
         method: "POST",
@@ -261,8 +327,9 @@ export function ChatPane({ agent, csrfToken, maxUploadBytes, ownerEmail }: { age
       if (!parsed.success) throw new Error("Chat returned an invalid response.");
       setMessages((current) => mergeMessages(current, [parsed.data.message]));
       setText("");
+      releaseStaged();
       setNotice(parsed.data.message.sourceTag === "system" && parsed.data.message.card.type === "message"
-        ? parsed.data.message.card.text : "Message saved.");
+        ? parsed.data.message.card.text : null);
     } catch (error) {
       setSendError(error instanceof Error && error.message.length < 160
         ? error.message : "Couldn't save your message. Try again.");
@@ -309,7 +376,7 @@ export function ChatPane({ agent, csrfToken, maxUploadBytes, ownerEmail }: { age
           </div>
         </div>
       ) : (
-        <div ref={timeline} className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-6" aria-live="polite">
+        <div ref={timeline} onScroll={handleTimelineScroll} className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-6" aria-live="polite">
           <div className="flex flex-col gap-6">
             {hasMore && (
               <Button type="button" variant="secondary" size="sm" className="self-center" onClick={loadEarlier}>
@@ -325,7 +392,7 @@ export function ChatPane({ agent, csrfToken, maxUploadBytes, ownerEmail }: { age
                 <ChatCard message={message} agentId={agent?.id} csrfToken={csrfToken} />
               </MessageRow>
             ))}
-            {agent ? <LiveRunCard agentId={agent.id} csrfToken={csrfToken} active={active} /> : null}
+            {agent ? <LiveRunCard agentId={agent.id} csrfToken={csrfToken} active={active} agentName={agent.name} avatarVariant={agent.avatarVariant} layout="inline" onRunEnd={onRunEnd} /> : null}
             <div aria-hidden="true" />
           </div>
         </div>
@@ -365,7 +432,7 @@ export function ChatPane({ agent, csrfToken, maxUploadBytes, ownerEmail }: { age
                 }}
                 className="max-h-40 min-h-8 min-w-0 flex-1 resize-none self-center bg-transparent px-1 py-1.5 text-sm outline-none placeholder:text-text-subtle disabled:opacity-50" />
               <Button type="submit" variant="ghost" size="sm" aria-label="Send message" title="Send message"
-                disabled={!active || sending || text.trim().length === 0} className="shrink-0">
+                disabled={!active || sending || (text.trim().length === 0 && !uploads.some((upload) => upload.state === "staged"))} className="shrink-0">
                 {sending ? <LoaderCircle aria-hidden="true" className="size-4 animate-spin" /> : <SendHorizontal aria-hidden="true" className="size-4" />}
               </Button>
             </div>
@@ -388,7 +455,7 @@ function MessageRow({ message, agentName, agentId, agentAvatarVariant, ownerEmai
   // Orbit/Atlas layout: agent on the left (avatar + unboxed row), owner on the right (bubble).
   if (isOwner) {
     return (
-      <div className="motion-safe:animate-in motion-safe:fade-in motion-safe:duration-200">
+      <div data-message-id={message.id} className="motion-safe:animate-in motion-safe:fade-in motion-safe:duration-200">
         <div className="flex justify-end gap-2">
           <div className="min-w-0 max-w-[75ch] text-right">
             <p className="flex min-h-8 flex-wrap items-center justify-end gap-x-2">
@@ -403,14 +470,14 @@ function MessageRow({ message, agentName, agentId, agentAvatarVariant, ownerEmai
     );
   }
   return (
-    <div className="motion-safe:animate-in motion-safe:fade-in motion-safe:duration-200">
+    <div data-message-id={message.id} className="motion-safe:animate-in motion-safe:fade-in motion-safe:duration-200">
       <div className="flex gap-2">
         <span className="shrink-0"><AgentAvatar seed={agentId ?? agentName} variant={agentAvatarVariant} size={32} /></span>
         <div className="min-w-0 max-w-[75ch] flex-1">
           <p className="flex min-h-8 flex-wrap items-center gap-x-2">
             <span className="text-sm font-semibold">{name}</span>
             <time dateTime={message.createdAt} className="text-xs text-text-subtle">{formatTime(message.createdAt)}</time>
-            {message.runId && <span className="text-xs text-muted-foreground">Background result</span>}
+            {message.background && <span className="text-xs text-muted-foreground">Background result</span>}
           </p>
           <div>{children}</div>
         </div>
@@ -425,15 +492,16 @@ function UploadRow({ upload, onCancel }: { upload: Upload; onCancel: () => void 
   return (
     <li className="flex flex-col gap-1 rounded-md border border-border px-3 py-2 text-xs">
       <div className="flex items-center gap-2">
-        <FileText aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />
+        <StagedThumb file={upload.file} />
         <span className="min-w-0 flex-1 truncate font-medium">{upload.file.name}</span>
         <span className="shrink-0 tabular-nums text-muted-foreground">{formatBytes(upload.file.size)}</span>
         <Button type="button" variant="ghost" size="sm" className="shrink-0 px-2" onClick={onCancel}
-          aria-label={upload.state === "error" ? `Dismiss ${upload.file.name}` : `Cancel upload of ${upload.file.name}`}
-          title={upload.state === "error" ? "Dismiss" : "Cancel upload"}>
+          aria-label={upload.state === "error" ? `Dismiss ${upload.file.name}` : upload.state === "staged" ? `Remove ${upload.file.name}` : `Cancel upload of ${upload.file.name}`}
+          title={upload.state === "error" ? "Dismiss" : upload.state === "staged" ? "Remove" : "Cancel upload"}>
           <X aria-hidden="true" className="size-4" />
         </Button>
       </div>
+      {upload.state === "staged" && <p className="text-muted-foreground">Sends with your message</p>}
       {upload.state === "queued" && <p className="text-muted-foreground">Waiting</p>}
       {upload.state === "uploading" && (
         <div className="flex items-center gap-2">
@@ -447,6 +515,15 @@ function UploadRow({ upload, onCancel }: { upload: Upload; onCancel: () => void 
       {upload.state === "error" && <p role="alert" className="text-danger">{upload.error}</p>}
     </li>
   );
+}
+
+// Local preview of a picked image before it is sent; the blob URL never leaves this tab and is revoked on removal.
+function StagedThumb({ file }: { file: File }) {
+  const url = useMemo(() => file.type.startsWith("image/") && file.type !== "image/svg+xml" ? URL.createObjectURL(file) : null, [file]);
+  useEffect(() => () => { if (url) URL.revokeObjectURL(url); }, [url]);
+  // eslint-disable-next-line @next/next/no-img-element -- local blob preview
+  if (url) return <img src={url} alt="" className="size-10 shrink-0 rounded-md border border-border object-cover" />;
+  return <FileText aria-hidden="true" className="size-4 shrink-0 text-muted-foreground" />;
 }
 
 function mergeMessages(current: ChatMessage[], incoming: ChatMessage[]) {

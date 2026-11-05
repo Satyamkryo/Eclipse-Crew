@@ -12,14 +12,16 @@ export function startHeartbeat(
   database: Database, ownerId: string, runId: string,
   { onCancel, onSealed, intervalMs = 15_000 }: { onCancel: () => void; onSealed: () => void; intervalMs?: number },
 ): () => void {
-  let stopped = false; let timer: ReturnType<typeof setTimeout> | undefined;
+  let stopped = false; let seen = false; let timer: ReturnType<typeof setTimeout> | undefined;
   const beat = async () => {
     if (stopped) return;
     try {
       const rows = await database.update(runs).set({ heartbeatAt: new Date() })
         .where(and(eq(runs.id, runId), eq(runs.ownerId, ownerId), isNull(runs.signature)))
         .returning({ cancel: runs.cancelRequestedAt });
-      if (!rows[0]) { stopped = true; onSealed(); return; }
+      // The heartbeat starts before receipts.begin() inserts the row; only a row that existed and then vanished is sealed.
+      if (!rows[0]) { if (seen) { stopped = true; onSealed(); } return; }
+      seen = true;
       if (rows[0].cancel) onCancel();
     } catch { /* a database error never stops a run */ }
     finally { if (!stopped) { timer = setTimeout(beat, intervalMs); timer.unref?.(); } }

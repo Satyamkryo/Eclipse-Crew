@@ -4,7 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { createServer, request } from "node:http";
 import WebSocket, { WebSocketServer } from "ws";
-import { createAppServer, canonicalOrigin, streamTarget } from "../scripts/app-server.mjs";
+import { createAppServer, canonicalOrigin, streamTarget, isTransientProbeFailure } from "../scripts/app-server.mjs";
 import { wsVncPorts } from "../docker/desktop/vnc-session.mjs";
 
 const agentId = randomUUID(), ownerId = randomUUID(), connectionId = randomUUID();
@@ -264,4 +264,12 @@ test("native HTTP and upgrade errors retain CSP, no-store, nosniff and configure
     });
     ws.on("error", () => {});
   });
+});
+
+test("only transient revalidation failures are retried; denials still close the stream", () => {
+  assert.equal(isTransientProbeFailure(new Error("authorization_timeout")), true);
+  assert.equal(isTransientProbeFailure(new Error("authorization_status_503")), true);
+  assert.equal(isTransientProbeFailure(Object.assign(new Error("socket hang up"), { code: "ECONNRESET" })), true);
+  for (const denial of ["authorization_status_401", "authorization_status_403", "authorization_status_409", "authorization_schema", "authorization_agent", "authorization_denied"])
+    assert.equal(isTransientProbeFailure(new Error(denial)), false, denial);
 });

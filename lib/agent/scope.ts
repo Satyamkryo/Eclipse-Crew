@@ -22,6 +22,16 @@ export type ScopeRule = "host" | "recipient" | "page";
 export interface Scope {
   hosts: string[];
   emails: string[];
+  // Owner choice (2026-11-05): an "any public web" agent may type any public domain. Emails stay owner-named; IP
+  // literals and internal names are never in scope, and the egress proxy still refuses private destinations.
+  anyPublic?: boolean;
+}
+
+const INTERNAL_SUFFIXES = [".local", ".internal", ".lan", ".home.arpa", ".localhost", ".corp", ".intranet"];
+function isPublicDomain(host: string): boolean {
+  if (isIp(host) || !host.includes(".") || host === "localhost") return false;
+  if (INTERNAL_SUFFIXES.some((suffix) => host.endsWith(suffix))) return false;
+  return TLDS.has(host.split(".").pop() ?? "");
 }
 
 export interface ScopeVerdict {
@@ -118,6 +128,7 @@ export function deriveScope(input: {
   startHref?: string | null;
   // TASK-083. Hosts and emails the owner named in earlier included messages; agent replies never add scope.
   extraOwnerTexts?: readonly string[];
+  anyPublicWeb?: boolean;
 }): Scope {
   const hosts: string[] = [];
   for (const allowed of input.allowedHosts ?? []) pushHost(hosts, normalizeHost(allowed));
@@ -128,12 +139,13 @@ export function deriveScope(input: {
     for (const email of extractTargets(text).emails) if (!emails.includes(email) && emails.length < MAX_TARGETS) emails.push(email);
   }
   pushHost(hosts, hostFromUrl(input.startHref));
-  return { hosts: hosts.slice(0, MAX_TARGETS + 64), emails: emails.slice(0, MAX_TARGETS) };
+  return { hosts: hosts.slice(0, MAX_TARGETS + 64), emails: emails.slice(0, MAX_TARGETS), ...(input.anyPublicWeb ? { anyPublic: true } : {}) };
 }
 
 export function hostInScope(host: unknown, scope: Scope): boolean {
   const target = normalizeHost(host);
   if (!target) return false;
+  if (scope.anyPublic && isPublicDomain(target)) return true;
   for (const entry of scope.hosts) {
     const allowed = normalizeHost(entry);
     if (!allowed) continue;

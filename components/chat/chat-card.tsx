@@ -1,4 +1,5 @@
 import Link from "next/link";
+import { MediaPreview } from "@/components/chat/media-preview";
 import { Archive, CalendarClock, CircleHelp, ClipboardList, FileText, Gauge, Image as ImageIcon, Music, MessageSquare, Plug, ShieldQuestion, Sparkles, Video } from "lucide-react";
 import type { ChatMessage } from "@/lib/chat/schema";
 import { formatBytes } from "@/lib/chat/upload";
@@ -60,7 +61,7 @@ export function ChatCard({ message, agentId, csrfToken }: { message: ChatMessage
           <p className="mt-3 break-words leading-6 text-muted-foreground">{card.description}</p>
           <p className="mt-3 text-xs font-medium text-muted-foreground">Connection required</p>
           <p className="mt-2 text-sm">
-            <Link href="/settings/connections" className="underline underline-offset-4">Open Connections</Link>
+            <Link href="/settings/integrations" className="underline underline-offset-4">Connect GitHub</Link>
           </p>
         </>
       )}
@@ -71,6 +72,7 @@ export function ChatCard({ message, agentId, csrfToken }: { message: ChatMessage
           <p className="mt-2 text-xs text-muted-foreground">
             {card.direction === "inbox" ? "Saved to the agent's inbox" : "From the agent's outbox"} · {FILE_KIND_LABELS[card.kind]} · <span className="tabular-nums">{formatBytes(card.size)}</span>
           </p>
+          {agentId && <MediaPreview src={`/api/agents/${agentId}/files/${message.id}/preview`} kind={card.kind} name={card.name} />}
           {card.direction === "outbox" && agentId && csrfToken && (
             <FileCardActions agentId={agentId} messageId={message.id} csrfToken={csrfToken} name={card.name} kind={card.kind} />
           )}
@@ -281,3 +283,4 @@ function CardTitle({ icon: Icon, title }: { icon: typeof MessageSquare; title: s
     </div>
   );
 }
+

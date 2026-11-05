@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { lstat, mkdir, chmod, open, readlink, symlink } from "node:fs/promises";
+import { lstat, mkdir, chmod, open, readlink, symlink, unlink } from "node:fs/promises";
 
 export const DESKTOP_CONFIG_DIR = "/opt/eclipse/desktop/desktop-config";
 const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -22,7 +22,7 @@ export function desktopPaths(home, downloads, launcherDir = DESKTOP_CONFIG_DIR) 
     browserDesktop: `${home}/.local/share/applications/eclipse-browser.desktop`,
     filesDesktop: `${home}/.local/share/applications/eclipse-files.desktop`,
     terminalDesktop: `${home}/.local/share/applications/eclipse-terminal.desktop`,
-    // A Browser icon on the desktop itself, next to the folders (the dock launcher runs the same command).
+    // Removed legacy desktop Browser icon (see legacyDesktopBrowser).
     desktopBrowser: `${home}/Desktop/Browser.desktop`,
     launcherDir,
     links: [
@@ -138,8 +138,10 @@ XDG_DOWNLOAD_DIR="$HOME/Downloads"
       { path: p.browserDesktop, content: entry("Browser", "Focus the managed browser", `${launcherDir}/browser-focus.sh`, "/usr/share/icons/Adwaita/symbolic/legacy/web-browser-symbolic.svg") },
       { path: p.filesDesktop, content: entry("Files", "Open this agent's home", `${launcherDir}/open-files.sh`, "/usr/share/icons/Adwaita/symbolic/legacy/system-file-manager-symbolic.svg") },
       { path: p.terminalDesktop, content: entry("Terminal", "Open a terminal in work", `${launcherDir}/open-terminal.sh`, "/usr/share/icons/Adwaita/symbolic/legacy/utilities-terminal-symbolic.svg") },
-      { path: p.desktopBrowser, content: entry("Browser", "Show the managed browser", `${launcherDir}/browser-focus.sh`, "/usr/share/icons/Adwaita/symbolic/legacy/web-browser-symbolic.svg").replace("NoDisplay=true\n", "") },
     ],
+    // Earlier images put a Browser icon on the desktop. It is removed only while byte-identical to that seeded
+    // file, so an owner's own file is kept. The dock keeps its Browser launcher.
+    legacyDesktopBrowser: { path: p.desktopBrowser, content: entry("Browser", "Show the managed browser", `${launcherDir}/browser-focus.sh`, "/usr/share/icons/Adwaita/symbolic/legacy/web-browser-symbolic.svg").replace("NoDisplay=true\n", "") },
   };
 }
 
@@ -183,7 +185,26 @@ export async function seedDesktop({ home, downloads, uid, launcherDir = DESKTOP_
     await writeIfMissing(file.path, file.content, uid);
   }
   for (const link of config.links) await linkIfMissing(link.path, link.target, uid);
+  await removeIfExactly(config.legacyDesktopBrowser.path, config.legacyDesktopBrowser.content, uid);
   return config;
+}
+
+// Deletes a seeded file only while it still holds exactly `content`. Opened without following links and checked
+// on the open descriptor, so a swapped-in symlink or hard link is refused rather than unlinked.
+async function removeIfExactly(path, content, uid) {
+  let file;
+  try { file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW); } catch (error) {
+    if (error.code === "ENOENT") return;
+    if (error.code === "ELOOP") fail("unsafe_desktop_path");
+    throw error;
+  }
+  try {
+    const stat = await file.stat();
+    if (!stat.isFile() || stat.uid !== uid || stat.nlink !== 1) fail("unsafe_desktop_path");
+    if (stat.size !== Buffer.byteLength(content)) return;
+    if ((await file.readFile("utf8")) !== content) return;
+  } finally { await file.close(); }
+  await unlink(path);
 }
 
 // Rewrites a seeded file only while it still holds exactly `previous`. Opened without following links and checked on

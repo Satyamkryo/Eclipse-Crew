@@ -100,7 +100,7 @@ const responseSchema = z.object({
   model: z.string().min(1).max(200).optional(),
   status: z.enum(["completed", "incomplete"]),
   output: z.array(z.object({ type: z.string().min(1).max(64) }).passthrough()).min(1).max(64),
-  incomplete_details: z.object({ reason: z.string().max(128) }).passthrough().optional(),
+  incomplete_details: z.object({ reason: z.string().max(128) }).passthrough().nullish(),
   usage: usageSchema,
 }).passthrough();
 
@@ -130,9 +130,10 @@ function messageInput(request: GenerateRequest): Record<string, unknown>[] {
   }));
 }
 
-function toolChoice(value: GenerateRequest["toolChoice"]): unknown {
-  if (value === undefined || value === "auto" || value === "required") return value;
-  return { type: "function", name: value.name };
+// The Meta API accepts only tool_choice "auto" (live 400: "none", "required" and named function choices are not
+// supported). A named choice is honoured by offering only that tool; "required" keeps every tool under "auto".
+function forcedToolName(value: GenerateRequest["toolChoice"]): string | undefined {
+  return value !== undefined && typeof value === "object" ? value.name : undefined;
 }
 
 function buildBody(request: GenerateRequest): Record<string, unknown> & { input: unknown[] } {
@@ -152,9 +153,11 @@ function buildBody(request: GenerateRequest): Record<string, unknown> & { input:
     description: tool.description,
     parameters: tool.parameters,
   }));
-  if (request.computerUse) tools.push({ type: "computer" });
-  if (tools.length) body.tools = tools;
-  if (request.toolChoice !== undefined) body.tool_choice = toolChoice(request.toolChoice);
+  const forced = forcedToolName(request.toolChoice);
+  if (request.computerUse && !forced) tools.push({ type: "computer" });
+  const offered = forced ? tools.filter((tool) => tool.name === forced) : tools;
+  if (offered.length) body.tools = offered;
+  if (request.toolChoice !== undefined && offered.length) body.tool_choice = "auto";
   return body;
 }
 
@@ -163,13 +166,20 @@ function parseArguments(value: string): void {
     const parsed: unknown = JSON.parse(value);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
   } catch {
-    throw new ProviderError("invalid_response");
+    throw invalidResponse("m1");
   }
+}
+
+// Operator-log detail only: which check failed and the first schema issue's path/code, never response content.
+function invalidResponse(site: string, issues?: { path: PropertyKey[]; code: string }[]) {
+  const first = issues?.[0];
+  return Object.assign(new ProviderError("invalid_response"),
+    { detail: first ? `${site} ${first.path.map(String).join(".")} ${first.code}` : site });
 }
 
 function parseResponse(value: unknown, requestedModel: string): ProviderResult {
   const parsed = responseSchema.safeParse(value);
-  if (!parsed.success) throw new ProviderError("invalid_response");
+  if (!parsed.success) throw invalidResponse("m2", parsed.error.issues);
 
   const outputs: ProviderOutput[] = [];
   const textParts: string[] = [];
@@ -179,7 +189,7 @@ function parseResponse(value: unknown, requestedModel: string): ProviderResult {
   for (const raw of parsed.data.output) {
     if (raw.type === "message") {
       const message = messageItemSchema.safeParse(raw);
-      if (!message.success) throw new ProviderError("invalid_response");
+      if (!message.success) throw invalidResponse("m3");
       const text = message.data.content
         .filter((item) => item.type === "output_text" && typeof item.text === "string")
         .map((item) => item.text as string)
@@ -191,7 +201,7 @@ function parseResponse(value: unknown, requestedModel: string): ProviderResult {
 
     if (raw.type === "function_call") {
       const call = functionCallItemSchema.safeParse(raw);
-      if (!call.success) throw new ProviderError("invalid_response");
+      if (!call.success) throw invalidResponse("m4");
       parseArguments(call.data.arguments);
       outputs.push({
         type: "function_call",
@@ -204,16 +214,16 @@ function parseResponse(value: unknown, requestedModel: string): ProviderResult {
 
     if (raw.type === "computer_call") {
       const call = computerCallItemSchema.safeParse(raw);
-      if (!call.success || computerCalls !== 0) throw new ProviderError("invalid_response");
+      if (!call.success || computerCalls !== 0) throw invalidResponse("m5");
       computerCalls += 1;
       const checks = call.data.pending_safety_checks ?? [];
-      if (checks.length > 16) throw new ProviderError("invalid_response");
+      if (checks.length > 16) throw invalidResponse("m6");
       pendingSafetyChecks = checks;
       const actions = [
         ...(call.data.actions ?? []),
         ...(call.data.action ? [call.data.action] : []),
       ];
-      if (actions.length > 16) throw new ProviderError("invalid_response");
+      if (actions.length > 16) throw invalidResponse("m7");
       outputs.push({
         type: "computer_call",
         callId: call.data.call_id,
@@ -225,14 +235,14 @@ function parseResponse(value: unknown, requestedModel: string): ProviderResult {
     }
 
     if (raw.type === "reasoning") {
-      if (!reasoningItemSchema.safeParse(raw).success) throw new ProviderError("invalid_response");
+      if (!reasoningItemSchema.safeParse(raw).success) throw invalidResponse("m8");
       continue;
     }
 
-    throw new ProviderError("invalid_response");
+    throw invalidResponse("m9");
   }
 
-  if (!outputs.length) throw new ProviderError("invalid_response");
+  if (!outputs.length) throw invalidResponse("m10");
 
   const reason = parsed.data.incomplete_details?.reason;
   const incompleteReason = parsed.data.status === "incomplete"
@@ -308,7 +318,7 @@ export function createMetaConnector(config: MetaProviderConfig, limits: RuntimeL
         limits,
       );
       const parsed = modelListSchema.safeParse(value);
-      if (!parsed.success) throw new ProviderError("invalid_response");
+      if (!parsed.success) throw invalidResponse("m11");
       return parsed.data.data.map((model) => ({
         id: model.id,
         contextTokens: contextFrom(model),

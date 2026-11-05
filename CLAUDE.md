@@ -6,5 +6,6 @@ All project instructions live in `AGENTS.md`. Follow it exactly; nothing here ov
 
 ## Claude Code notes
 
-- Before changing anything, write the implementation prompt in `prompts/` and wait for the owner's approval (`AGENTS.md` §4). Plan mode does not replace the prompt file.
-- Don't use auto-accept or skip-permission modes to get around the approval step.
+- Implement the owner's requested scope directly. Create an implementation prompt only when the owner explicitly asks; then follow `AGENTS.md` §5.
+- Follow `AGENTS.md` §3's owner-opt-in rule: read or edit `docs/TASKS.md`, `docs/MEMORY.md`, `docs/ROADMAP.md`, `docs/TEST_PLAN.md`, `docs/UI_REFERENCE_MAP.md`, `prompts/`, and `designs/` only when explicitly requested for the current task. Keep these paths ignored and locally preserved.
+- Plan mode and permission settings do not override these rules or the remaining owner-approval boundaries in `AGENTS.md`.

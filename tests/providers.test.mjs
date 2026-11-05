@@ -223,7 +223,7 @@ test("Meta normalizes text, function calls and usage while sending source-tagged
     description: "Open notes by query.",
     parameters: { type: "object", properties: { query: { type: "string" } }, additionalProperties: false },
   }]);
-  assert.deepEqual(call.body.tool_choice, { type: "function", name: "open_notes" });
+  assert.equal(call.body.tool_choice, "auto");
   assert.equal(call.body.reasoning.effort, "low");
   assert.equal(call.body.input[0].content[0].type, "input_text");
   assert.equal(call.body.input[0].content[0].text, "SOURCE_TAG=user; CONTENT_JSON=\"Open today's notes\"");
@@ -639,8 +639,8 @@ test("Meta capability detection probes tools and vision and retains documented m
   for (const call of transport.calls) {
     assert.equal(authHeaders(call).has("authorization"), false);
   }
-  assert.equal(transport.calls[1].body.tool_choice.type, "function");
-  assert.equal(transport.calls[1].body.tool_choice.name, "eclipse_probe");
+  assert.equal(transport.calls[1].body.tool_choice, "auto");
+  assert.deepEqual(transport.calls[1].body.tools.map((tool) => tool.name), ["eclipse_probe"]);
   assert.equal(transport.calls[2].body.input[0].content.some((item) => item.type === "input_image"), true);
 });
 

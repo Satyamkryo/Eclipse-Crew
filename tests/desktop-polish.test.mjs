@@ -21,9 +21,11 @@ test("desktop config seeds the dock, files, terminal, folders and hidden unsafe 
   // Takeover sends clicks but never hover, so the dock must stay visible.
   assert.match(tint2, /^autohide = 0$/m);
   assert.equal(legacyTint2rc(HOME, DOWNLOADS), tint2.replace("autohide = 0", "autohide = 1"));
-  const desktopBrowser = files.get(`${HOME}/Desktop/Browser.desktop`);
-  assert.match(desktopBrowser, /Exec=\/opt\/eclipse\/desktop\/desktop-config\/browser-focus\.sh/);
-  assert.doesNotMatch(desktopBrowser, /NoDisplay/);
+  // The desktop Browser icon is gone; only the exact file earlier images seeded is cleaned up.
+  assert.equal(files.has(`${HOME}/Desktop/Browser.desktop`), false);
+  assert.equal(config.legacyDesktopBrowser.path, `${HOME}/Desktop/Browser.desktop`);
+  assert.match(config.legacyDesktopBrowser.content, /Exec=\/opt\/eclipse\/desktop\/desktop-config\/browser-focus\.sh/);
+  assert.doesNotMatch(config.legacyDesktopBrowser.content, /NoDisplay/);
   const desktop = files.get(`${HOME}/.config/pcmanfm/default/desktop-items-0.conf`);
   for (const setting of ["wallpaper_mode=0", "show_trash=1", "show_home=1", "show_computer=0", "show_mounts=0", "show_documents=0"])
     assert.match(desktop, new RegExp(setting));
@@ -52,11 +54,22 @@ test("fixed launchers verify kernel identity and never use a window title", asyn
   assert.match(browser, /--user-data-dir=\$profile/);
   assert.match(browser, /xdotool search --pid "\$pid"/);
   assert.doesNotMatch(browser, /getwindowname|--name/);
+  // A minimized browser is not "visible"; the managed top-level window is picked by WM_STATE.
+  assert.doesNotMatch(browser, /--onlyvisible/);
+  assert.match(browser, /xprop -id "\$candidate" WM_STATE/);
+  // A stopped browser shows fixed guidance; the launcher never starts the browser itself.
+  assert.match(browser, /xmessage -center -timeout 8/);
+  assert.doesNotMatch(browser, /chrome-linux64|playwright|launch/i);
   const terminal = await readFile("docker/desktop/desktop-config/open-terminal.sh", "utf8");
   assert.match(terminal, /cd "\$\{HOME:\?\}\/work"/);
   assert.match(terminal, /exec xterm/);
   const files = await readFile("docker/desktop/desktop-config/open-files.sh", "utf8");
   assert.match(files, /exec pcmanfm "\$HOME"/);
+});
+
+test("worker helper commands are killed with SIGKILL on timeout (pcmanfm traps SIGTERM)", async () => {
+  const worker = await readFile("docker/desktop/session-worker.mjs", "utf8");
+  assert.match(worker, /const command = \(executable, args, extra = \{\}\) => spawnSync\(executable, args, \{[^}]*timeout: 1000, killSignal: "SIGKILL"/);
 });
 
 test("image installs the locked native tools and copies the fixed launchers", async () => {

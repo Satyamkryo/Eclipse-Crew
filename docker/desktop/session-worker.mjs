@@ -173,7 +173,9 @@ export async function startSession(input, { onRuntime = () => {}, onEvent = () =
     XDG_RUNTIME_DIR: `${directory}/runtime`, XDG_CONFIG_HOME: `${record.home}/.config`, XDG_DATA_HOME: `${record.home}/.local/share`,
     XDG_CACHE_HOME: `${record.home}/.cache`, DBUS_SESSION_BUS_ADDRESS: `unix:path=${directory}/runtime/bus`,
     DBUS_SYSTEM_BUS_ADDRESS: "disabled:", TERM: "xterm-256color", TMPDIR: directory };
-  const command = (executable, args, extra = {}) => spawnSync(executable, args, { env, stdio: "ignore", timeout: 1000, ...extra });
+  // SIGKILL on timeout: pcmanfm traps SIGTERM, so a `pcmanfm --set-wallpaper` that found no desktop instance
+  // (it then becomes the primary and stays up) blocked this synchronous call, and the whole worker, forever.
+  const command = (executable, args, extra = {}) => spawnSync(executable, args, { env, stdio: "ignore", timeout: 1000, killSignal: "SIGKILL", ...extra });
   const audio = new AgentAudio({ directory, home: record.home, uid, env });
   let children = []; let context = null; let teach = null; let vnc = null; let vncForwarder = null; let vncAbort = new AbortController();
   let graphics = "stopped", browser = "stopped"; let sandboxReady = false; let closing = false;
@@ -401,6 +403,10 @@ function safeHref(urlString) {
 }
 
 const OPERATION_TIMEOUT_MS = 4000;
+// Real sites behind the egress proxy can take many seconds to respond, so navigation has its own, longer bound.
+// Commit budget < load budget < worker bound (NAVIGATION_TIMEOUT_MS + 2 s) < controller channel < app fetch.
+export const NAVIGATION_COMMIT_MS = 15_000;
+export const NAVIGATION_TIMEOUT_MS = 20_000;
 const pageIds = new WeakMap();
 const operationError = (code) => Object.assign(Error(code), { code });
 function pageId(page) {
@@ -698,10 +704,14 @@ async function performOperation(session, command, signal, trustedOwnerInput) {
   }))), source_tag: "tool", untrusted: true };
   const page = await choosePage(pages, command.pageId);
   if (operation === "browser.navigate") {
-    // The browser context already sends every request through this agent's egress proxy.
-    try { await page.goto(command.url, { waitUntil: "domcontentloaded", timeout: 30_000 }); }
+    // The browser context already sends every request through this agent's egress proxy. Once the server's response
+    // commits, the outcome is known; a slow DOMContentLoaded only shortens the wait, and the step's verification
+    // judges the page. A navigation that never commits fails cleanly instead of marking the session uncertain.
+    const started = Date.now();
+    try { await page.goto(command.url, { waitUntil: "commit", timeout: NAVIGATION_COMMIT_MS }); }
     catch { throw operationError("navigation_failed"); }
-    if (signal.aborted) throw operationError("uncertain_outcome");
+    const remaining = NAVIGATION_TIMEOUT_MS - (Date.now() - started);
+    if (remaining > 0) await page.waitForLoadState("domcontentloaded", { timeout: remaining }).catch(() => {});
     return { ok: true };
   }
   if (operation === "page.find_text") return findText(page, command.text);
@@ -753,6 +763,10 @@ export async function dispatchOperation(session, operation, params = {}, trusted
     // A capture may last up to 30 s, so it gets its own bound; the module also enforces it.
     return boundedOperation(async (signal) => resultFor(operation, await performOperation(session, parsed.data, signal, false), parsed.data),
       (parsed.data.seconds + 5) * 1000);
+  }
+  if (operation === "browser.navigate") {
+    return boundedOperation(async (signal) => resultFor(operation, await performOperation(session, parsed.data, signal, false), parsed.data),
+      NAVIGATION_TIMEOUT_MS + 2000);
   }
   const command = parsed.data;
   const run = () => boundedOperation(async (signal) => resultFor(operation, await performOperation(session, command, signal, trustedOwnerInput), command));
@@ -876,7 +890,7 @@ async function main() {
           const result = await dispatchOperation(session, operation, params, ownerInput === true);
           await sendMsg({ requestId, result });
         } catch (err) {
-          const safeCodes = new Set(["invalid_operation", "uncertain_outcome", "desktop_command_failed", "desktop_result_too_large", "sensitive_target", "focused_target_unknown", "too_many_pages", "too_many_frames", "page_not_found", "ambiguous_locator", "target_not_found", "grounding_unavailable", "visual_unavailable", "audio_unavailable", "audio_capture_failed", "capture_cancelled", "invalid_audio"]);
+          const safeCodes = new Set(["invalid_operation", "uncertain_outcome", "desktop_command_failed", "desktop_result_too_large", "sensitive_target", "focused_target_unknown", "too_many_pages", "too_many_frames", "page_not_found", "ambiguous_locator", "target_not_found", "navigation_failed", "grounding_unavailable", "visual_unavailable", "audio_unavailable", "audio_capture_failed", "capture_cancelled", "invalid_audio"]);
           const code = safeCodes.has(err?.code) ? err.code : err?.name === "TimeoutError" ? "uncertain_outcome" : "operation_failed";
           await sendMsg({ requestId, error: { code, message: code } });
         }

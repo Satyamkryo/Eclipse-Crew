@@ -2,7 +2,7 @@
 import { useEffect, useState, useSyncExternalStore, type ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Plus, Search, Settings } from "lucide-react";
+import { Bot, Plus, Search, Settings, UsersRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ModalDialog } from "@/components/workspace/modal-dialog";
 import { AgentForm } from "@/components/workspace/agent-form";
@@ -234,25 +234,53 @@ function StaticAgentList({ agents, selectedAgentId }: { agents: AgentSummary[]; 
     return <p className="px-4 py-3 text-xs text-muted-foreground">No agents yet. Create one from the workspace.</p>;
   }
   return (
-    <ul aria-label="Agents" className="flex flex-col gap-0.5 px-2">
-      {agents.map((agent) => (
-        <li key={agent.id}>
-          <Link href={`/?agent=${agent.id}`} aria-current={agent.id === selectedAgentId ? "page" : undefined}
-            className={cn("flex min-w-0 items-center gap-3 rounded-md px-2 py-2 transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring",
-              agent.id === selectedAgentId ? "border border-border-strong bg-surface-hover" : "border border-transparent hover:bg-surface-hover")}>
-            <span className="shrink-0 rounded-md">
-              <AgentAvatar seed={agent.id} variant={agent.avatarVariant} size={36} label={`${agent.name} avatar`} />
-            </span>
-            <span className="min-w-0 flex-1">
-              <span className={cn("block truncate text-sm font-medium", agent.status === "paused" ? "text-subtle" : "text-foreground")}>{agent.name}</span>
-              <span className="block truncate text-xs text-muted-foreground">{agent.role}</span>
-            </span>
-            {agent.status === "paused" && <span className="shrink-0 text-xs text-muted-foreground">Paused</span>}
-          </Link>
-        </li>
+    <div className="flex flex-col gap-4 px-2">
+      {groupStaticAgents(agents).map((group) => (
+        <section key={group.label ?? "all"} aria-label={group.label ?? "Agents"}>
+          {group.label && (
+            <h3 className="mb-1 flex items-center gap-1.5 px-2 text-xs font-medium text-muted-foreground">
+              {group.crew ? <UsersRound aria-hidden="true" className="size-3.5" /> : <Bot aria-hidden="true" className="size-3.5" />}
+              <span className="min-w-0 truncate">{group.label}</span>
+            </h3>
+          )}
+          <ul aria-label={group.label ?? "Agents"} className="flex flex-col gap-0.5">
+            {group.agents.map((agent) => (
+              <li key={agent.id}>
+                <Link href={`/?agent=${agent.id}`} aria-current={agent.id === selectedAgentId ? "page" : undefined}
+                  className={cn("flex min-w-0 items-center gap-3 rounded-md px-2 py-2 transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-ring",
+                    agent.id === selectedAgentId ? "border border-border-strong bg-surface-hover" : "border border-transparent hover:bg-surface-hover")}>
+                  <span className="shrink-0 rounded-md">
+                    <AgentAvatar seed={agent.id} variant={agent.avatarVariant} size={36} label={`${agent.name} avatar`} />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className={cn("block truncate text-sm font-medium", agent.status === "paused" ? "text-subtle" : "text-foreground")}>{agent.name}</span>
+                    <span className="block truncate text-xs text-muted-foreground">{agent.role}</span>
+                  </span>
+                  {agent.status === "paused" && <span className="shrink-0 text-xs text-muted-foreground">Paused</span>}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </section>
       ))}
-    </ul>
+    </div>
   );
+}
+
+// Same grouping as AgentPane: crew agents under their crew's name, the rest
+// under "Standard agents". With no crews the list stays one plain list.
+function groupStaticAgents(agents: AgentSummary[]): { label: string | null; crew: boolean; agents: AgentSummary[] }[] {
+  const crews = new Map<string, AgentSummary[]>();
+  const standard: AgentSummary[] = [];
+  for (const agent of agents) {
+    if (agent.crew) crews.set(agent.crew, [...(crews.get(agent.crew) ?? []), agent]);
+    else standard.push(agent);
+  }
+  if (crews.size === 0) return [{ label: null, crew: false, agents: standard }];
+  return [
+    ...[...crews.entries()].map(([label, members]) => ({ label, crew: true, agents: members })),
+    ...(standard.length ? [{ label: "Standard agents", crew: false as const, agents: standard }] : []),
+  ];
 }
 
 function CreateAgentDialog({ csrfToken, initialTemplate, onClose, router }: { csrfToken: string; initialTemplate?: AgentTemplateId | null; onClose: () => void; router: ReturnType<typeof useRouter> }) {

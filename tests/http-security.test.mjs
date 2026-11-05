@@ -37,7 +37,47 @@ test("CSP and HSTS protect redirects and errors using the configured public orig
   assert.equal(result.status, 0, result.stdout + result.stderr);
 });
 
-test("isolated stack enforces CSP, persists writable artifacts, and safely repairs a legacy volume", { timeout: 900000 }, async () => {
+// A run killed before its finally block (Ctrl-C, closed terminal, crash) leaves its whole stack running. Before
+// starting, remove fixture stacks from earlier runs. Only names this test generates are touched, and only when
+// every resource is older than the test's own timeout, so a concurrent run's live stack is never swept.
+const FIXTURE_PROJECT = /^eclipsefoundation[0-9a-f]{12}$/;
+const FIXTURE_TIMEOUT_MS = 900000;
+// Runs outside the repo with no Compose settings, so `compose -p` acts on labels alone and needs no project env.
+const labelOnlyEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COMPOSE_")));
+const labelOnlyDocker = (...args) => spawnSync("docker", args, { cwd: tmpdir(), env: labelOnlyEnv, encoding: "utf8", timeout: 120000 });
+function sweepStaleFixtures() {
+  const run = labelOnlyDocker;
+  const lines = (result) => (result.status === 0 ? result.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean) : []);
+  const newest = new Map();
+  for (const [kind, listing, created] of [
+    ["container", ["ps", "-aq"], "{{.Created}}"],
+    ["network", ["network", "ls", "-q"], "{{.Created}}"],
+    ["volume", ["volume", "ls", "-q"], "{{.CreatedAt}}"],
+  ]) {
+    for (const id of lines(run(...listing, "--filter", "label=com.docker.compose.project"))) {
+      const [name, at] = lines(run(kind, "inspect", "--format", `{{ index ${kind === "container" ? ".Config.Labels" : ".Labels"} "com.docker.compose.project" }}|${created}`, id))[0]?.split("|") ?? [];
+      if (!name || !FIXTURE_PROJECT.test(name)) continue;
+      const time = Date.parse(at) || Date.now();
+      newest.set(name, Math.max(newest.get(name) ?? 0, time));
+    }
+  }
+  for (const [name, time] of newest) {
+    if (Date.now() - time < FIXTURE_TIMEOUT_MS * 2) continue;
+    removeFixtureProject(name);
+  }
+}
+function removeFixtureProject(name) {
+  const run = labelOnlyDocker;
+  // By label, not `compose down`: without the compose file Compose can miss containers it did not create itself.
+  const ids = (...listing) => (run(...listing, "--filter", `label=com.docker.compose.project=${name}`).stdout ?? "").split(/\r?\n/).filter(Boolean);
+  for (const id of ids("ps", "-aq")) run("rm", "-f", "--volumes", id);
+  for (const id of ids("network", "ls", "-q")) run("network", "rm", id);
+  for (const id of ids("volume", "ls", "-q")) run("volume", "rm", "-f", id);
+  for (const service of ["app", "desktop", "egress-proxy"]) run("image", "rm", `${name}-${service}:latest`);
+}
+
+test("isolated stack enforces CSP, persists writable artifacts, and safely repairs a legacy volume", { timeout: FIXTURE_TIMEOUT_MS }, async () => {
+  sweepStaleFixtures();
   const project = `eclipsefoundation${randomBytes(6).toString("hex")}`;
   const tempRoot = realpathSync(tmpdir());
   const temp = mkdtempSync(path.join(tempRoot, "eclipse-foundation-test-"));
@@ -72,6 +112,15 @@ test("isolated stack enforces CSP, persists writable artifacts, and safely repai
   let image;
   let unrelatedVolume;
   const builtTags = [];
+  // Ctrl-C or a closed terminal skips finally; tear the stack down here instead. The startup sweep is the backstop
+  // for kills no handler can catch.
+  const onSignal = (signal) => {
+    removeFixtureProject(project);
+    rmSync(temp, { recursive: true, force: true });
+    process.exit(signal === "SIGINT" ? 130 : 143);
+  };
+  const signals = ["SIGINT", "SIGTERM", "SIGHUP"];
+  for (const signal of signals) process.once(signal, onSignal);
   try {
     // Environment workaround (Docker policy unchanged): this Docker Desktop refuses compose-managed
     // builds that request the fs.read entitlement, so each image is built directly from its explicit
@@ -185,6 +234,7 @@ test("isolated stack enforces CSP, persists writable artifacts, and safely repai
       "--mount", `type=volume,src=${unrelatedVolume},dst=/var/eclipse/artifacts`, image), "create stopped refusal fixture");
     assert.notEqual(repair().status, 0, "repair must refuse a volume without the artifacts label");
   } finally {
+    for (const signal of signals) process.off(signal, onSignal);
     for (const [kind, listing, template] of [
       ["container", ["ps", "-aq"], '{{ index .Config.Labels "com.docker.compose.project" }}'],
       ["network", ["network", "ls", "-q"], '{{ index .Labels "com.docker.compose.project" }}'],
