@@ -1050,6 +1050,19 @@ BEGIN
           'model_roles_role_check: CHECK ((role = ANY (ARRAY[''main''::text, ''sam''::text, ''background''::text])))',
           'model_roles_routing_check: CHECK (((routing = ANY (ARRAY[''fixed''::text, ''auto''::text])) AND ((routing = ''fixed''::text) OR (hard_model IS NOT NULL)) AND ((role = ''main''::text) OR ((routing = ''fixed''::text) AND (hard_model IS NULL)))))',
           'model_roles_sam_shape_check: CHECK (((role <> ''sam''::text) OR (((mode = ''off''::text) AND (provider_id IS NULL) AND (model IS NULL) AND (use_main_key = false)) OR ((mode = ''meta''::text) AND (provider_id IS NOT NULL) AND (model IS NOT NULL)))))'
+        ] AND
+      -- Migration 0040: SAM may also be a local server (mode 'local', own provider, never the Main key).
+      (SELECT array_agg(conname::text || ': ' || pg_get_constraintdef(oid) ORDER BY conname)
+       FROM pg_constraint WHERE conrelid = to_regclass('public.model_roles'))
+        IS DISTINCT FROM ARRAY[
+          'model_roles_background_shape_check: CHECK (((role <> ''background''::text) OR ((mode = ''active''::text) AND (provider_id IS NOT NULL) AND (model IS NOT NULL) AND (use_main_key = false))))',
+          'model_roles_main_shape_check: CHECK (((role <> ''main''::text) OR ((mode = ''active''::text) AND (provider_id IS NOT NULL) AND (model IS NOT NULL) AND (use_main_key = false))))',
+          'model_roles_mode_check: CHECK ((mode = ANY (ARRAY[''active''::text, ''off''::text, ''meta''::text, ''local''::text])))',
+          'model_roles_pkey: PRIMARY KEY (id)',
+          'model_roles_provider_id_providers_id_fk: FOREIGN KEY (provider_id) REFERENCES providers(id) ON DELETE RESTRICT',
+          'model_roles_role_check: CHECK ((role = ANY (ARRAY[''main''::text, ''sam''::text, ''background''::text])))',
+          'model_roles_routing_check: CHECK (((routing = ANY (ARRAY[''fixed''::text, ''auto''::text])) AND ((routing = ''fixed''::text) OR (hard_model IS NOT NULL)) AND ((role = ''main''::text) OR ((routing = ''fixed''::text) AND (hard_model IS NULL)))))',
+          'model_roles_sam_shape_check: CHECK (((role <> ''sam''::text) OR (((mode = ''off''::text) AND (provider_id IS NULL) AND (model IS NULL) AND (use_main_key = false)) OR ((mode = ''meta''::text) AND (provider_id IS NOT NULL) AND (model IS NOT NULL)) OR ((mode = ''local''::text) AND (provider_id IS NOT NULL) AND (model IS NOT NULL) AND (use_main_key = false)))))'
         ]) OR
       (SELECT array_agg(adnum::integer ORDER BY adnum) FROM pg_attrdef WHERE adrelid = to_regclass('public.model_roles'))
         IS DISTINCT FROM (CASE WHEN EXISTS (SELECT FROM pg_attribute WHERE attrelid = to_regclass('public.model_roles') AND attname = 'routing' AND NOT attisdropped) THEN ARRAY[6,8,9,10] ELSE ARRAY[6,8,9] END) OR
