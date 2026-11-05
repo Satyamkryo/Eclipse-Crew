@@ -1,3 +1,5 @@
+import { isLocalModelUrl } from "../providers/local";
+
 export type PriceProviderKind = "meta" | "openai-compatible";
 
 export interface ModelPriceRates {
@@ -31,21 +33,9 @@ export const META_PRICES: Readonly<Record<string, ModelPriceRates>> = Object.fre
   "sam-3.1": { inputMicroUsdPerMillion: 0, cachedMicroUsdPerMillion: 0, outputMicroUsdPerMillion: 0, imageMicroUsdPerThousand: 2_500_000 },
 });
 
+// Same rule as provider routing: a local endpoint uses the proxy's private-network route and costs nothing.
 export function isLocalBaseUrl(value: string | null): boolean {
-  if (!value) return false;
-  try {
-    const host = new URL(value).hostname.toLowerCase().replace(/^\[|\]$/g, "");
-    if (host === "localhost" || host === "host.docker.internal" || host === "::1" || host.endsWith(".local")) return true;
-    if (/^127\./.test(host)) return true;
-    const octets = host.split(".").map(Number);
-    if (octets.length === 4 && octets.every((part) => Number.isInteger(part) && part >= 0 && part <= 255)) {
-      return octets[0] === 10 || (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) ||
-        (octets[0] === 192 && octets[1] === 168) || (octets[0] === 169 && octets[1] === 254);
-    }
-    return false;
-  } catch {
-    return false;
-  }
+  return isLocalModelUrl(value);
 }
 
 // null means a hosted model has no usable price. The run must stop before spending rather than bypass the budget.

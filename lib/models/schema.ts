@@ -46,12 +46,24 @@ export const mainModelSettingsSchema = z.object({
   }
 });
 
+// "local" is a self-hosted SAM 3.1 server (ADR-010: local NVIDIA GPU, weights downloaded by the owner) that speaks
+// Meta's Responses contract at {baseUrl}/responses and lists models at {baseUrl}/models.
 export const samModelSettingsSchema = z.object({
-  mode: z.enum(["off", "meta"]),
+  mode: z.enum(["off", "meta", "local"]),
   useMainKey: z.boolean(),
+  baseUrl: baseUrl.optional(),
   apiKey: apiKey.optional(),
 }).strict().superRefine((value, context) => {
   const hasKey = Boolean(value.apiKey);
+  if (value.mode === "local" && !value.baseUrl) {
+    context.addIssue({ code: "custom", path: ["baseUrl"], message: "Base URL is required." });
+  }
+  if (value.mode !== "local" && value.baseUrl) {
+    context.addIssue({ code: "custom", path: ["baseUrl"], message: "Only a local SAM server has a base URL." });
+  }
+  if (value.mode === "local" && value.useMainKey) {
+    context.addIssue({ code: "custom", path: ["useMainKey"], message: "A local SAM server never uses the Main AI key." });
+  }
   if (value.mode === "off" && value.useMainKey) {
     context.addIssue({ code: "custom", path: ["useMainKey"], message: "SAM is off." });
   }
@@ -82,6 +94,15 @@ export const backgroundModelSettingsSchema = z.object({
 export type BackgroundModelSettingsInput = z.infer<typeof backgroundModelSettingsSchema>;
 
 export const testModelSchema = z.object({ role: modelRoleSchema }).strict();
+
+// Settings → Models "Check server" / "Detect". Either one unsaved local address (plus an optional key for servers
+// started with --api-key), or `detect` to try the known same-computer addresses. Hosted URLs are refused.
+export const localProbeSchema = z.union([
+  z.object({ baseUrl, apiKey: apiKey.optional() }).strict(),
+  z.object({ detect: z.literal(true) }).strict(),
+]);
+
+export type LocalProbeInput = z.infer<typeof localProbeSchema>;
 
 export type MainModelSettingsInput = z.infer<typeof mainModelSettingsSchema>;
 export type SamModelSettingsInput = z.infer<typeof samModelSettingsSchema>;

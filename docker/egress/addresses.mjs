@@ -26,3 +26,39 @@ export function isBlockedAddress(address) {
   }
   return blocked.check(address, version === 4 ? "ipv4" : "ipv6");
 }
+
+// Local model route (Ollama, LM Studio, llama.cpp, vLLM, self-hosted SAM). The owner's own computer, LAN or
+// Tailscale network only: RFC 1918, CGNAT (Tailscale 100.64/10) and IPv6 unique-local. Never loopback (the proxy
+// itself), link-local/metadata, multicast, the public internet, or any subnet the proxy is attached to (the app,
+// desktop and other Compose services). host.docker.internal resolves to the host gateway, outside those subnets.
+const localModel = new net.BlockList();
+for (const [network, prefix] of [["10.0.0.0", 8], ["100.64.0.0", 10], ["172.16.0.0", 12], ["192.168.0.0", 16]]) {
+  localModel.addSubnet(network, prefix, "ipv4");
+}
+localModel.addSubnet("fc00::", 7, "ipv6");
+
+export function ownSubnets(interfaces) {
+  const own = new net.BlockList();
+  for (const entries of Object.values(interfaces ?? {})) {
+    for (const entry of entries ?? []) {
+      if (entry.internal || typeof entry.cidr !== "string") continue;
+      const [network, prefix] = entry.cidr.split("/");
+      const family = net.isIP(network) === 6 ? "ipv6" : "ipv4";
+      try { own.addSubnet(network, Number(prefix), family); } catch { /* skip malformed entries */ }
+    }
+  }
+  return own;
+}
+
+export function isLocalModelAddress(address, own) {
+  const version = net.isIP(address);
+  if (!version) return false;
+  if (version === 6) {
+    let normalized;
+    try { normalized = new URL(`http://[${address}]/`).hostname.toLowerCase(); } catch { return false; }
+    if (normalized.startsWith("[::ffff:")) return false;
+  }
+  const family = version === 4 ? "ipv4" : "ipv6";
+  if (!localModel.check(address, family)) return false;
+  return !own?.check(address, family);
+}

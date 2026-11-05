@@ -10,8 +10,8 @@ import { appendAgentCard, appendOutboxFiles } from "../chat/data";
 import { syncAgentEgress } from "../egress/sync";
 import { ensureSecurityLoops } from "../security/loops";
 import { createModelSettingsStore } from "../models/data";
-import { proxyTransportFor } from "../models/transport";
-import { createProviderConnector } from "../providers";
+import { connectorForProvider, isLocalProvider, proxyTransportFor } from "../models/transport";
+import { joinProviderUrl } from "../providers/transport";
 import type { ProviderConnector, ProviderContent, ProviderTransport } from "../providers/types";
 import { createEvidenceRecorder, type EvidenceSink } from "../receipts/evidence";
 import { createCheckpointRecorder, type CheckpointSink } from "../checkpoints/store";
@@ -35,14 +35,15 @@ import { createTripwirePorts, isTripped, triggerTripwire } from "../security/tri
 import { listApprovedSkills } from "../skills/store";
 import { loadMemorySnapshot } from "../memory/snapshot";
 import { resolveTimezone } from "../time/clock";
-import type { AgentPersona, AgentSkill } from "./context";
+import { catalogEntry, MAX_CATALOG_TOOLS, type AgentPersona, type AgentSkill, type ToolCatalogEntry } from "./context";
+import { listMcpServers } from "../mcp/data";
 import { createLazyDesktopPort, type DeliveredFile, type DesktopPort } from "./desktop-port";
 import { createAgentLifecycle, DesktopLifecycleError } from "./runtime";
 import { runTask, type MemoryPort, type RunCard, type RunDeps, type RunOutcome, type SecurityStopResult, type SecurityStopSignal } from "./step-loop";
 import { proposeMemory } from "../memory/changes";
 import { enqueueMemoryReview } from "../memory/queue";
 import { searchHistory } from "../chat/search";
-import { createToolPort, type ToolPort } from "../tools/port";
+import { COMPOSIO_AGENT_KEY, createToolPort, type ToolPort } from "../tools/port";
 import { createShellPort, type ShellPort } from "./shell-port";
 import { createAudioPort, type AudioPort } from "./audio-port";
 import { loadConversation } from "./conversation";
@@ -98,7 +99,7 @@ export type ChatRunStart =
       subagents?: SubagentManager;
       providerInfo?: { providerId: string; kind: "meta" | "openai-compatible"; baseUrl: string | null };
       samProvider?: { providerId: string; kind: "meta" | "openai-compatible"; baseUrl: string | null };
-      samConfig?: { state: "off" | "on" | "unavailable"; transport?: ProviderTransport; provider?: { providerId: string; kind: "meta" | "openai-compatible"; baseUrl: string | null } };
+      samConfig?: { state: "off" | "on" | "unavailable"; transport?: ProviderTransport; endpoint?: string; provider?: { providerId: string; kind: "meta" | "openai-compatible"; baseUrl: string | null } };
       desktop: DesktopPort;
       // Proof receipts for this run (TASK-029). Production always provides them; a port without them runs unsigned (tests only).
       receipts?: (task: string) => ReceiptSink;
@@ -113,6 +114,7 @@ export type ChatRunStart =
       onSecurityStop?: (event: SecurityStopSignal & { runId?: string }) => Promise<SecurityStopResult>;
       // TASK-049. The owner-configured site allowlist and the security-event writer.
       allowedHosts?: readonly string[];
+      anyPublicWeb?: boolean;
       onScopeBlocked?: (rule: ScopeRule, runId?: string) => void | Promise<void>;
       // TASK-050. Risky clicks wait for the owner or a scoped grant.
       approvals?: ApprovalGate;
@@ -128,7 +130,9 @@ export type ChatRunStart =
       audio?: (costs: RunCostSink | undefined) => AudioPort;
       // TASK-083. Earlier owner/agent turns and the owner texts they contain (scope only).
       conversation?: ProviderContent[];
-      scopeTexts?: readonly string[]; }
+      scopeTexts?: readonly string[];
+      // ADR-040. Names and short descriptions of the tools this run may call (untrusted server text).
+      toolCatalog?: ToolCatalogEntry[]; }
   | { ok: false; reason: "no_model" | "unavailable" | "no_signing_key" | "crew_stopped" };
 
 // Everything a chat run reads or writes outside the step loop. Tests replace these; production uses the database,
@@ -150,22 +154,46 @@ export function createChatRunPorts(database: Database): ChatRunPorts {
       const ownerRows = await database.select({ timezone: owner.timezone, crewStoppedAt: owner.crewStoppedAt })
         .from(owner).where(eq(owner.id, ownerId)).limit(1);
       if (ownerRows[0]?.crewStoppedAt) return { ok: false, reason: "crew_stopped" };
-      const agent = await getAgentRecord(database, ownerId, agentId);
-      if (!agent || agent.status !== "active") return { ok: false, reason: "unavailable" };
+      const loaded = await getAgentRecord(database, ownerId, agentId);
+      if (!loaded || loaded.status !== "active") return { ok: false, reason: "unavailable" };
+      // ADR-040. A blank Tools list means every pinned MCP server and active Composio account connected to this agent,
+      // and tool_call is then offered whenever one exists. Servers are already connected per agent; approvals,
+      // risk classes, scope and the canary still apply to every call.
+      const toolCatalog: ToolCatalogEntry[] = [];
+      const connectedKeys: string[] = [];
+      try {
+        for (const server of await listMcpServers(database, ownerId, agentId)) {
+          if (server.status !== "pinned") continue;
+          connectedKeys.push(server.key);
+          for (const tool of server.tools) toolCatalog.push(catalogEntry(`${server.key}.${tool.name}`, tool.description, tool.inputSchema));
+        }
+      } catch { /* no server list is simply no MCP tool */ }
+      try {
+        for (const account of await listComposioAccounts(database, ownerId, agentId)) {
+          if (account.status !== "active") continue;
+          if (!connectedKeys.includes(COMPOSIO_AGENT_KEY)) connectedKeys.push(COMPOSIO_AGENT_KEY);
+          for (const tool of account.tools) toolCatalog.push(catalogEntry(`${COMPOSIO_AGENT_KEY}.${tool.slug}`, tool.description));
+        }
+      } catch { /* no Composio account is simply no extra tool */ }
+      const grantedTools = loaded.tools.length ? loaded.tools : connectedKeys;
+      const agent = {
+        ...loaded, tools: grantedTools,
+        actions: !loaded.tools.length && connectedKeys.length && !loaded.actions.includes("tool_call") ? [...loaded.actions, "tool_call"] : loaded.actions,
+      };
+      const visibleCatalog = toolCatalog.filter((entry) => grantedTools.includes(entry.name.split(".")[0])).slice(0, MAX_CATALOG_TOOLS);
       try { await syncAgentEgress(database, ownerId, agentId); } catch { /* the proxy fails closed; the loop retries */ }
       ensureSecurityLoops();
 
       const settings = await createModelSettingsStore(database).load(ownerId);
       const main = settings.main;
       const provider = main?.mode === "active" ? main.provider : null;
-      if (!main || !provider || !main.model || !provider.encryptedKey) return { ok: false, reason: "no_model" };
+      // Hosted providers need a saved key; a local server (Ollama, LM Studio, llama.cpp, vLLM) may run without one.
+      if (!main || !provider || !main.model || (!provider.encryptedKey && !isLocalProvider(provider))) return { ok: false, reason: "no_model" };
       const transport = proxyTransportFor(provider);
       if (!transport) return { ok: false, reason: "no_model" };
       let connector: ProviderConnector;
       try {
-        connector = createProviderConnector(provider.kind === "meta"
-          ? { kind: "meta", transport }
-          : { kind: "openai-compatible", baseUrl: provider.baseUrl ?? "", transport });
+        connector = connectorForProvider(provider, transport);
       } catch { return { ok: false, reason: "no_model" }; }
 
       // No signing key, no run: an agent that cannot leave proof does not act.
@@ -214,12 +242,16 @@ export function createChatRunPorts(database: Database): ChatRunPorts {
 
       const sam = settings.sam;
       const samProvider = sam?.useMainKey ? provider : sam?.provider;
-      const samTransport = sam?.mode === "meta" && samProvider?.kind === "meta" ? proxyTransportFor(samProvider) : null;
+      // Meta API SAM, or a self-hosted SAM server that speaks the same /v1/responses contract (ADR-010).
+      const samLocal = sam?.mode === "local" && samProvider?.kind === "openai-compatible" && Boolean(samProvider.baseUrl);
+      const samTransport = (sam?.mode === "meta" && samProvider?.kind === "meta") || samLocal ? proxyTransportFor(samProvider!) : null;
+      const samEndpoint = samLocal ? joinProviderUrl(samProvider!.baseUrl!, "responses") : undefined;
       const providerInfo = { providerId: provider.id, kind: provider.kind, baseUrl: provider.baseUrl };
       const samProviderInfo = samProvider ? { providerId: samProvider.id, kind: samProvider.kind, baseUrl: samProvider.baseUrl } : undefined;
       const samConfig = {
-        state: (sam?.mode === "meta" ? samTransport ? "on" : "unavailable" : "off") as "off" | "on" | "unavailable",
+        state: (sam?.mode === "meta" || sam?.mode === "local" ? samTransport ? "on" : "unavailable" : "off") as "off" | "on" | "unavailable",
         ...(samTransport ? { transport: samTransport } : {}),
+        ...(samEndpoint ? { endpoint: samEndpoint } : {}),
         ...(samProviderInfo ? { provider: samProviderInfo } : {}),
       };
       let approvedSkills: AgentSkill[] = [];
@@ -321,7 +353,7 @@ export function createChatRunPorts(database: Database): ChatRunPorts {
             checkpoints: createCheckpointRecorder({ database, ownerId, runId: childRunId, desktop: childPort }),
             costs: childCosts, approvals: childApprovals, tools: childToolPort,
             history: { search: (query: string) => searchHistory(database, ownerId, agentId, query) },
-            canary, allowedHosts: agent.domains, astra: agent.astraMode,
+            canary, allowedHosts: agent.domains, anyPublicWeb: agent.anyPublicWeb, astra: agent.astraMode,
             signal: child.signal,
             maxSteps: child.limits.maxSteps, maxTokens: child.limits.maxTokens, maxWallClockMs: child.limits.maxWallClockMs,
             timezone, silent: true, offeredActions: childActions, allowedTools: child.tools, helperLabel: child.label,
@@ -362,7 +394,8 @@ export function createChatRunPorts(database: Database): ChatRunPorts {
         shell: createShellPort({ agentId, ownerId, ensure: sandboxGeneration }),
         audio: (costs) => createAudioPort({ database, ownerId, agentId, desktop, ...(costs ? { costs } : {}) }),
         conversation: conversation.parts, scopeTexts: conversation.ownerTexts,
-        desktop, canary, onSecurityStop, approvals, allowedHosts: agent.domains, astra: agent.astraMode, memory: memoryPort,
+        ...(visibleCatalog.length ? { toolCatalog: visibleCatalog } : {}),
+        desktop, canary, onSecurityStop, approvals, allowedHosts: agent.domains, anyPublicWeb: agent.anyPublicWeb, astra: agent.astraMode, memory: memoryPort,
         history: { search: (query: string) => searchHistory(database, ownerId, agentId, query) },
         onScopeBlocked: (rule, blockedRunId) => recordScopeBlocked(database, ownerId, agentId, blockedRunId ?? runId, rule),
         receipts: (task) => createReceiptRecorder({ database, ownerId, agentId, agentName: agent.name, task, signer, runId,
@@ -436,10 +469,11 @@ export async function runChatMessage(
       receipts, costs, evidence: start.evidence?.(), checkpoints: start.checkpoints?.(),
       agent: start.persona, task: text, provider, model: start.model, hardModel: start.hardModel, samConfig, desktop: start.desktop,
       skills: start.skills, timezone: start.timezone, ...(control ? { signal: control.signal } : {}),
-      canary: start.canary, approvals: start.approvals, allowedHosts: start.allowedHosts, onScopeBlocked: start.onScopeBlocked, ...(start.tools ? { tools: start.tools } : {}), ...(start.shell ? { shell: start.shell } : {}),
+      canary: start.canary, approvals: start.approvals, allowedHosts: start.allowedHosts, anyPublicWeb: start.anyPublicWeb, onScopeBlocked: start.onScopeBlocked, ...(start.tools ? { tools: start.tools } : {}), ...(start.shell ? { shell: start.shell } : {}),
       ...(start.audio && costs ? { audio: start.audio(costs) } : {}),
       ...(start.conversation?.length ? { conversation: start.conversation } : {}),
       ...(start.scopeTexts?.length ? { scopeTexts: start.scopeTexts } : {}),
+      ...(start.toolCatalog?.length ? { toolCatalog: start.toolCatalog } : {}),
       astra: start.astra, memory: start.memory,
       ...(start.handoff ? { handoff: start.handoff } : {}), ...(start.teammates ? { teammates: start.teammates } : {}),
       ...(start.handoffNote ? { handoffNote: start.handoffNote } : {}), ...(start.sourceMessageId ? { sourceMessageId: start.sourceMessageId } : {}),

@@ -6,8 +6,7 @@ import { costEntries, skillVersions, skills, teachRecordings } from "../../db/sc
 import { calculateCostMicroUsd } from "../costs/pricing";
 import { priceFor, readBudgetStatus, setAgentAttention } from "../costs/store";
 import { createModelSettingsStore } from "../models/data";
-import { proxyTransportFor } from "../models/transport";
-import { createProviderConnector } from "../providers";
+import { connectorForProvider, isLocalProvider, proxyTransportFor } from "../models/transport";
 import type { GenerateRequest, ProviderConnector, ProviderResult } from "../providers/types";
 import { parseStoredManifest, getCaptureArtifact } from "../teach/store";
 import { clockBlock } from "../time/clock";
@@ -114,13 +113,11 @@ function shotsFor(draft: SkillModelDraft, manifest: { events: Array<{ sequence: 
 async function connectorFor(database: Database, ownerId: string) {
   const main = (await createModelSettingsStore(database).load(ownerId)).main;
   const provider = main?.mode === "active" ? main.provider : null;
-  if (!main?.model || !provider?.encryptedKey) throw new SkillError("no_model");
+  if (!main?.model || !provider || (!provider.encryptedKey && !isLocalProvider(provider))) throw new SkillError("no_model");
   const transport = proxyTransportFor(provider);
   if (!transport) throw new SkillError("no_model");
   try {
-    const connector = createProviderConnector(provider.kind === "meta"
-      ? { kind: "meta", transport }
-      : { kind: "openai-compatible", baseUrl: provider.baseUrl ?? "", transport });
+    const connector = connectorForProvider(provider, transport);
     return { connector, provider, model: main.model };
   } catch { throw new SkillError("no_model"); }
 }

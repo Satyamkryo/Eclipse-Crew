@@ -96,6 +96,8 @@ npm run reset-password -- --login judge1@example.com < new-pw.txt
 
 Each account signs in separately and starts empty; add its model key in Settings → Models. Passwords travel through private stdin only and are never logged.
 
+The sign-in page fills the viewport with a meadow illustration on the left and the sign-in form on the right. On screens narrower than 768 px, the illustration stacks above the form.
+
 ---
 
 ## Deploy on a VPS
@@ -160,7 +162,7 @@ The workspace has three panes: **Agents**, **Chat**, and a panel with **Desktop*
 | **Astra Mode** | Per-agent switch in Settings that skips approval prompts. Receipts, budgets, scope checks and the tripwire stay on. |
 | **Memory** | `SOUL.md` (persona), `USER.md` (facts about you), `MEMORY.md` (agent notes). Every change is a diff with **Undo**; pin facts to protect them. |
 | **Budgets** | Daily/monthly per agent; warns at 80%, pauses at 100%. Every run has a cost receipt. Edit rates in **Settings → Models**. |
-| **Connections** | **Settings → Connections:** Connect GitHub, paste scoped tokens, add pinned MCP servers or Composio. Tokens are encrypted and injected by the proxy, never shown to the model. |
+| **Connectors** | **Settings → Connectors:** MCP tab (Step 1 connect GitHub / paste scoped tokens, Step 2 pin MCP servers) and Plugins tab (Composio). Tokens are encrypted and injected by the proxy, never shown to the model. |
 | **Security** | **Security Center** shows events and the signed audit log. **Stop agent** / **Stop crew** halt everything at once. |
 
 ---
@@ -169,15 +171,45 @@ The workspace has three panes: **Agents**, **Chat**, and a panel with **Desktop*
 
 | Role | Default | Notes |
 |---|---|---|
-| **Main AI** | Muse Spark (`muse-spark-1.3`) | Required. Any OpenAI-compatible endpoint or local server also works. |
+| **Main AI** | Muse Spark (`muse-spark-1.3`) | Required. Any OpenAI-compatible endpoint, or a local model such as Muse Glimmer (see below). |
 | **Hard steps** (optional) | Muse Wonder (`muse-wonder-1.0`) | Used only in Auto routing; falls back to Spark. |
-| **Vision precision** (optional) | SAM 3.1 (`sam-3.1`) | Off by default. Helps on canvas apps, maps and design tools. |
+| **Vision precision** (optional) | SAM 3.1 (`sam-3.1`) | Off by default. Meta API or your own GPU server. Helps on canvas apps, maps and design tools. |
 
 Keys are saved once, encrypted, and shown only as `••••1a2b`. Built-in prices are pre-filled for Meta models, local endpoints cost $0, and a hosted model with no price can't start a run.
 
 > **Contributor mode** (`muse-spark-1.3-contributor`) is cheaper but Meta may use the data. It's opt-in only.
 
-**Local models:** use `http://host.docker.internal:11434/v1` for Ollama or `:1234/v1` for LM Studio on the same PC. For a model on another machine, connect both over Tailscale; never expose the model port publicly.
+### Local models (Muse Glimmer and others)
+
+Run the brain on your own GPU with no API key and no usage cost. Glimmer needs about 17 GB of GPU memory for the 4-bit build (bf16 needs about 72 GB).
+
+1. Start a server on the computer with the GPU. Any of these works; they all serve Glimmer as `muse-glimmer`:
+
+   | Server | Start it | Address in Eclipse Crew (same computer) |
+   |---|---|---|
+   | Ollama 0.32.7+ | `ollama run muse-glimmer` | `http://host.docker.internal:11434/v1` |
+   | LM Studio | Developer → Start server | `http://host.docker.internal:1234/v1` |
+   | llama.cpp b10353+ | `llama serve -hf meta-models/Muse-Glimmer-30B-GGUF --hf-file Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf -a muse-glimmer -ngl 99 -c 131072 --host 0.0.0.0 --port 8080` | `http://host.docker.internal:8080/v1` |
+   | vLLM | `--served-model-name muse-glimmer --enable-auto-tool-choice --tool-call-parser muse_glimmer` | `http://host.docker.internal:8000/v1` |
+   | SGLang | `--served-model-name muse-glimmer --tool-call-parser muse --host 0.0.0.0 --port 30000` | `http://host.docker.internal:30000/v1` |
+
+2. In **Settings → Models → Main AI**, choose **Local model**, pick your server (or press **Detect on this computer**), then **Check server** and press **Use** next to the model. Leave the key blank unless you started the server with `--api-key`. **Save Main AI**, then **Test**.
+3. The **Background model** card has the same Local option, so memory jobs can stay on your machine too.
+
+Notes:
+- Use `host.docker.internal`, not `localhost`: inside Docker, `localhost` is the Eclipse Crew container. Eclipse Crew refuses `localhost` addresses and says so.
+- On Linux, the server must listen on all interfaces, for example `OLLAMA_HOST=0.0.0.0 ollama serve`. Docker Desktop on Windows and macOS reaches `127.0.0.1` servers without this.
+- **Model on another computer:** install Tailscale on both machines (same account), make the model server listen on `0.0.0.0`, and enter `http://<machine>.<tailnet>.ts.net:11434/v1`. A LAN IP such as `http://192.168.1.20:11434/v1` also works. Never open the model port on your router: Ollama has no password.
+- Local models are slower than hosted APIs. Eclipse Crew waits up to 120 s per call for a local server (30 s for hosted ones).
+- The model must support **tool calling**; vision is strongly recommended. Glimmer has no built-in computer use, so it drives the screen through Eclipse Crew's grounding layer and asks more often on hard pages.
+
+### Local SAM 3.1 (vision precision on your own GPU)
+
+Choose **Local server** in the **Vision precision** card and enter your SAM server's address, for example `http://host.docker.internal:8090/v1`. The key is optional and is sent as a Bearer token. Eclipse Crew never ships SAM weights: download them yourself from Hugging Face after accepting Meta's SAM License. Meta doesn't publish a self-hosted SAM server, so your server must speak the same contract as Meta's hosted SAM API:
+
+- `GET {address}/models` returns `{"data":[{"id":"sam-3.1"}]}` (used by **Test** and **Check server**).
+- `POST {address}/responses` receives `{"model":"sam-3.1","stream":false,"store":false,"metadata":{"mask_encoding":"one_bit","include_confidence":"true"},"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"SOURCE_TAG=agent; CONTENT_JSON=\"<concept>\""},{"type":"input_text","text":"…"},{"type":"input_image","image_url":"data:image/png;base64,…"}]}]}`. The concept is the JSON string after `CONTENT_JSON=`; the screenshot is a PNG of at most 1024 × 768.
+- It answers `{"model":"sam-3.1","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"<0f>0<|box;x1=…;y1=…;x2=…;y2=…;w=<width>;h=<height>;c=0.93|><|mask;x=0;y=0;c=0.91;data=<rows>,<cols>,!<one-bit mask>|>"}]}]}`, the same segmentation text Meta's API returns (decode and encode it with `@meta-sam/parser` or `meta-sam-parser`). An empty `output_text` means no match. Responses over 8 MiB, wrong image sizes or malformed masks are rejected.
 
 ---
 
@@ -213,6 +245,8 @@ Step screenshots and checkpoints auto-delete after 32 days; receipts and the aud
 |---|---|
 | App doesn't load | `docker compose ps`, then `docker compose logs -f app` |
 | Port 3000 in use | Change the host port in `docker-compose.yml`, keeping the `127.0.0.1:` prefix |
+| "Couldn't reach a model server" on a local model | Check the server is running and lists a model (`curl http://127.0.0.1:11434/v1/models` on that computer). On Linux, make it listen on `0.0.0.0`. Use `host.docker.internal`, not `localhost` |
+| Local model times out | It's still loading or too slow for this GPU. Try a smaller quantization, or use it as the Background model only |
 | Windows: slow or permission errors | Use Docker Desktop's WSL 2 backend; keep agent files in Docker volumes |
 | Agent keeps asking for approval | The confidence gate is working. Enable SAM, use a vision model, or grant **Always allow** |
 | "Receipt signing is not set up" | `npm run receipt-key`, then `docker compose up -d` |
@@ -230,7 +264,7 @@ Step screenshots and checkpoints auto-delete after 32 days; receipts and the aud
 | Docker setup, owner login, agents, chat, live desktop + takeover | Files tab, phone app (PWA), one-command installer |
 | Teach from video, receipts + verifier, rewind, self-healing, isolation + tripwire | Native desktop capture, video-model skill drafting |
 | Routines, replay, Sundance/Moondance check-ins, Mission Control, Schedules | Webhooks, push notifications |
-| Meta models, SAM 3.1, OpenAI-compatible providers, price table | Anthropic connector, local SAM, voice |
+| Meta models, SAM 3.1 (Meta API or your own server), OpenAI-compatible and local models (Ollama, LM Studio, llama.cpp, vLLM, SGLang), price table | Anthropic connector, voice, bundled local SAM server |
 | Approvals, Astra Mode, budgets, egress allowlist, audit log, kill switches | 2FA, backups, booking assistant |
 
 ---

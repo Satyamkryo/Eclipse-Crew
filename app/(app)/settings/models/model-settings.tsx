@@ -6,8 +6,11 @@ import { LoaderCircle } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
+import { isLocalModelUrl, LOCAL_SAM_PLACEHOLDER } from "@/lib/providers/local";
 import { cn } from "@/lib/utils";
 import { BackgroundModelCard, type BackgroundSettings } from "./background-model";
+import { inputClass, LocalServerFields } from "./local-server";
+import { TestOutput, type TestResult } from "./test-output";
 
 type MainSettings = {
   configured: boolean;
@@ -22,7 +25,8 @@ type MainSettings = {
 
 type SamSettings = {
   configured: boolean;
-  mode: "off" | "meta";
+  mode: "off" | "meta" | "local";
+  baseUrl: string | null;
   useMainKey: boolean;
   hasKey: boolean;
   keyHint: string | null;
@@ -30,20 +34,30 @@ type SamSettings = {
 };
 
 type Settings = { main: MainSettings; sam: SamSettings; background: BackgroundSettings };
-type TestResult = { models: Array<{ id: string; contextTokens: number | null }>; latencyMs: number };
 type Card = "main" | "sam";
+// "local" is an OpenAI-compatible server on this computer, the LAN or Tailscale (Ollama, LM Studio, llama.cpp, vLLM).
+type MainChoice = "meta" | "local" | "openai-compatible";
 
-const inputClass = "h-8 w-full rounded-md border border-input bg-surface px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring";
+const LOCAL_DEFAULT_URL = "http://host.docker.internal:11434/v1";
+const LOCAL_DEFAULT_MODEL = "muse-glimmer";
+
+function choiceOf(main: MainSettings): MainChoice {
+  if (main.kind === "meta") return "meta";
+  return isLocalModelUrl(main.baseUrl) ? "local" : "openai-compatible";
+}
 
 function errorMessage(code: string | undefined, card: Card) {
   if (code === "key_required") {
-    return card === "sam" ? "Enter a Meta key for SAM, or use the Main AI key." : "Enter an API key for this provider.";
+    return card === "sam" ? "Enter a key for SAM, or use the Main AI key." : "Enter an API key for this provider. Only local servers can run without one.";
+  }
+  if (code === "loopback_not_reachable") {
+    return "localhost here means the Eclipse Crew container, not your computer. Use http://host.docker.internal:PORT/v1 instead.";
   }
   if (code === "main_key_required") return "Save a Meta key for Main AI before using the same key.";
   if (code === "sam_depends_on_main_key") return "Turn off SAM same-key mode before changing the Main AI provider.";
   if (code === "role_not_configured") return "Save this card before testing it.";
   if (code === "authenticated_transport_unavailable") return "Live provider testing is not connected yet. Your saved settings are unchanged.";
-  if (code === "provider_test_failed") return "Couldn't test this provider. Check the endpoint and key, then try again.";
+  if (code === "provider_test_failed") return "Couldn't reach this provider. Check the server is running, the address and the key, then try again.";
   if (code === "rate_limited") return "Too many tests. Wait a minute and try again.";
   if (code === "invalid_input") return "Review the values and try again.";
   return card === "main" ? "Couldn't save Main AI settings. Try again." : "Couldn't save SAM settings. Try again.";
@@ -62,44 +76,15 @@ function SaveStatus({ error, status, errorRef }: {
   );
 }
 
-function TestOutput({ result, error, loading }: { result: TestResult | null; error: string | null; loading: boolean }) {
-  if (loading) {
-    return <p role="status" aria-live="polite" className="text-sm text-muted-foreground">Testing the saved provider…</p>;
-  }
-  if (error) return <p role="alert" className="text-sm text-danger">{error}</p>;
-  if (!result) return null;
-  return (
-    <div role="status" aria-live="polite" className="flex flex-col gap-2">
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <p className="text-sm font-medium">Provider reachable</p>
-        <p className="font-mono text-xs tabular-nums text-muted-foreground">{result.latencyMs} ms</p>
-      </div>
-      {result.models.length === 0 ? (
-        <p className="text-sm text-muted-foreground">The provider returned no models.</p>
-      ) : (
-        <div className="max-h-56 overflow-y-auto border-y border-border">
-          <ul aria-label="Available models">
-            {result.models.map((model) => (
-              <li key={model.id} className="flex min-h-8 flex-wrap items-center justify-between gap-2 border-b border-border px-1 py-1 last:border-b-0">
-                <span className="break-all font-mono text-xs">{model.id}</span>
-                {model.contextTokens !== null && (
-                  <span className="font-mono text-xs tabular-nums text-muted-foreground">{model.contextTokens.toLocaleString("en")} tokens</span>
-                )}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-    </div>
-  );
-}
-
 export function ModelSettings({ initial, csrfToken }: { initial: Settings; csrfToken: string }) {
   const router = useRouter();
   const [settings, setSettings] = useState(initial);
-  const [mainKind, setMainKind] = useState<MainSettings["kind"]>(initial.main.kind);
+  const [mainChoice, setMainChoice] = useState<MainChoice>(choiceOf(initial.main));
+  const [mainBaseUrl, setMainBaseUrl] = useState(initial.main.baseUrl ?? "");
+  const [mainModel, setMainModel] = useState(initial.main.model);
   const [routing, setRouting] = useState<MainSettings["routing"]>(initial.main.routing);
   const [samMode, setSamMode] = useState<SamSettings["mode"]>(initial.sam.mode);
+  const [samBaseUrl, setSamBaseUrl] = useState(initial.sam.baseUrl ?? "");
   const [useMainKey, setUseMainKey] = useState(initial.sam.useMainKey || (!initial.sam.configured && initial.sam.canUseMainKey));
   const [action, setAction] = useState<{ card: Card; kind: "save" | "test" } | null>(null);
   const [errors, setErrors] = useState<Partial<Record<Card, string>>>({});
@@ -108,12 +93,32 @@ export function ModelSettings({ initial, csrfToken }: { initial: Settings; csrfT
   const [testResults, setTestResults] = useState<Partial<Record<Card, TestResult>>>({});
   const mainError = useRef<HTMLParagraphElement>(null);
   const samError = useRef<HTMLParagraphElement>(null);
+  const mainKind: MainSettings["kind"] = mainChoice === "meta" ? "meta" : "openai-compatible";
+  const savedChoice = choiceOf(settings.main);
 
   function resetCard(card: Card) {
     setErrors((current) => ({ ...current, [card]: undefined }));
     setStatuses((current) => ({ ...current, [card]: undefined }));
     setTestErrors((current) => ({ ...current, [card]: undefined }));
     setTestResults((current) => ({ ...current, [card]: undefined }));
+  }
+
+  function chooseMain(next: MainChoice) {
+    setMainChoice(next);
+    if (next === savedChoice) {
+      setMainBaseUrl(settings.main.baseUrl ?? "");
+      setMainModel(settings.main.model);
+      return;
+    }
+    if (next === "local") {
+      setMainBaseUrl(LOCAL_DEFAULT_URL);
+      setMainModel(LOCAL_DEFAULT_MODEL);
+    } else if (next === "openai-compatible") {
+      setMainBaseUrl("");
+      setMainModel("");
+    } else {
+      setMainModel("muse-spark-1.3");
+    }
   }
 
   async function saveMain(event: React.FormEvent<HTMLFormElement>) {
@@ -130,10 +135,10 @@ export function ModelSettings({ initial, csrfToken }: { initial: Settings; csrfT
         headers: { "Content-Type": "application/json", "x-csrf-token": csrfToken },
         body: JSON.stringify({
           kind: mainKind,
-          model: data.get("model"),
+          model: mainModel.trim(),
           routing,
           ...(routing === "auto" ? { hardModel: data.get("hardModel") } : {}),
-          ...(mainKind === "openai-compatible" ? { baseUrl: data.get("baseUrl") } : {}),
+          ...(mainKind === "openai-compatible" ? { baseUrl: mainBaseUrl.trim() } : {}),
           ...(apiKey ? { apiKey } : {}),
         }),
       });
@@ -148,9 +153,12 @@ export function ModelSettings({ initial, csrfToken }: { initial: Settings; csrfT
         requestAnimationFrame(() => mainError.current?.focus());
         return;
       }
-      setSettings(result as Settings);
-      setMainKind((result as Settings).main.kind);
-      setRouting((result as Settings).main.routing);
+      const next = result as Settings;
+      setSettings(next);
+      setMainChoice(choiceOf(next.main));
+      setMainBaseUrl(next.main.baseUrl ?? "");
+      setMainModel(next.main.model);
+      setRouting(next.main.routing);
       const keyInput = form.querySelector<HTMLInputElement>("input[name=apiKey]");
       if (keyInput) keyInput.value = "";
       setStatuses((current) => ({ ...current, main: "Main AI saved." }));
@@ -171,15 +179,18 @@ export function ModelSettings({ initial, csrfToken }: { initial: Settings; csrfT
     setAction({ card: "sam", kind: "save" });
     const data = new FormData(form);
     const apiKey = String(data.get("apiKey") ?? "");
+    const body = samMode === "local"
+      ? { mode: "local", useMainKey: false, baseUrl: samBaseUrl.trim(), ...(apiKey ? { apiKey } : {}) }
+      : {
+        mode: samMode,
+        useMainKey: samMode === "meta" && useMainKey,
+        ...(samMode === "meta" && !useMainKey && apiKey ? { apiKey } : {}),
+      };
     try {
       const response = await fetch("/api/models/roles/sam", {
         method: "PUT",
         headers: { "Content-Type": "application/json", "x-csrf-token": csrfToken },
-        body: JSON.stringify({
-          mode: samMode,
-          useMainKey: samMode === "meta" && useMainKey,
-          ...(samMode === "meta" && !useMainKey && apiKey ? { apiKey } : {}),
-        }),
+        body: JSON.stringify(body),
       });
       if (response.status === 401) {
         router.push("/login");
@@ -195,6 +206,7 @@ export function ModelSettings({ initial, csrfToken }: { initial: Settings; csrfT
       const next = result as Settings;
       setSettings(next);
       setSamMode(next.sam.mode);
+      setSamBaseUrl(next.sam.baseUrl ?? "");
       setUseMainKey(next.sam.useMainKey);
       const keyInput = form.querySelector<HTMLInputElement>("input[name=apiKey]");
       if (keyInput) keyInput.value = "";
@@ -238,12 +250,16 @@ export function ModelSettings({ initial, csrfToken }: { initial: Settings; csrfT
   const mainBusy = action?.card === "main";
   const samBusy = action?.card === "sam";
   const canSameKey = settings.sam.canUseMainKey;
+  // A saved key is shown and reused only for the provider it was saved for.
+  const mainKeyApplies = settings.main.hasKey && savedChoice === mainChoice;
+  const samKeyApplies = settings.sam.hasKey && settings.sam.mode === samMode && !settings.sam.useMainKey;
+  const mainLocal = mainChoice === "local";
 
   return (
     <div className="flex flex-col gap-6">
       <section className="rounded-lg border border-border bg-card p-4" aria-labelledby="main-ai-heading">
         <div className="flex flex-wrap items-start justify-between gap-2">
-          <div>
+          <div className="min-w-0">
             <h2 id="main-ai-heading" className="text-lg font-semibold tracking-tight">Main AI</h2>
             <p className="mt-1 text-sm text-muted-foreground">Plans, writes and decides every step. Tool calling is required.</p>
           </div>
@@ -254,25 +270,42 @@ export function ModelSettings({ initial, csrfToken }: { initial: Settings; csrfT
         <form onSubmit={saveMain} className="mt-4 flex flex-col gap-4">
           <div className="flex flex-col gap-2">
             <label htmlFor="main-provider" className="text-sm font-medium">Provider</label>
-            <Select label="Provider" id="main-provider" name="provider" value={mainKind} onChange={(value) => setMainKind(value as MainSettings["kind"])}
+            <Select label="Provider" id="main-provider" name="provider" value={mainChoice} onChange={(value) => chooseMain(value as MainChoice)}
               className="w-full [&>span]:w-full" selectClassName={cn(inputClass, "w-full")}>
               <option value="meta">Meta Model API</option>
-              <option value="openai-compatible">OpenAI-compatible</option>
+              <option value="local">Local model (your own GPU)</option>
+              <option value="openai-compatible">OpenAI-compatible (hosted)</option>
             </Select>
+            {mainLocal && (
+              <p className="text-xs text-muted-foreground">
+                Runs on your own GPU, for example Muse Glimmer. Needs tool calling and image input. No API key and no usage cost.
+              </p>
+            )}
           </div>
-          {mainKind === "openai-compatible" && (
+          {mainLocal && (
+            <LocalServerFields idPrefix="main" csrfToken={csrfToken} baseUrl={mainBaseUrl} onBaseUrl={setMainBaseUrl}
+              onPickModel={setMainModel} apiKeyFieldId="main-api-key" />
+          )}
+          {mainChoice === "openai-compatible" && (
             <div className="flex flex-col gap-2">
               <label htmlFor="main-base-url" className="text-sm font-medium">Base URL</label>
-              <input id="main-base-url" name="baseUrl" type="url" required maxLength={2048} defaultValue={settings.main.baseUrl ?? ""}
-                placeholder="http://host.docker.internal:11434/v1" className={inputClass}
+              <input id="main-base-url" name="baseUrl" type="url" required maxLength={2048} value={mainBaseUrl}
+                onChange={(event) => setMainBaseUrl(event.target.value)}
+                placeholder="https://openrouter.ai/api/v1" spellCheck={false} autoComplete="off" className={cn(inputClass, "font-mono")}
                 aria-describedby="main-base-hint" />
-              <p id="main-base-hint" className="text-xs text-muted-foreground">Use the server&apos;s HTTP(S) address. Local endpoints may not need a key.</p>
+              <p id="main-base-hint" className="text-xs text-muted-foreground">The provider&apos;s HTTPS address. For a server on your own computer, choose Local model.</p>
             </div>
           )}
           <div className="flex flex-col gap-2">
             <label htmlFor="main-model" className="text-sm font-medium">Model</label>
-            <input id="main-model" name="model" required maxLength={200} defaultValue={settings.main.model}
+            <input id="main-model" name="model" required maxLength={200} value={mainModel} onChange={(event) => setMainModel(event.target.value)}
+              placeholder={mainLocal ? LOCAL_DEFAULT_MODEL : undefined} aria-describedby={mainLocal ? "main-model-hint" : undefined}
               spellCheck={false} autoComplete="off" className={cn(inputClass, "font-mono")} />
+            {mainLocal && (
+              <p id="main-model-hint" className="text-xs text-muted-foreground">
+                The id your server lists. Ollama, vLLM, SGLang and llama.cpp (with -a muse-glimmer) serve Glimmer as muse-glimmer. Use Check server to pick one.
+              </p>
+            )}
           </div>
           <div className="flex flex-col gap-2">
             <label htmlFor="main-routing" className="text-sm font-medium">Routing</label>
@@ -289,20 +322,27 @@ export function ModelSettings({ initial, csrfToken }: { initial: Settings; csrfT
             <div className="flex flex-col gap-2">
               <label htmlFor="main-hard-model" className="text-sm font-medium">Hard-step model</label>
               <input id="main-hard-model" name="hardModel" required maxLength={200} defaultValue={settings.main.hardModel ?? ""}
-                placeholder="muse-wonder-1.0" spellCheck={false} autoComplete="off" aria-describedby="main-hard-hint" className={cn(inputClass, "font-mono")} />
+                placeholder={mainLocal ? "a larger model on the same server" : "muse-wonder-1.0"} spellCheck={false} autoComplete="off"
+                aria-describedby="main-hard-hint" className={cn(inputClass, "font-mono")} />
               <p id="main-hard-hint" className="text-xs text-muted-foreground">
-                Uses the same provider and key. Muse Wonder has no Contributor mode, so any other model is billed at its standard rate and is not covered by Contributor pricing or data terms.
+                {mainLocal
+                  ? "Uses the same server and key, so it must be a model that server lists."
+                  : "Uses the same provider and key. Muse Wonder has no Contributor mode, so any other model is billed at its standard rate and is not covered by Contributor pricing or data terms."}
               </p>
             </div>
           )}
           <div className="flex flex-col gap-2">
-            <label htmlFor="main-api-key" className="text-sm font-medium">API key</label>
+            <label htmlFor="main-api-key" className="text-sm font-medium">{mainLocal ? "API key (optional)" : "API key"}</label>
             <input id="main-api-key" name="apiKey" type="password" maxLength={16384} autoComplete="new-password"
-              required={mainKind === "meta" && !settings.main.hasKey}
-              placeholder={settings.main.keyHint ?? "Paste the provider key"}
+              required={!mainLocal && !mainKeyApplies}
+              placeholder={mainKeyApplies ? settings.main.keyHint ?? "Saved key" : mainLocal ? "Only if your server uses one" : "Paste the provider key"}
               aria-describedby="main-key-hint" className={inputClass} />
             <p id="main-key-hint" className="text-xs text-muted-foreground">
-              {settings.main.keyHint ? `Saved key ${settings.main.keyHint}. Leave blank to keep it.` : "Stored encrypted on this machine. There is no reveal button."}
+              {mainKeyApplies && settings.main.keyHint
+                ? `Saved key ${settings.main.keyHint}. Leave blank to keep it.`
+                : mainLocal
+                  ? "Leave blank for Ollama and LM Studio. Fill it in for llama.cpp or vLLM started with --api-key."
+                  : "Stored encrypted on this machine. There is no reveal button."}
             </p>
           </div>
           <SaveStatus error={errors.main ?? null} status={statuses.main ?? null} errorRef={mainError} />
@@ -329,7 +369,7 @@ export function ModelSettings({ initial, csrfToken }: { initial: Settings; csrfT
       </section>
 
       <section className="rounded-lg border border-border bg-card p-4" aria-labelledby="sam-heading">
-        <div>
+        <div className="min-w-0">
           <h2 id="sam-heading" className="text-lg font-semibold tracking-tight">Vision precision (SAM 3.1)</h2>
           <p className="mt-1 text-sm text-muted-foreground">Optional pixel-precise grounding for design tools, canvas apps, maps and games.</p>
         </div>
@@ -341,9 +381,11 @@ export function ModelSettings({ initial, csrfToken }: { initial: Settings; csrfT
                 const mode = value as SamSettings["mode"];
                 setSamMode(mode);
                 if (mode === "meta" && !settings.sam.configured && settings.sam.canUseMainKey) setUseMainKey(true);
+                if (mode === "local" && !samBaseUrl) setSamBaseUrl(LOCAL_SAM_PLACEHOLDER);
               }} className="w-full [&>span]:w-full" selectClassName={cn(inputClass, "w-full")}>
               <option value="off">Off</option>
               <option value="meta">Meta API</option>
+              <option value="local">Local server (your NVIDIA GPU)</option>
             </Select>
           </div>
           {samMode === "meta" && (
@@ -363,14 +405,33 @@ export function ModelSettings({ initial, csrfToken }: { initial: Settings; csrfT
                 <div className="flex flex-col gap-2">
                   <label htmlFor="sam-api-key" className="text-sm font-medium">SAM API key</label>
                   <input id="sam-api-key" name="apiKey" type="password" maxLength={16384} autoComplete="new-password"
-                    required={!settings.sam.hasKey || settings.sam.useMainKey}
-                    placeholder={!settings.sam.useMainKey ? settings.sam.keyHint ?? "Paste a Meta key" : "Paste a Meta key"}
+                    required={!samKeyApplies}
+                    placeholder={samKeyApplies ? settings.sam.keyHint ?? "Saved key" : "Paste a Meta key"}
                     aria-describedby="sam-key-hint" className={inputClass} />
                   <p id="sam-key-hint" className="text-xs text-muted-foreground">
-                    {!settings.sam.useMainKey && settings.sam.keyHint ? `Saved key ${settings.sam.keyHint}. Leave blank to keep it.` : "Stored encrypted on this machine."}
+                    {samKeyApplies && settings.sam.keyHint ? `Saved key ${settings.sam.keyHint}. Leave blank to keep it.` : "Stored encrypted on this machine."}
                   </p>
                 </div>
               )}
+            </>
+          )}
+          {samMode === "local" && (
+            <>
+              <p className="text-xs text-muted-foreground">
+                Runs SAM 3.1 on your own GPU. Download the weights yourself from Hugging Face after accepting Meta&apos;s SAM License; Eclipse Crew never ships them.
+                Your server must answer POST /v1/responses like Meta&apos;s SAM API and list sam-3.1 at /v1/models. The README has the full contract.
+              </p>
+              <LocalServerFields idPrefix="sam" csrfToken={csrfToken} baseUrl={samBaseUrl} onBaseUrl={setSamBaseUrl}
+                onPickModel={() => {}} apiKeyFieldId="sam-local-key" showPresets={false} placeholder={LOCAL_SAM_PLACEHOLDER} />
+              <div className="flex flex-col gap-2">
+                <label htmlFor="sam-local-key" className="text-sm font-medium">API key (optional)</label>
+                <input id="sam-local-key" name="apiKey" type="password" maxLength={16384} autoComplete="new-password"
+                  placeholder={samKeyApplies ? settings.sam.keyHint ?? "Saved key" : "Only if your server uses one"}
+                  aria-describedby="sam-local-key-hint" className={inputClass} />
+                <p id="sam-local-key-hint" className="text-xs text-muted-foreground">
+                  {samKeyApplies && settings.sam.keyHint ? `Saved key ${settings.sam.keyHint}. Leave blank to keep it.` : "Sent as a Bearer token by the egress proxy. Stored encrypted on this machine."}
+                </p>
+              </div>
             </>
           )}
           <SaveStatus error={errors.sam ?? null} status={statuses.sam ?? null} errorRef={samError} />

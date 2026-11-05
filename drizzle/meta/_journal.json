@@ -281,6 +281,13 @@
       "when": 1793806415229,
       "tag": "0039_multi_account",
       "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1793835215235,
+      "tag": "0040_sam_local_mode",
+      "breakpoints": true
     }
   ]
 }
