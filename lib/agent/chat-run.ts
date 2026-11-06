@@ -1,4 +1,5 @@
 import "server-only";
+import { FILE_ACTIONS } from "../agents/actions";
 import { defaultInstructions } from "../agents/schema";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
@@ -147,6 +148,17 @@ export interface ChatRunPorts {
   run(deps: RunDeps): Promise<{ outcome: RunOutcome; cardPosted: boolean }>;
 }
 
+// ADR-040. A blank Tools list grants every connected server, and tool_call with it. Crew members created earlier carry file
+// action names in Tools. Those are not servers, so they do not count as a limit (they hid every connected app from the agent).
+export function grantedToolAccess(tools: readonly string[], actions: readonly string[], connectedKeys: readonly string[]): { tools: string[]; actions: string[] } {
+  const namedServers = tools.filter((name) => !(FILE_ACTIONS as readonly string[]).includes(name));
+  const blank = namedServers.length === 0;
+  return {
+    tools: blank ? [...connectedKeys] : namedServers,
+    actions: blank && connectedKeys.length && !actions.includes("tool_call") ? [...actions, "tool_call"] : [...actions],
+  };
+}
+
 export function createChatRunPorts(database: Database): ChatRunPorts {
   return {
     async prepare(ownerId, agentId, options) {
@@ -175,11 +187,8 @@ export function createChatRunPorts(database: Database): ChatRunPorts {
           for (const tool of account.tools) toolCatalog.push(catalogEntry(`${COMPOSIO_AGENT_KEY}.${tool.slug}`, tool.description));
         }
       } catch { /* no Composio account is simply no extra tool */ }
-      const grantedTools = loaded.tools.length ? loaded.tools : connectedKeys;
-      const agent = {
-        ...loaded, tools: grantedTools,
-        actions: !loaded.tools.length && connectedKeys.length && !loaded.actions.includes("tool_call") ? [...loaded.actions, "tool_call"] : loaded.actions,
-      };
+      const { tools: grantedTools, actions: grantedActions } = grantedToolAccess(loaded.tools, loaded.actions, connectedKeys);
+      const agent = { ...loaded, tools: grantedTools, actions: grantedActions };
       const visibleCatalog = toolCatalog.filter((entry) => grantedTools.includes(entry.name.split(".")[0])).slice(0, MAX_CATALOG_TOOLS);
       try { await syncAgentEgress(database, ownerId, agentId); } catch { /* the proxy fails closed; the loop retries */ }
       ensureSecurityLoops();

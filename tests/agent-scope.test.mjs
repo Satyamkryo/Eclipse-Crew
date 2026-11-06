@@ -102,3 +102,11 @@ test("an any-public-web agent may type any public domain but never IPs, internal
   const strict = deriveScope({ task: "go on google search for top 5 geopolitical news" });
   assert.equal(checkTyped("google.com", strict, "about:blank").ok, false);
 });
+
+test("an any-public-web agent may open any real top-level domain, never an internal name or an address", () => {
+  const scope = deriveScope({ task: "look around", anyPublicWeb: true });
+  for (const url of ["https://liquipedia.gg/", "https://tldr.tech/", "https://news.blog/", "https://example.store/", "https://bit.ly/x"]) assert.equal(checkTyped(url, scope, null).ok, true, url);
+  for (const url of ["http://10.0.0.1/", "http://router.local/", "http://db.internal/", "http://localhost/"]) assert.equal(checkTyped(url, scope, null).ok, false, url);
+  const named = deriveScope({ task: "look around" });
+  assert.equal(checkTyped("https://liquipedia.gg/", named, null).ok, false, "without the setting a site must still be named");
+});

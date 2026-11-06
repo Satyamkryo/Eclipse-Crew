@@ -42,6 +42,8 @@ export interface PageSnapshot {
   controls: PageControl[];
 }
 
+export type WindowKind = "browser" | "terminal" | "file_manager" | "other" | "none";
+
 // The only desktop surface the step loop sees. Each call goes through the guarded controller
 // client, so takeover leases, generation checks and owner scoping all still apply.
 export interface DesktopPort {
@@ -57,6 +59,13 @@ export interface DesktopPort {
   findText?(text: string): Promise<{ found: boolean; count: number }>;
   navigate?(url: string): Promise<void>;
   select?(point: { x: number; y: number }, option: string): Promise<void>;
+  // ADR-041. Input outside the page list. A port without them offers no click_at action.
+  activeWindow?(): Promise<WindowKind>;
+  screenClick?(x: number, y: number, button?: "left" | "right" | "double"): Promise<void>;
+  screenDrag?(x: number, y: number, toX: number, toY: number): Promise<void>;
+  screenScroll?(x: number, y: number, direction: "up" | "down" | "left" | "right", count: number): Promise<void>;
+  screenType?(text: string, terminal: boolean): Promise<void>;
+  screenKey?(chord: string, terminal: boolean): Promise<void>;
   // TASK-079. Capture this agent's private speaker; a port without it offers no hearing action.
   captureAudio?(seconds: number): Promise<{ base64: string; durationMs: number }>;
   // Lazy lifecycle: absent only for a port created with a fixed generation (tests and callers that hold one).
@@ -100,6 +109,12 @@ function buildPort(agentId: string, ownerId: string, resolveGeneration: () => Pr
     async type(text) { await run("input.type", { text }); },
     async key(chord) { await run("input.key", { key: chord }); },
     async scroll(direction, count) { await run("input.scroll", { direction, count }); },
+    async activeWindow() { return (await run("window.active", {}) as { kind: WindowKind }).kind; },
+    async screenClick(x, y, button = "left") { await run("input.screen_click", { x, y, button }); },
+    async screenDrag(x, y, toX, toY) { await run("input.screen_drag", { x, y, toX, toY }); },
+    async screenScroll(x, y, direction, count) { await run("input.screen_scroll", { x, y, direction, count }); },
+    async screenType(text, terminal) { await run("input.screen_type", { text, terminal }); },
+    async screenKey(chord, terminal) { await run("input.screen_key", { key: chord, terminal }); },
     async findText(text) { const result = await run("page.find_text", { text }); return { found: (result as { found: boolean }).found, count: (result as { count: number }).count }; },
     async navigate(url) { await run("browser.navigate", { url }); },
     async select(point, option) { await run("input.select", { x: point.x, y: point.y, option }); },

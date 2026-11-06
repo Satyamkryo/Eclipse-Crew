@@ -1,5 +1,5 @@
 "use client";
-import { KNOWN_ACTIONS, SUBAGENT_HINT } from "@/lib/agents/actions";
+import { COMPUTER_USE_ACTION, KNOWN_ACTIONS, SUBAGENT_HINT, withComputerUse } from "@/lib/agents/actions";
 import { AGENT_TEMPLATES, type AgentTemplateId } from "@/lib/agents/templates";
 import { useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, LoaderCircle, Shuffle, Undo2 } from "lucide-react";
@@ -114,6 +114,8 @@ export function AgentForm({ mode, agentId, csrfToken, initial, initialTemplate, 
   const [loading, setLoading] = useState(false);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [memoryScopes, setMemoryScopes] = useState<string[]>(initial?.memoryScopes ?? preset?.memoryScopes ?? DEFAULT_SCOPES);
+  // ADR-042. Off unless the owner turns it on. The switch owns this one action; the Actions field lists the others.
+  const [computerUse, setComputerUse] = useState<boolean>((initial?.actions ?? preset?.actions ?? []).some((action) => action.toLowerCase() === COMPUTER_USE_ACTION));
   const [anyPublicWeb, setAnyPublicWeb] = useState<boolean>(initial?.anyPublicWeb ?? (preset ? preset.domains.length === 0 : true));
   const [avatarVariant, setAvatarVariant] = useState<number>(() =>
     initial?.avatarVariant !== undefined && Number.isInteger(initial.avatarVariant) &&
@@ -194,7 +196,7 @@ export function AgentForm({ mode, agentId, csrfToken, initial, initialTemplate, 
       tools: parseList(values.tools),
       anyPublicWeb,
       domains: parseList(values.domains),
-      actions: parseList(values.actions),
+      actions: withComputerUse(parseList(values.actions), computerUse),
       memoryScopes: memoryScopes.length ? memoryScopes : DEFAULT_SCOPES,
     };
     try {
@@ -291,6 +293,17 @@ export function AgentForm({ mode, agentId, csrfToken, initial, initialTemplate, 
           aria-describedby={`${prefix}-persona-hint${errors.soulMd ? ` ${prefix}-persona-error` : ""}`} className={textareaClass} />
       </Field>
 
+      <label className="flex items-start gap-2 rounded-lg border border-border px-3 py-2.5 text-sm">
+        <input type="checkbox" role="switch" checked={computerUse} onChange={(event) => setComputerUse(event.target.checked)}
+          aria-describedby={`${prefix}-computer-use-hint`} className="mt-0.5 size-4 shrink-0 rounded border-input" />
+        <span className="min-w-0">
+          <span className="font-medium">Computer use</span>
+          <span id={`${prefix}-computer-use-hint`} className="mt-0.5 block text-xs text-muted-foreground">
+            Lets this agent use the mouse anywhere on its own screen: browser tabs, unlabelled icons, the desktop, folders and the dock. Off, it only clicks what a web page lists. Passwords, payments and approvals stay protected either way.
+          </span>
+        </span>
+      </label>
+
       <div className="rounded-lg border border-border">
         <button type="button" aria-expanded={advancedOpen} aria-controls={advancedId} onClick={() => setAdvancedOpen((open) => !open)}
           className="flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-medium transition-colors duration-150 hover:bg-surface-hover focus-visible:outline-2 focus-visible:outline-ring">
@@ -350,7 +363,7 @@ export function AgentForm({ mode, agentId, csrfToken, initial, initialTemplate, 
               aria-describedby={`${prefix}-tools-hint${errors.tools ? ` ${prefix}-tools-error` : ""}`} className={textareaClass} />
           </Field>
           <Field id={`${prefix}-actions`} label="Actions" error={errors.actions} hint={`Comma-separated. The defaults cover browsing, files, memory and crew handoff (handoff only works inside a crew). Opt-in: tool_call, shell, hear_audio. ${SUBAGENT_HINT}`}>
-            <textarea id={`${prefix}-actions`} name="actions" rows={2} defaultValue={initial ? listText(initial.actions) : preset ? listText(preset.actions) : KNOWN_ACTIONS.join(", ")}
+            <textarea id={`${prefix}-actions`} name="actions" rows={2} defaultValue={initial ? listText(withComputerUse(initial.actions, false)) : preset ? listText(withComputerUse(preset.actions, false)) : KNOWN_ACTIONS.join(", ")}
               onBlur={(event) => validateOnBlur(event, "actions")}
               aria-invalid={errors.actions ? true : undefined}
               aria-describedby={`${prefix}-actions-hint${errors.actions ? ` ${prefix}-actions-error` : ""}`} className={textareaClass} />

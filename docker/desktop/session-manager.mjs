@@ -5,10 +5,12 @@ import { lstat, chmod, readFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { AgentError, createAgent, deleteAgent, ensureNsDirectory, inspectAgent, launchAgent, removeNsDirectory, requireAdmin, validateIds } from "./agent-store.mjs";
 import { createEgressRelay, createGatewayRelay } from "./egress-relay.mjs";
-import { NAVIGATION_TIMEOUT_MS, processIdentity, SESSION_FAILURES } from "./session-worker.mjs";
+import { FOCUS_INPUT_TIMEOUT_MS, NAVIGATION_TIMEOUT_MS, PAGE_READ_TIMEOUT_MS, processIdentity, SESSION_FAILURES } from "./session-worker.mjs";
 import { createChannel, writeFramed } from "./controller-channel.mjs";
 
 export const SESSION_SOCKET = "/run/eclipse/sessions.sock";
+// Inputs preceded by a check of the page, which has its own bound in the worker.
+const FOCUS_INPUT_OPERATIONS = new Set(["input.type", "input.key", "input.screen_type", "input.screen_key", "input.screen_click", "input.screen_drag"]);
 const COMMANDS = ["session-start", "session-status", "session-stop", "session-sandbox", "session-desktop-start", "session-desktop-stop",
   "session-browser-start", "session-browser-stop", "session-fixture", "session-fixture-cookie", "session-fixture-page"];
 export function validateSessionRequest(value) {
@@ -489,7 +491,11 @@ export class SessionManager {
       const fields = operationFields({ ...params, operation }); this.remember(agentId, requestId);
       // Longer than the worker's own bound, so the worker reports a clean failure before the channel gives up.
       const timeoutMs = operation === "audio.capture" ? (Number(fields.seconds) + 8) * 1000
-        : operation === "browser.navigate" ? NAVIGATION_TIMEOUT_MS + 5000 : undefined;
+        // The runner enforces the command's own timeout and answers within a few seconds of it.
+        : operation === "shell.run" ? (Number(fields.timeout ?? 60) + 8) * 1000
+        : operation === "browser.navigate" ? NAVIGATION_TIMEOUT_MS + 5000
+        : ["page.snapshot", "page.verify", "page.find_text"].includes(operation) ? PAGE_READ_TIMEOUT_MS + 2000
+        : FOCUS_INPUT_OPERATIONS.has(operation) ? FOCUS_INPUT_TIMEOUT_MS + 1500 : undefined;
       return this.perform(entry, requestId, operation, fields, false, timeoutMs);
     });
   }

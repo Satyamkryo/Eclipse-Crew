@@ -11,24 +11,64 @@ const click = { action: "click", target: "Send", expect: "control_present: Sent"
 const visual = (extra = {}) => ({ observe: async () => ({ status: "pass", name: "Send", role: "button" }), verify: async () => "pass", ...extra });
 const gate = (extra = {}) => confidenceGate({ intent: click, point, before: shot, snapshot, desktop: { snapshot: async () => snapshot }, services: { samState: "off", visual: visual() }, ...extra });
 
-test("independent visual agreement and a fresh unchanged DOM target are required", async () => {
-  const result = await gate();
+test("an irreversible step needs independent visual agreement; every target must still be fresh and unchanged", async () => {
+  const result = await gate({ irreversible: true });
   assert.equal(result.allowed, true);
   assert.deepEqual(result.evidence.map(e => e.method), ["page_structure", "model"]);
   for (const observed of [{ status: "fail", name: "Send", role: "button" }, { status: "pass", name: "Delete", role: "button" }, { status: "unknown", name: "Send", role: "button" }]) {
-    assert.equal((await gate({ services: { samState: "off", visual: visual({ observe: async () => observed }) } })).allowed, false);
+    assert.equal((await gate({ irreversible: true, services: { samState: "off", visual: visual({ observe: async () => observed }) } })).allowed, false);
   }
   assert.equal((await gate({ desktop: { snapshot: async () => ({ ...snapshot, controls: [{ ...target, x: 11 }] }) } })).allowed, false);
   assert.equal((await gate({ desktop: { snapshot: async () => ({ ...snapshot, href: "https://example.test/other" }) } })).allowed, false);
 });
 
+test("a routine step makes no model request; page structure places it", async () => {
+  const never = async () => { throw new Error("a routine step must not ask a model"); };
+  const routine = await gate({ services: { samState: "off", visual: visual({ observe: never, confirmPoint: never }) } });
+  assert.equal(routine.allowed, true);
+  assert.deepEqual(routine.evidence.map((item) => [item.method, item.status]), [["page_structure", "pass"]], "the receipt never claims agreement it did not get");
+});
+
+test("an irreversible click: a pixel check can agree when the observer words the name differently, never over its refusal", async () => {
+  const observer = (observed, confirmPoint) => gate({ irreversible: true, services: { samState: "off", visual: visual({ observe: async () => observed, confirmPoint }) } });
+  const loose = { status: "pass", name: "Send it", role: "btn" };
+  assert.equal((await observer(loose, async () => "pass")).allowed, true);
+  assert.equal((await observer(loose, async () => "unknown")).allowed, false);
+  assert.equal((await observer(loose, async () => "fail")).allowed, false);
+  assert.equal((await observer({ status: "unknown", name: "", role: "" }, async () => "pass")).allowed, true);
+  let asked = false;
+  assert.equal((await observer({ status: "fail", name: "Send", role: "button" }, async () => { asked = true; return "pass"; })).allowed, false);
+  assert.equal(asked, false, "a refusal is final");
+});
+
+test("routine typing and keys leave the focus check to the desktop worker, which reads the real focus", async () => {
+  for (const intent of [{ action: "type", text: "x", expect: "typed" }, { action: "key", keys: "Control+a", expect: "selected" }]) {
+    for (const page of [snapshot, null]) {
+      const result = await gate({ intent, snapshot: page });
+      assert.equal(result.allowed, true);
+      assert.equal(result.evidence[0].code, "worker_checks_focus");
+    }
+  }
+});
+
+test("a routine control picked by its list number needs no name; a nameless one by words cannot be told apart", async () => {
+  const unnamed = { ...target, name: "", focused: false };
+  const page = { ...snapshot, controls: [unnamed] };
+  const fresh = { desktop: { snapshot: async () => page } };
+  const byRef = { ...point, name: "", ref: 1 };
+  assert.equal((await gate({ point: byRef, snapshot: page, ...fresh })).allowed, true);
+  assert.equal((await gate({ point: { ...point, name: "" }, snapshot: page, ...fresh })).allowed, false);
+  assert.equal((await gate({ point: byRef, snapshot: page, irreversible: true, ...fresh })).allowed, false, "irreversible needs a name");
+});
+
 test("all potentially irreversible inputs fail closed without unique visible/focused evidence", async () => {
   for (const intent of [click, { action: "type", text: "hello", expect: "typed" }, { action: "key", keys: "Enter", expect: "sent" }]) {
-    assert.equal((await gate({ intent, snapshot: null })).allowed, false);
-    assert.equal((await gate({ intent, snapshot: { ...snapshot, controls: [target, { ...target, ref: 2 }] } })).allowed, false);
+    assert.equal((await gate({ intent, snapshot: null, irreversible: true })).allowed, false);
+    assert.equal((await gate({ intent, snapshot: { ...snapshot, controls: [target, { ...target, ref: 2 }] }, irreversible: true })).allowed, false);
   }
-  assert.equal((await gate({ intent: { action: "type", text: "x", expect: "typed" } })).allowed, false, "button not editable");
-  assert.equal((await gate({ intent: { action: "key", keys: "Enter", expect: "sent" }, snapshot: { ...snapshot, controls: [{ ...target, focused: false }] } })).allowed, false);
+  assert.equal((await gate({ intent: { action: "type", text: "x", expect: "typed" }, irreversible: true })).allowed, false, "button not editable");
+  assert.equal((await gate({ intent: { action: "key", keys: "Enter", expect: "sent" }, snapshot: { ...snapshot, controls: [{ ...target, focused: false }] }, irreversible: true })).allowed, false);
+  assert.equal((await gate({ snapshot: null })).allowed, false, "a click always needs a readable page");
 });
 
 test("SAM mask must uniquely cover the grounded pixel and agree geometrically; absent confidence is unknown", async () => {
@@ -38,14 +78,14 @@ test("SAM mask must uniquely cover the grounded pixel and agree geometrically; a
   assert.equal((await gate({ services })).allowed, true);
   assert.equal(modelCalls, 0);
   for (const masks of [[], [mask, mask], [{ ...mask, confidence: null }], [{ ...mask, raster: new Uint8Array(12) }]]) {
-    assert.equal((await gate({ services: { ...services, sam: { masks: async () => masks } } })).allowed, false);
+    assert.equal((await gate({ irreversible: true, services: { ...services, sam: { masks: async () => masks } } })).allowed, false);
   }
   assert.equal(modelCalls, 4);
 });
 
 test("visual observer receives original intent without the DOM-derived answer or coordinates", async () => {
   let description;
-  await gate({ intent: { ...click, target: "Send the report" }, services: { samState: "off", visual: visual({ observe: async (_shot, data) => {
+  await gate({ irreversible: true, intent: { ...click, target: "Send the report" }, services: { samState: "off", visual: visual({ observe: async (_shot, data) => {
     description = data; return { status: "pass", name: "Send", role: "button" };
   } }) } });
   assert.deepEqual(JSON.parse(description), { action: "click", target: "Send the report" });
@@ -107,5 +147,5 @@ test("production run wiring caps verification calls and adds their usage to the 
   assert.equal(requests.length, 4); assert.equal(output.usage.inputTokens, 4); assert.equal(output.usage.outputTokens, 4);
   assert.deepEqual(requests.map(r => r.tools[0].name), ["next_step", "verification_result", "verification_result", "next_step"]);
   assert.ok(requests.every(r => r.model === "muse-spark-1.3-contributor"));
-  assert.deepEqual(requests.slice(1, 3).map(r => r.maxOutputTokens), [512, 512]);
+  assert.deepEqual(requests.slice(1, 3).map(r => r.maxOutputTokens), [2048, 2048]);
 });

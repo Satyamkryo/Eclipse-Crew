@@ -6,14 +6,15 @@ import { setTimeout as delay } from "node:timers/promises";
 import { get } from "node:https";
 import { Readable } from "node:stream";
 
-// One reviewed lock per CPU. The amd64 values are the TASK-010 pins and must not move;
+// One reviewed lock per CPU. The amd64 values are the TASK-010 pins; Ubuntu removes superseded security versions, so a
+// removed pin moves only to the version in the signed index (2026-11-06: libsoup3 to 3.4.4-5ubuntu0.10).
 // ARM packages were resolved natively on Oracle from signed Ubuntu archive metadata.
 export const TARGETS = {
   amd64: {
     lock: "ubuntu-packages.lock.json",
-    sha256: "6d0b40721a4b04b2ebe8f4fd7db4109eded14f3de27d51c9594dc1f0c8bae7cd",
+    sha256: "d25e17b80194edf7e7133515d70daad6da2ab9a91c3f6d10a19fd716af40435a",
     count: 445,
-    bytes: 250231110,
+    bytes: 250233152,
     hosts: ["archive.ubuntu.com", "security.ubuntu.com"],
     pathPrefix: "/ubuntu/",
   },

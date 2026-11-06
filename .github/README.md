@@ -222,6 +222,7 @@ Choose **Local server** in the **Vision precision** card and enter your SAM serv
 Protections are layered, but prompt injection is unsolved industry-wide. Treat these as mitigations:
 
 - Keep the app on `127.0.0.1`; reach it through Tailscale or Caddy with HTTPS.
+- **Computer use** is an on/off switch in the agent create form and settings. On, the agent can click, double-click, right-click, drag and scroll anywhere on its own screen, including browser tabs, unlabelled icons, the desktop, folders and the dock. It is off by default. Typing into a terminal also needs `shell`.
 - Give each agent the fewest sites, tools and actions it needs. Prefer **Allow once** until a pattern is proven.
 - Use scoped tokens (e.g. a GitHub token limited to chosen repos) and set a spend limit at your model provider too.
 - Keep sensitive accounts on a separate agent that doesn't browse arbitrary sites.
@@ -253,7 +254,7 @@ Step screenshots and checkpoints auto-delete after 32 days; receipts and the aud
 | Local model times out | It's still loading or too slow for this GPU. Try a smaller quantization, or use it as the Background model only |
 | Windows: slow or permission errors | Use Docker Desktop's WSL 2 backend; keep agent files in Docker volumes |
 | Agent keeps asking for approval | The confidence gate is working. Enable SAM, use a vision model, or grant **Always allow** |
-| Agent stops after opening a site ("expected result was not verified") | It couldn't confirm the page. Look at the Desktop tab, then ask again. Pages are given a few seconds to finish loading before they are checked |
+| Agent says it can't reach a tab, icon or folder | Turn on **Computer use** in the agent's settings |
 | **Take over** is missing on a phone or tablet | Touch-only devices are view-only. Use a mouse or trackpad |
 | "Receipt signing is not set up" | `npm run receipt-key`, then `docker compose up -d` |
 | Agent paused: budget reached | Raise its budget or wait for the next period |

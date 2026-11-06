@@ -7,7 +7,7 @@ import { z } from "zod";
 import type { getDatabase } from "../../db/client";
 import { agents, crewMembers, crews } from "../../db/schema";
 import type { DesktopOperations } from "../agents/service";
-import { FILE_ACTIONS, KNOWN_ACTIONS } from "../agents/actions";
+import { KNOWN_ACTIONS } from "../agents/actions";
 import { budgetUsdSchema, defaultInstructions, instructionsSchema, soulMdSchema, type AgentCreateInput } from "../agents/schema";
 import { createAgentIdentity, provisionAgentForOwner } from "../agents/service";
 
@@ -81,7 +81,7 @@ export function crewMemberCreateInput(member: CrewMemberDraft): AgentCreateInput
     avatarVariant: member.avatarVariant ?? randomInt(12),
     dailyBudgetCents: member.dailyBudgetUsd ?? DEFAULT_DAILY_CENTS,
     monthlyBudgetCents: member.monthlyBudgetUsd ?? DEFAULT_MONTHLY_CENTS,
-    tools: [...FILE_ACTIONS],
+    tools: [],
     domains: [],
     // ADR-036. Crew members get the same any-public-website default as standalone agents.
     anyPublicWeb: true,

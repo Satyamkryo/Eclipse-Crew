@@ -97,6 +97,9 @@ export function actionLabel(action: Record<string, unknown>): { text: string; ta
   const text = (value: unknown, fallback = "") => (typeof value === "string" ? value : fallback);
   switch (action.kind) {
     case "click": return { text: "Click", target: text(action.target) || null };
+    case "click_at": return { text: action.button === "double" ? "Screen double-click" : action.button === "right" ? "Screen right-click" : "Screen click", target: text(action.target) || null };
+    case "drag_at": return { text: "Screen drag", target: text(action.target) || null };
+    case "scroll_at": return { text: `Screen scroll ${text(action.direction)}`, target: text(action.target) || null };
     case "type": return { text: `Type ${typeof action.chars === "number" ? action.chars : 0} characters`, target: null };
     case "key": return { text: `Press ${text(action.keys)}`, target: null };
     case "scroll": return { text: `Scroll ${text(action.direction)}`, target: null };

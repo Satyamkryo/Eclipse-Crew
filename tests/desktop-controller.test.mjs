@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import http from "node:http";
 import net from "node:net";
 import { PassThrough, Readable } from "node:stream";
-import { parseCommand, OperationSchema, TakeoverSchema, OwnerInputSchema, WorkerOperationSchema, StreamSchema, resultFor, validatePng, validKey, LIFECYCLE_OPERATIONS } from "../docker/desktop/controller-schema.mjs";
+import { parseCommand, CommandSchema, windowClassOf, windowKindOf, OperationSchema, TakeoverSchema, OwnerInputSchema, WorkerOperationSchema, StreamSchema, resultFor, validatePng, validKey, LIFECYCLE_OPERATIONS } from "../docker/desktop/controller-schema.mjs";
 import { MAX_MESSAGE_BYTES, writeFramed, readFramed, createChannel } from "../docker/desktop/controller-channel.mjs";
 import { createController } from "../docker/desktop/controller.mjs";
 import { SessionManager } from "../docker/desktop/session-manager.mjs";
@@ -291,4 +291,45 @@ test("authenticated WS rejects wrong owner/stale generation/unknown agent/query 
     const accepted=await upgrade(server,`/v1/agents/${AGENT}/stream?${new URLSearchParams(query)}`,{Authorization:`Bearer ${SECRET}`});assert.match(accepted,/HTTP\/1\.1 101 Switching Protocols/);
     await tick();assert.ok(lookups>=4);
   },{manager});}finally{manager.closeViewers(AGENT);for(const socket of sockets)socket.destroy();await new Promise(resolve=>vnc.close(resolve));}
+});
+
+test("ADR-041: screen input is agent-only, window kinds map fail-closed, and a terminal needs shell", async () => {
+  const { OperationSchema, OwnerInputSchema, windowKindOf, screenInputRefusal, resultFor } = await import("../docker/desktop/controller-schema.mjs");
+  assert.equal(OperationSchema.safeParse({ operation: "input.screen_click", x: 1, y: 1, button: "left" }).success, true);
+  assert.equal(OperationSchema.safeParse({ operation: "input.screen_click", x: 1024, y: 1, button: "left" }).success, false);
+  assert.equal(OperationSchema.safeParse({ operation: "input.screen_type", text: "x" }).success, false, "the terminal flag is required");
+  const ids = { ownerId: "00000000-0000-4000-8000-000000000001", agentId: "00000000-0000-4000-8000-000000000002", requestId: "00000000-0000-4000-8000-000000000003",
+    generation: "00000000-0000-4000-8000-000000000004", sessionRef: "a".repeat(64), connectionId: "00000000-0000-4000-8000-000000000005", leaseId: "00000000-0000-4000-8000-000000000006" };
+  assert.equal(OwnerInputSchema.safeParse({ ...ids, operation: "input.click", button: "left", x: 1, y: 1 }).success, true);
+  for (const operation of ["input.screen_click", "input.screen_type", "input.screen_key"]) {
+    assert.equal(OwnerInputSchema.safeParse({ ...ids, operation, x: 1, y: 1, text: "x", key: "Enter", terminal: true }).success, false, operation);
+  }
+  assert.deepEqual(["Chromium", "chrome", "XTerm", "xterm", "Pcmanfm", "tint2", "", null].map(windowKindOf), ["browser", "browser", "terminal", "terminal", "file_manager", "other", "none", "none"]);
+  assert.equal(screenInputRefusal("terminal", false), "terminal_requires_shell");
+  assert.equal(screenInputRefusal("terminal", true), null);
+  assert.equal(screenInputRefusal("file_manager", false), null);
+  assert.equal(screenInputRefusal("browser", false), null);
+  assert.equal(screenInputRefusal("other", true), "unknown_window");
+  assert.equal(screenInputRefusal("none", true), "unknown_window");
+  assert.deepEqual(resultFor("window.active", { kind: "terminal", source_tag: "tool", untrusted: true }), { kind: "terminal", source_tag: "tool", untrusted: true });
+  assert.throws(() => resultFor("window.active", { kind: "root", source_tag: "tool", untrusted: true }));
+});
+
+test("the active window's class comes from xprop output, because the pinned xdotool cannot print it", () => {
+  assert.equal(windowClassOf('WM_CLASS(STRING) = "google-chrome-for-testing", "Google-chrome-for-testing"\n'), "google-chrome-for-testing Google-chrome-for-testing");
+  assert.equal(windowKindOf(windowClassOf('WM_CLASS(STRING) = "google-chrome-for-testing", "Google-chrome-for-testing"\n')), "browser");
+  assert.equal(windowKindOf(windowClassOf('WM_CLASS(STRING) = "xterm", "XTerm"\n')), "terminal");
+  assert.equal(windowKindOf(windowClassOf('WM_CLASS(STRING) = "pcmanfm", "Pcmanfm"\n')), "file_manager");
+  assert.equal(windowKindOf(windowClassOf("WM_CLASS:  not found.\n")), "none");
+});
+
+test("agent mouse operations are bounded and are never accepted as owner takeover input", () => {
+  const accepted = (fields) => CommandSchema.safeParse({ ...running(), ...fields }).success;
+  assert.equal(accepted({ operation: "input.screen_click", x: 1, y: 2, button: "double" }), true);
+  assert.equal(accepted({ operation: "input.screen_click", x: 1, y: 2, button: "middle" }), false);
+  assert.equal(accepted({ operation: "input.screen_drag", x: 1, y: 2, toX: 3, toY: 4 }), true);
+  assert.equal(accepted({ operation: "input.screen_drag", x: 1, y: 2, toX: 3000, toY: 4 }), false);
+  assert.equal(accepted({ operation: "input.screen_scroll", x: 1, y: 2, direction: "left", count: 5 }), true);
+  assert.equal(accepted({ operation: "input.screen_scroll", x: 1, y: 2, direction: "left", count: 99 }), false);
+  assert.equal(OwnerInputSchema.safeParse({ ...control(), leaseId: randomUUID(), operation: "input.screen_drag", x: 1, y: 2, toX: 3, toY: 4 }).success, false);
 });

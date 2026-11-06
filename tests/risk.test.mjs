@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { ACTION_CLASSES, classLabel, classifyAction } from "../lib/agent/risk.ts";
+import { ACTION_CLASSES, classLabel, classifyAction, isIrreversible } from "../lib/agent/risk.ts";
 
 const click = (controlName, expect = "") => classifyAction({ intentKind: "click", controlName, expect });
 
@@ -33,6 +33,20 @@ test("send, post, delete, purchase and submit controls are classified by code", 
   assert.equal(click("Apply filter"), "submit");
 });
 
+test("payment wording and punctuated names classify like the plain words", () => {
+  assert.equal(click("Payment hand-off"), "purchase");
+  assert.equal(click("Place your order"), "purchase");
+  assert.equal(click("Check out"), "purchase");
+  assert.equal(click("Delete..."), "delete");
+  assert.equal(click("Send!"), "send");
+  assert.equal(click("Replying"), "none");
+});
+
+test("only send, delete, purchase and post count as irreversible", () => {
+  for (const risk of ["send", "delete", "purchase", "post"]) assert.equal(isIrreversible(risk), true, risk);
+  for (const risk of ["submit", "download", "none"]) assert.equal(isIrreversible(risk), false, risk);
+});
+
 test("only clicks are classified; typing, keys and scrolling are none", () => {
   for (const intentKind of ["type", "key", "scroll", "wait", "read_document", "deliver_file"]) {
     assert.equal(classifyAction({ intentKind, controlName: "Download PDF", expect: "invoice downloads" }), "none", intentKind);
@@ -45,6 +59,18 @@ test("expect text may raise none to a class but never lowers a class the control
   assert.equal(click("Download PDF", "email sent"), "download");
   assert.equal(click("Delete account", "download the receipt"), "delete");
   assert.equal(click("Take action", "nothing risky"), "none");
+});
+
+test("an expected result only raises a class when it describes a finished act, not a page's nouns", () => {
+  for (const expect of ["the email inbox opens", "the blog post is shown", "the payment page loads", "comments are visible", "the order history page opens", "search results for share prices", "the sign in page opens", "Apply filter panel visible"]) {
+    assert.equal(click("Open link", expect), "none", expect);
+  }
+  assert.equal(click("OK", "the message was sent"), "send");
+  assert.equal(click("OK", "the file was deleted"), "delete");
+  assert.equal(click("OK", "your post is published"), "post");
+  assert.equal(click("OK", "payment confirmed"), "purchase");
+  assert.equal(click("Email"), "send", "a control's own name keeps the full list");
+  assert.equal(click("Post"), "post");
 });
 
 test("keyword matching uses whole words and stays deterministic", () => {

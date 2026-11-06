@@ -31,7 +31,8 @@ const INTERNAL_SUFFIXES = [".local", ".internal", ".lan", ".home.arpa", ".localh
 function isPublicDomain(host: string): boolean {
   if (isIp(host) || !host.includes(".") || host === "localhost") return false;
   if (INTERNAL_SUFFIXES.some((suffix) => host.endsWith(suffix))) return false;
-  return TLDS.has(host.split(".").pop() ?? "");
+  // Any real top-level domain (.gg, .blog, .news, .to, ...). TLDS only decides what counts as a site name in free text.
+  return /^(?:[a-z]{2,63}|xn--[a-z0-9-]{1,59})$/.test(host.split(".").pop() ?? "");
 }
 
 export interface ScopeVerdict {

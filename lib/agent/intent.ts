@@ -3,15 +3,25 @@ import { z } from "zod";
 import { isValidKeyChord } from "../desktop/key-chord";
 import type { ProviderOutput, ProviderTool } from "../providers/types";
 
-// Models never emit coordinates or selectors (ADR-008). Every schema is strict, so an extra
-// `x`, `y`, `coordinate` or `selector` field makes the whole step invalid.
+// Models never emit selectors, and emit coordinates only through click_at, drag_at and scroll_at (ADR-008, ADR-041, ADR-042). Every schema is strict, so
+// an extra `x`, `y`, `coordinate` or `selector` field on any other action makes the whole step invalid.
 const noControls = (value: string) => !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(value);
 const line = (max: number) => z.string().trim().min(1).max(max).refine(
   (value) => !/[\u0000-\u001f\u007f]/.test(value), "must be a single line without control characters");
 const target = line(200);
 const expectation = line(300);
 
-const click = z.object({ action: z.literal("click"), target, expect: expectation }).strict();
+// The number of a control in the page's list. Code still turns it into a point; it is never a coordinate (ADR-008).
+const controlRef = z.number().int().min(1).max(150).optional();
+const click = z.object({ action: z.literal("click"), target, ref: controlRef, expect: expectation }).strict();
+// ADR-041. The one action that carries coordinates, for what the page list cannot see. `target` still names the thing in
+// words: the risk classifier and the point check read it.
+const screenX = z.number().int().min(0).max(1023);
+const screenY = z.number().int().min(0).max(767);
+const clickAt = z.object({ action: z.literal("click_at"), x: screenX, y: screenY, button: z.enum(["left", "right", "double"]).optional(), target, expect: expectation }).strict();
+// ADR-042. The rest of mouse control, under the same click_at permission.
+const dragAt = z.object({ action: z.literal("drag_at"), x: screenX, y: screenY, to_x: screenX, to_y: screenY, target, expect: expectation }).strict();
+const scrollAt = z.object({ action: z.literal("scroll_at"), x: screenX, y: screenY, direction: z.enum(["up", "down", "left", "right"]), target, expect: expectation }).strict();
 const type = z.object({
   action: z.literal("type"),
   text: z.string().min(1).max(2000).refine(noControls, "contains unsupported control characters"),
@@ -48,7 +58,7 @@ const httpUrl = (value: string) => {
   try { const url = new URL(value); return (url.protocol === "http:" || url.protocol === "https:") && !url.username && !url.password; } catch { return false; }
 };
 const navigate = z.object({ action: z.literal("navigate"), url: z.string().trim().min(1).max(2048).refine(httpUrl, "use an http(s) URL without credentials"), expect: expectation }).strict();
-const select = z.object({ action: z.literal("select"), target, option: line(200), expect: expectation }).strict();
+const select = z.object({ action: z.literal("select"), target, ref: controlRef, option: line(200), expect: expectation }).strict();
 const askOwner = z.object({ action: z.literal("ask_owner"), question: line(1000) }).strict();
 // TASK-072. A tool call names a pinned server and tool; arguments travel as a JSON string because free-form objects are
 // not reliable across provider adapters. Nothing here can supply a URL, a header or a session id.
@@ -115,20 +125,20 @@ const spawnSubagent = z.object({
   tools: z.array(toolSlug).min(1).max(10).transform((values) => [...new Set(values)]),
 }).strict();
 
-export const intentSchema = z.discriminatedUnion("action", [click, type, key, scroll, wait, getTime, readDocument, searchDocument, searchHistory, deliverFile,
+export const intentSchema = z.discriminatedUnion("action", [click, clickAt, dragAt, scrollAt, type, key, scroll, wait, getTime, readDocument, searchDocument, searchHistory, deliverFile,
   extract, navigate, select, remember, toolCall, shell, startDesktop, startBrowser, hearAudio, handoff, spawnSubagent, finish, askOwner]);
 export type Intent = z.infer<typeof intentSchema>;
 export type ClickIntent = Extract<Intent, { action: "click" }>;
 
 // Actions that act on the desktop (and the file actions) need an entry in the agent's `actions`. The lists live in
 // lib/agents/actions.ts so the agent form can show the same names.
-export { DESKTOP_ACTIONS, LIFECYCLE_ACTIONS, FILE_ACTIONS, MEMORY_ACTIONS, TOOL_ACTIONS, SHELL_ACTIONS, AUDIO_ACTIONS } from "../agents/actions";
+export { DESKTOP_ACTIONS, SCREEN_ACTIONS, LIFECYCLE_ACTIONS, FILE_ACTIONS, MEMORY_ACTIONS, TOOL_ACTIONS, SHELL_ACTIONS, AUDIO_ACTIONS } from "../agents/actions";
 
 export const NEXT_STEP_TOOL_NAME = "next_step";
-export const NEXT_STEP_ACTIONS = ["click", "type", "key", "scroll", "wait", "get_time", "read_document", "search_document", "search_history", "deliver_file", "extract", "navigate", "select", "remember", "tool_call", "shell", "start_desktop", "start_browser", "hear_audio", "handoff", "spawn_subagent", "finish", "ask_owner"] as const;
+export const NEXT_STEP_ACTIONS = ["click", "click_at", "drag_at", "scroll_at", "type", "key", "scroll", "wait", "get_time", "read_document", "search_document", "search_history", "deliver_file", "extract", "navigate", "select", "remember", "tool_call", "shell", "start_desktop", "start_browser", "hear_audio", "handoff", "spawn_subagent", "finish", "ask_owner"] as const;
 export const NEXT_STEP_TOOL: ProviderTool = {
   name: NEXT_STEP_TOOL_NAME,
-  description: "Choose the single next step. Describe the target in words; never give coordinates or selectors.",
+  description: "Choose the single next step. Describe the target in words; never give selectors, and give coordinates only with click_at, drag_at or scroll_at.",
   parameters: {
     type: "object",
     additionalProperties: false,
@@ -149,9 +159,15 @@ export const NEXT_STEP_TOOL: ProviderTool = {
       quote: { type: "string", description: "remember: the owner's exact words for this fact, copied from their message (at least 12 characters). It is checked by code." },
       reason: { type: "string", description: "remember: one line explaining why this should be remembered (up to 120 characters)." },
       target: { type: "string", description: "click: the element to click, in words (for example \"Submit button\"). select: the dropdown to choose in." },
+      ref: { type: "number", description: "click / select: the [number] of the control in the page controls list. Give it whenever you can; it is required to tell apart controls that share a name." },
       text: { type: "string", description: "type: the literal text to type into the focused field; {{name}} inserts a value saved by extract. remember: the fact to save or the new text of a replaced entry (up to 600 characters)." },
-      keys: { type: "string", description: "key: a key or chord such as Enter or Control+L." },
-      direction: { type: "string", enum: ["up", "down"], description: "scroll: direction." },
+      x: { type: "number", description: "click_at, drag_at, scroll_at: pixels from the left edge of the screenshot (0-1023)." },
+      y: { type: "number", description: "click_at, drag_at, scroll_at: pixels from the top edge of the screenshot (0-767)." },
+      button: { type: "string", enum: ["left", "right", "double"], description: "click_at: left (default), right for a context menu, or double to open a desktop icon." },
+      to_x: { type: "number", description: "drag_at: where to release, pixels from the left edge (0-1023)." },
+      to_y: { type: "number", description: "drag_at: where to release, pixels from the top edge (0-767)." },
+      keys: { type: "string", description: "key: one key name (Enter, Tab, Escape, Space, Backspace, Delete, ArrowUp, ArrowDown, ArrowLeft, ArrowRight, Home, End, PageUp, PageDown, F1-F12) or a chord with a modifier such as Control+l. Text is never a key: use type for text." },
+      direction: { type: "string", enum: ["up", "down", "left", "right"], description: "scroll: up or down. scroll_at: up, down, left or right." },
       expect: { type: "string", description: "Expected result. Prefer control_present: Name, control_absent: Name, url_path: /path, or object_visible: concept; otherwise describe a visible postcondition." },
       summary: { type: "string", description: "finish: your answer or what you did (up to 4000 characters, line breaks allowed), only what the screen or a document shows." },
       question: { type: "string", description: "ask_owner: what you need from the owner." },
@@ -196,19 +212,45 @@ export type ParsedStep = { ok: true; intent: Intent } | { ok: false; reason: Inv
 
 // The fields each action may carry, from the strict schemas above.
 const ACTION_FIELDS: ReadonlyMap<string, ReadonlySet<string>> = new Map(
-  [click, type, key, scroll, wait, getTime, readDocument, searchDocument, searchHistory, deliverFile, extract, navigate, select,
+  [click, clickAt, dragAt, scrollAt, type, key, scroll, wait, getTime, readDocument, searchDocument, searchHistory, deliverFile, extract, navigate, select,
     rememberFields, toolCall, shell, startDesktop, startBrowser, hearAudio, handoff, spawnSubagent, finish, askOwner]
     .map((schema): [string, ReadonlySet<string>] => [schema.shape.action.value, new Set(Object.keys(schema.shape))]));
 const STEP_FIELDS: ReadonlySet<string> = new Set(Object.keys((NEXT_STEP_TOOL.parameters as { properties: object }).properties));
-const NUMBER_FIELDS = new Set(["offset", "timeout", "seconds"]);
+const NUMBER_FIELDS = new Set(["offset", "timeout", "seconds", "ref", "x", "y", "to_x", "to_y"]);
+const COORDINATE_FIELDS = new Set(["x", "y", "to_x", "to_y"]);
 // Outer bound on the raw JSON only; each action's schema enforces its real limits. It fits the longest valid step:
 // 6000 characters of tool_call args plus a 300-character expect, each character at most 6 when written as \uXXXX.
 const MAX_ARGUMENTS = 40_000;
 
+// Key names as models write them. Chords stay exact for the desktop (Control+l); only the spelling is corrected.
+const KEY_ALIASES: Readonly<Record<string, string>> = {
+  ctrl: "Control", control: "Control", ctl: "Control", alt: "Alt", option: "Alt", shift: "Shift", meta: "Meta", cmd: "Meta", command: "Meta", win: "Meta", windows: "Meta", super: "Meta",
+  enter: "Enter", return: "Enter", tab: "Tab", esc: "Escape", escape: "Escape", space: "Space", spacebar: "Space", backspace: "Backspace", del: "Delete", delete: "Delete",
+  up: "ArrowUp", down: "ArrowDown", left: "ArrowLeft", right: "ArrowRight", arrowup: "ArrowUp", arrowdown: "ArrowDown", arrowleft: "ArrowLeft", arrowright: "ArrowRight",
+  home: "Home", end: "End", pageup: "PageUp", pagedown: "PageDown", pgup: "PageUp", pgdn: "PageDown", page_up: "PageUp", page_down: "PageDown",
+  ...Object.fromEntries(Array.from({ length: 12 }, (_, index) => [`f${index + 1}`, `F${index + 1}`])),
+};
+function normalizeKeys(value: string): string {
+  return value.trim().split(/\s*\+\s*/).map((part) => KEY_ALIASES[part.toLowerCase()] ?? (part.length === 1 ? part.toLowerCase() : part)).join("+");
+}
+// What a step may leave out. Models often skip `expect` on small steps, and rejecting the whole step ended real runs; the
+// check then judges the step by what is on the screen. A target only names the thing: the real control or point is what acts.
+const DEFAULT_EXPECT = "The screen shows the result of this step.";
+export const UNNAMED_POINT = "the chosen point";
+function fillDefaults(value: Record<string, unknown>, fields: ReadonlySet<string> | undefined) {
+  if (!fields) return;
+  const requiredExpect = value.action !== "tool_call" && value.action !== "start_desktop" && value.action !== "start_browser";
+  if (fields.has("expect") && value.expect === undefined && requiredExpect) value.expect = DEFAULT_EXPECT;
+  if (fields.has("target") && value.target === undefined) {
+    if ((value.action === "click" || value.action === "select") && typeof value.ref === "number") value.target = `control ${value.ref}`;
+    if (value.action === "click_at" || value.action === "drag_at" || value.action === "scroll_at") value.target = UNNAMED_POINT;
+  }
+}
+
 // Models that fill every declared property send unused ones as "", null or [] and sometimes another action's field.
 // Those are dropped, a numeric string becomes a number and tool_call args given as an object become a JSON string.
-// Only fields declared on the next_step tool are ever dropped: anything else (x, y, coordinate, selector...) is kept
-// so the strict schema still rejects the whole step (ADR-008).
+// Only fields declared on the next_step tool are ever dropped: anything else (coordinate, selector...) is kept so the
+// strict schema still rejects the whole step (ADR-008). Real x or y values on another action are kept the same way.
 function normalizeStep(raw: unknown): unknown {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
   let value = raw as Record<string, unknown>;
@@ -221,13 +263,31 @@ function normalizeStep(raw: unknown): unknown {
   }
   const fields = typeof value.action === "string" ? ACTION_FIELDS.get(value.action) : undefined;
   value = { ...value };
+  // Models sometimes wrap a shell command in `args`, the field tool_call uses.
+  if (value.action === "shell" && value.command === undefined && value.args !== undefined) {
+    let args: unknown = value.args;
+    if (typeof args === "string") { try { args = JSON.parse(args); } catch { args = null; } }
+    if (args && typeof args === "object" && !Array.isArray(args)) {
+      const lifted = args as Record<string, unknown>;
+      if (lifted.command !== undefined) value.command = lifted.command;
+      if (lifted.cwd !== undefined && value.cwd === undefined) value.cwd = lifted.cwd;
+      if (lifted.timeout !== undefined && value.timeout === undefined) value.timeout = lifted.timeout;
+    }
+  }
   for (const [key, item] of Object.entries(value)) {
     if (key === "action") continue;
     const empty = item === null || item === undefined || (typeof item === "string" && item.trim() === "") || (Array.isArray(item) && item.length === 0);
-    if ((empty || (fields && !fields.has(key))) && STEP_FIELDS.has(key)) { delete value[key]; continue; }
+    if ((empty || (fields && !fields.has(key) && !COORDINATE_FIELDS.has(key))) && STEP_FIELDS.has(key)) { delete value[key]; continue; }
     if (NUMBER_FIELDS.has(key) && typeof item === "string" && /^\d{1,9}$/.test(item.trim())) value[key] = Number(item.trim());
     if (key === "args" && item && typeof item === "object" && !Array.isArray(item)) value[key] = JSON.stringify(item);
+    if (key === "keys" && typeof item === "string") value[key] = normalizeKeys(item);
+    // ["bash", "-c", "..."] written by models used to exec-style tools.
+    if (key === "command" && Array.isArray(item) && item.every((part) => typeof part === "string")) {
+      const parts = item as string[];
+      value[key] = parts.length === 3 && /(?:^|\/)(?:ba)?sh$/.test(parts[0]) && parts[1] === "-c" ? parts[2] : parts.join(" ");
+    }
   }
+  fillDefaults(value, fields);
   return value;
 }
 

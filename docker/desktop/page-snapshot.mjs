@@ -10,6 +10,10 @@ export const PAYMENT_PATTERN = /stripe|braintree|adyen|checkout|payment|card/i;
 // Screen points the worker may park the pointer on to measure where the page sits on the screen.
 const CALIBRATION_POINTS = [{ x: 512, y: 400 }, { x: 700, y: 520 }, { x: 330, y: 300 }];
 const CALIBRATION_WAIT_MS = 600;
+// A snapshot gives what it has by this point, so one slow frame costs its own controls, not the whole page.
+export const SNAPSHOT_BUDGET_MS = 8_000;
+const FRAME_BUDGET_MS = 1_500;
+const expired = (ms) => new Promise((resolve) => { const timer = setTimeout(() => resolve(null), Math.max(0, ms)); timer.unref?.(); });
 
 // Runs inside the page (serialised by Playwright), so it must not use anything outside its own body.
 // `calibrate` is installed first and awaited after the pointer moved, so no page global is created.
@@ -259,12 +263,13 @@ export function scanDomFrame(args) {
 }
 
 // One entry per Playwright frame, top frame first then children in document order, with the offset a control needs.
-export async function collectFrames(page) {
+export async function collectFrames(page, deadlineAt = Infinity) {
   const main = page.mainFrame();
   const mainOrigin = (() => { try { return new URL(main.url()).origin; } catch { return ""; } })();
   const viewport = await main.evaluate(() => ({ width: window.innerWidth, height: window.innerHeight })).catch(() => ({ width: SCREEN.width, height: SCREEN.height }));
   const infos = [];
   const visit = async (frame, parent, depth) => {
+    if (parent && Date.now() >= deadlineAt) return;
     let element = null, box = null, metrics = null;
     if (parent) {
       element = await frame.frameElement().catch(() => null);
@@ -350,21 +355,26 @@ async function occlusionFilter(infos, info, controls) {
   return controls.filter((_, index) => alive[index]);
 }
 
-export async function collectControls({ page, origin, limit = MAX_ELEMENTS }) {
-  const infos = await collectFrames(page);
+export async function collectControls({ page, origin, limit = MAX_ELEMENTS, budgetMs = SNAPSHOT_BUDGET_MS }) {
+  const deadlineAt = Date.now() + budgetMs;
+  const infos = await collectFrames(page, deadlineAt);
   const controls = [];
   let paymentFrames = 0, shadowNodes = 0, deepestShadowDepth = 0, truncated = false;
   try {
     for (const info of infos) {
       if (info.isPayment) { paymentFrames++; continue; }
+      const left = deadlineAt - Date.now();
+      if (left <= 0) { truncated = true; continue; }
       let local;
-      try { local = await info.frame.evaluate(scanDomFrame, { limit: limit * 4, maxDepth: MAX_SHADOW_DEPTH, candidateCap: CANDIDATE_CAP }); }
+      // The top frame gets all the time there is; a child frame that hangs (a stalled ad) may not hold up the page.
+      try { local = await Promise.race([info.frame.evaluate(scanDomFrame, { limit: limit * 4, maxDepth: MAX_SHADOW_DEPTH, candidateCap: CANDIDATE_CAP }), expired(info.parent ? Math.min(left, FRAME_BUDGET_MS) : left)]); }
       catch { continue; }
+      if (!local) { truncated = true; continue; }
       shadowNodes += local.shadowNodes;
       deepestShadowDepth = Math.max(deepestShadowDepth, local.deepestShadowDepth);
       truncated = truncated || local.truncated;
       const mapped = finalize(local.controls, info, origin);
-      const clear = await occlusionFilter(infos, info, mapped).catch(() => []);
+      const clear = await Promise.race([occlusionFilter(infos, info, mapped).catch(() => []), expired(FRAME_BUDGET_MS)]) ?? [];
       for (const control of clear) {
         if (controls.length >= limit) { truncated = true; break; }
         controls.push(control);
@@ -380,7 +390,21 @@ export async function collectControls({ page, origin, limit = MAX_ELEMENTS }) {
 
 // `move(x, y)` puts the real X pointer on a screen point. The page then reports where it saw that pointer,
 // and the difference between screen and viewport coordinates is the viewport's exact place on the screen.
+// The answer holds until the window changes, so it is measured once per window geometry: moving the pointer on every read
+// opened hover menus and tooltips under the agent. A frame that fills the page swallows the pointer event, so when no sample
+// arrives the window's own numbers place the viewport.
+const measuredOrigins = new Map();
+function windowGeometry() {
+  return { screenX: window.screenX, screenY: window.screenY, outerWidth: window.outerWidth, outerHeight: window.outerHeight,
+    innerWidth: window.innerWidth, innerHeight: window.innerHeight, ratio: window.devicePixelRatio, scale: window.visualViewport ? window.visualViewport.scale : 1 };
+}
 export async function measureOrigin({ page, move, fail }) {
+  const geometry = await page.evaluate(windowGeometry);
+  // Zoomed pages and unexpected scaling make screen and page units differ; refuse rather than click the wrong place.
+  if (geometry.ratio !== 1 || geometry.scale !== 1) throw fail("grounding_unavailable");
+  const key = [geometry.screenX, geometry.screenY, geometry.outerWidth, geometry.outerHeight, geometry.innerWidth, geometry.innerHeight].join();
+  const known = measuredOrigins.get(key);
+  if (known) return known;
   let origin = null;
   for (const point of CALIBRATION_POINTS) {
     const calibration = await page.evaluateHandle(installCalibration, CALIBRATION_WAIT_MS);
@@ -394,8 +418,15 @@ export async function measureOrigin({ page, move, fail }) {
     origin = { x: sample.screenX - sample.clientX, y: sample.screenY - sample.clientY };
     break;
   }
+  if (!origin) {
+    // The browser's own chrome sits above the viewport, with equal borders on the sides and bottom.
+    const border = Math.floor((geometry.outerWidth - geometry.innerWidth) / 2);
+    origin = { x: geometry.screenX + border, y: geometry.screenY + geometry.outerHeight - geometry.innerHeight - border };
+  }
   if (!origin || !Number.isInteger(origin.x) || !Number.isInteger(origin.y) || origin.x < -SCREEN.width || origin.x > SCREEN.width ||
     origin.y < -SCREEN.height || origin.y > SCREEN.height) throw fail("grounding_unavailable");
+  if (measuredOrigins.size > 64) measuredOrigins.clear();
+  measuredOrigins.set(key, origin);
   return origin;
 }
 

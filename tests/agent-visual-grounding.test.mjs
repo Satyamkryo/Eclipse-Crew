@@ -149,10 +149,24 @@ test("loop: after page structure misses twice, a SAM-grounded click runs at the 
   assert.equal(r.output.steps.at(-1)?.groundingMethod ?? r.output.steps.find((s) => s.executed)?.groundingMethod, "sam");
 });
 
-test("loop: without visual grounders the step still hands off", async () => {
+test("loop: without visual grounders the step goes back to the model and nothing is clicked", async () => {
   const r = await run({ grounders: {} });
   assert.deepEqual(r.input, []);
-  assert.equal(r.output.outcome, "needs_owner");
+  assert.notEqual(r.output.steps.at(-1)?.executed, true);
+});
+
+test("native computer use: a flagged point is read only through the consented path, and never acknowledged", async () => {
+  const flagged = computerCall({ type: "click", button: "left", x: 297, y: 357 }, [{ id: "s2", code: "computer_action_requires_confirmation" }]);
+  const { instance } = locator({ second: flagged });
+  assert.equal(await instance.locate(shot, "Downloads folder"), null, "the strict path stays closed");
+  const consented = locator({ second: flagged });
+  assert.deepEqual(await consented.instance.proposePoint(shot, "Downloads folder"), { x: 297, y: 357, reviewWaived: true });
+  const clean = locator({ second: computerCall({ type: "click", button: "left", x: 5, y: 6 }) });
+  assert.deepEqual(await clean.instance.proposePoint(shot, "Downloads folder"), { x: 5, y: 6, reviewWaived: false });
+  const off = locator({ second: computerCall({ type: "click", button: "left", x: 1024, y: 1 }, [{ id: "s", code: "c" }]) });
+  assert.equal(await off.instance.proposePoint(shot, "Downloads folder"), null);
+  assert.ok(consented.seen.continuations.length > 0);
+  for (const continuation of consented.seen.continuations) assert.deepEqual(continuation.acknowledgedSafetyChecks, []);
 });
 
 test("loop: an irreversible visual click with only SAM stops before input", async () => {

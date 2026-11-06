@@ -16,6 +16,14 @@ export const LIFECYCLE_ACTIONS = ["start_desktop", "start_browser"] as const;
 export const HANDOFF_ACTIONS = ["handoff"] as const;
 // TASK-076. Background helpers are off by default and never part of the create form's default list.
 export const SUBAGENT_ACTIONS = ["spawn_subagent"] as const;
+// ADR-041, ADR-042. Computer use: mouse control anywhere on the agent's own screen by coordinates. The form's Computer use
+// switch adds or removes this one name; click_at also permits drag_at and scroll_at. Off unless the owner turns it on.
+export const COMPUTER_USE_ACTION = "click_at";
+export const SCREEN_ACTIONS = [COMPUTER_USE_ACTION] as const;
+export function withComputerUse(actions: readonly string[], on: boolean): string[] {
+  const others = actions.filter((action) => action.toLowerCase() !== COMPUTER_USE_ACTION);
+  return on ? [...others, COMPUTER_USE_ACTION] : others;
+}
 export const KNOWN_ACTIONS = [...DESKTOP_ACTIONS, ...LIFECYCLE_ACTIONS, ...FILE_ACTIONS, ...MEMORY_ACTIONS, ...HANDOFF_ACTIONS] as const;
 
 // Owner-facing stop text when the model asks for an action the agent is not allowed to use.
