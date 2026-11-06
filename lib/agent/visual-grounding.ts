@@ -15,7 +15,12 @@ export const MIN_MASK_CONFIDENCE = 0.9;
 // Re-grounding after an approval wait may move the point by at most this many pixels before the step is called stale.
 export const MAX_REGROUND_DRIFT = 16;
 
-export interface ComputerLocator { locate(shot: Screenshot, target: string): Promise<{ x: number; y: number } | null> }
+export interface ComputerLocator {
+  locate(shot: Screenshot, target: string): Promise<{ x: number; y: number } | null>;
+  // ADR-042. For a routine click by an agent whose owner turned on Computer use: the same request, but a point the provider
+  // marked for review is still read. Nothing is acknowledged to the provider, and the point goes through every local check.
+  proposePoint?(shot: Screenshot, target: string): Promise<{ x: number; y: number; reviewWaived: boolean } | null>;
+}
 export interface VisualGrounders { sam?: SamVerifier; computer?: ComputerLocator }
 
 export const isVisualMethod = (method: string | null | undefined) => method === "sam" || method === "computer_use";
@@ -54,7 +59,7 @@ const inside = (point: { x: number; y: number }, shot: Screenshot) =>
   Number.isInteger(point.x) && Number.isInteger(point.y) && point.x >= 0 && point.y >= 0 && point.x < shot.width && point.y < shot.height;
 
 // Cost and budget stops must reach the step loop; anything else from a rung means "this rung found nothing".
-const passThrough = (error: unknown) => {
+export const passThrough = (error: unknown) => {
   const code = (error as { code?: unknown } | null)?.code;
   return code === "aborted" || code === "budget_paused" || code === "price_required" || code === "cost_error";
 };
@@ -109,7 +114,8 @@ export function supportsComputerUse(provider: Pick<ProviderConnector, "kind" | "
     (model.startsWith("muse-spark-1.3") || model.startsWith("muse-wonder-1.0"));
 }
 
-const clickSchema = z.object({ type: z.literal("click"), button: z.literal("left"), x: z.number().int().nonnegative(), y: z.number().int().nonnegative() }).strict();
+// The provider may name another button; only the position is read, and the agent's own step decides how to click.
+const clickSchema = z.object({ type: z.literal("click"), button: z.string().optional(), x: z.number().int().nonnegative(), y: z.number().int().nonnegative() }).strict();
 const screenshotSchema = z.object({ type: z.literal("screenshot") }).strict();
 
 const LOCATE_RULES = [
@@ -119,11 +125,11 @@ const LOCATE_RULES = [
   "If the target is absent, ambiguous, or is a login, password, one-time code, CAPTCHA or payment field, do not click: explain that it is infeasible.",
 ].join("\n");
 
-function singleComputerAction(result: ProviderResult): { call: ProviderComputerCallOutput; action: unknown } | null {
-  if (result.status !== "completed") return null;
+function singleComputerAction(result: ProviderResult, readFlagged = false): { call: ProviderComputerCallOutput; action: unknown } | null {
+  if (result.status !== "completed" && !(readFlagged && result.status === "safety_review_required")) return null;
   const calls = result.outputs.filter((output): output is ProviderComputerCallOutput => output.type === "computer_call");
   if (calls.length !== 1 || result.outputs.some((output) => output.type === "function_call")) return null;
-  if (calls[0].pendingSafetyChecks.length || calls[0].actions.length !== 1) return null;
+  if ((calls[0].pendingSafetyChecks.length && !readFlagged) || calls[0].actions.length !== 1) return null;
   return { call: calls[0], action: calls[0].actions[0] };
 }
 
@@ -133,8 +139,7 @@ export function createComputerLocator(input: {
   provider: ProviderConnector; model: string; task: string; timezone: string; now: () => Date;
   usage: (usage: ProviderUsage) => void; signal?: AbortSignal;
 }): ComputerLocator {
-  return {
-    async locate(shot, target) {
+  const ask = async (shot: Screenshot, target: string, readFlagged: boolean) => {
       if (!input.provider.continueComputer) return null;
       const text = z.string().min(1).max(200).refine((value) => !/[\u0000-\u001f\u007f-\u009f]/.test(value)).safeParse(target);
       if (!text.success) return null;
@@ -159,10 +164,18 @@ export function createComputerLocator(input: {
       }), input.signal);
       input.usage(second.usage);
       checkCancelled(input.signal);
-      const proposed = singleComputerAction(second);
+      const proposed = singleComputerAction(second, readFlagged);
       const click = proposed ? clickSchema.safeParse(proposed.action) : null;
       if (!click?.success || !inside(click.data, shot)) return null;
-      return { x: click.data.x, y: click.data.y };
+      // The strict path feeds the two-method check for irreversible actions: only a plain left click counts there.
+      if (!readFlagged && click.data.button !== "left") return null;
+      return { x: click.data.x, y: click.data.y, reviewWaived: Boolean(proposed?.call.pendingSafetyChecks.length) };
+  };
+  return {
+    async locate(shot, target) {
+      const point = await ask(shot, target, false);
+      return point ? { x: point.x, y: point.y } : null;
     },
+    proposePoint: (shot, target) => ask(shot, target, true),
   };
 }

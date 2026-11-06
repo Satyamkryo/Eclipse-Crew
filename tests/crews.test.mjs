@@ -66,7 +66,8 @@ test("crew members fill persona, budgets, tools and actions from safe defaults",
   assert.equal(minimal.anyPublicWeb, true);
   assert.equal(minimal.dailyBudgetCents, 500);
   assert.equal(minimal.monthlyBudgetCents, 5000);
-  assert.deepEqual(minimal.tools, ["read_document", "deliver_file"]);
+  // A blank Tools list means every tool connected to the agent (ADR-040).
+  assert.deepEqual(minimal.tools, []);
   assert.deepEqual(minimal.domains, []);
   assert.ok(minimal.actions.includes("handoff"));
   assert.ok(minimal.actions.includes("click"));

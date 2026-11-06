@@ -9,12 +9,16 @@ export interface GroundedPoint {
   // The matched control, when the method found one. Page text, so untrusted.
   role?: string;
   name?: string;
+  // Set when the model picked the control by its list number, which tells apart controls that share a name.
+  ref?: number;
+  // ADR-042. The provider asked for a person to confirm this point; the owner's Computer use switch stands in for that.
+  providerReviewWaived?: boolean;
 }
 
 // Turns a described target into a screen point (page structure first, see grounding.ts).
 // Coordinates only ever come from here, never from the model. `snapshot` is null when the page could not be read.
 // A click or a select: both name a control in words. Coordinates still come only from code.
-export interface GroundTarget { target: string }
+export interface GroundTarget { target: string; ref?: number }
 export interface Grounder {
   ground(intent: GroundTarget, screenshot: Screenshot, snapshot: PageSnapshot | null): Promise<GroundedPoint | null>;
 }
@@ -42,8 +46,19 @@ export async function executeIntent(
   port: DesktopPort,
   point: GroundedPoint | null,
   sleep: (ms: number) => Promise<void>,
+  // ADR-041. Set when the keyboard is on a window outside the browser. `terminal` is the agent's shell permission.
+  outside?: { terminal: boolean },
 ): Promise<void> {
   switch (intent.action) {
+    case "click_at":
+      if (!point || !port.screenClick) throw new Error("screen_input_unavailable");
+      return port.screenClick(point.x, point.y, intent.button ?? "left");
+    case "drag_at":
+      if (!point || !port.screenDrag) throw new Error("screen_input_unavailable");
+      return port.screenDrag(point.x, point.y, intent.to_x, intent.to_y);
+    case "scroll_at":
+      if (!point || !port.screenScroll) throw new Error("screen_input_unavailable");
+      return port.screenScroll(point.x, point.y, intent.direction, SCROLL_COUNT);
     case "click":
       if (!point) throw new Error("ungrounded_click");
       return port.click(point.x, point.y);
@@ -63,8 +78,14 @@ export async function executeIntent(
         return port.navigate(intent.url);
       }
     }
-    case "type": return port.type(intent.text);
-    case "key": return port.key(intent.keys);
+    case "type":
+      if (!outside) return port.type(intent.text);
+      if (!port.screenType) throw new Error("screen_input_unavailable");
+      return port.screenType(intent.text, outside.terminal);
+    case "key":
+      if (!outside) return port.key(intent.keys);
+      if (!port.screenKey) throw new Error("screen_input_unavailable");
+      return port.screenKey(intent.keys, outside.terminal);
     case "scroll": return port.scroll(intent.direction, SCROLL_COUNT);
     case "wait": return sleep(WAIT_MS);
     default: throw new Error("not_executable");

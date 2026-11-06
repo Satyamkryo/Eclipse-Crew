@@ -380,7 +380,9 @@ export function createMetaConnector(config: MetaProviderConfig, limits: RuntimeL
       const body = buildBody(request);
       body.input = [
         ...body.input,
-        ...computer.replayItems,
+        // With store:false the API keeps no reasoning item, so replaying one by id is refused (live 400: "not found or has
+        // expired"). Only an item that carries its own encrypted content can be replayed.
+        ...computer.replayItems.filter((item) => item.type !== "reasoning" || typeof item.encrypted_content === "string"),
         {
           type: "computer_call_output",
           call_id: computer.callId,

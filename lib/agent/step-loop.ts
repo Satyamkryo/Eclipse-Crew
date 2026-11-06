@@ -2,15 +2,15 @@ import "server-only";
 import type { ProviderConnector, ProviderContent, ProviderUsage } from "../providers/types";
 import { getTime } from "../time/clock";
 import { buildRequest, summarizeIntent, timeSummary, type AgentPersona, type AgentSkill, type DocumentSearch, type HistorySearch, type ReadDocument, type StepSummary, type ToolResultContext, type ToolCatalogEntry, MAX_DOCUMENT_WINDOWS, MAX_SEARCHES } from "./context";
-import type { DeliveredFile, DesktopPort, ListedFile, PageSnapshot, Screenshot } from "./desktop-port";
+import type { DeliveredFile, DesktopPort, ListedFile, PageSnapshot, Screenshot, WindowKind } from "./desktop-port";
 import { executeIntent, validPoint, type Grounder } from "./executor";
 import { createPageGrounder, suggestNames } from "./grounding";
 import { notAllowedText } from "../agents/actions";
 import { containsCanary } from "../security/canary";
-import { DESKTOP_ACTIONS, FILE_ACTIONS, parseNextStep, resolvePlaceholders, type Intent, type ParsedStep } from "./intent";
+import { DESKTOP_ACTIONS, FILE_ACTIONS, parseNextStep, resolvePlaceholders, UNNAMED_POINT, type Intent, type ParsedStep } from "./intent";
 import { labelFor, pickRoute, type RouteKind } from "./routing";
 import { checkTyped, deriveScope, hostFromUrl, type ScopeRule } from "./scope";
-import { classifyAction, type ActionClass, type RiskClass } from "./risk";
+import { classifyAction, isIrreversible, type ActionClass, type RiskClass } from "./risk";
 import type { ApprovalGate } from "../approvals/types";
 import { classifyToolCall } from "../tools/risk";
 import { splitToolReference, type ToolPort } from "../tools/port";
@@ -47,7 +47,10 @@ function argumentText(value: unknown): string {
 // Only agents whose Actions include `shell` get the larger ceiling; every other agent keeps the base limits.
 // TASK-083. Base limits are 60 steps, a 30-minute wall clock and 400,000 weighted tokens for every agent.
 export const MAX_STEPS = 60;
+// The same step with the screen unchanged is stuck: the model is told once, then the run stops. The same step that keeps
+// changing the screen (paging, Tab, a slow page) is work, up to the larger bound.
 export const MAX_REPEATS = 3;
+export const MAX_SCROLL_REPEATS = 10;
 export const MAX_TOKENS = 400_000;
 export const MAX_WALL_CLOCK_MS = 30 * 60_000;
 export const SHELL_MAX_STEPS = 60;
@@ -58,9 +61,32 @@ export function weightedTokens(usage: Pick<ProviderUsage, "inputTokens" | "outpu
   const cached = Math.max(0, usage.cachedInputTokens);
   return Math.max(0, usage.inputTokens - cached) + usage.outputTokens + Math.ceil(cached / 10);
 }
-const MAX_INVALID_IN_A_ROW = 3;
-// A click whose target is not found gets one more turn with the visible names; the next miss hands off.
+const MAX_INVALID_IN_A_ROW = 4;
+// What the model most often gets wrong, said plainly. Fixed text, never model text.
+const FIELD_HINT: Readonly<Record<string, string>> = {
+  keys: "keys must be one key name such as Enter, Tab or ArrowDown, or a chord such as Control+l. To enter text use the type action.",
+  target: "click and select need a target or a ref from the list.",
+  x: "x must be a whole number from 0 to 1023.",
+  y: "y must be a whole number from 0 to 767.",
+  url: "url must be a full http or https address.",
+  text: "type needs text to type.",
+};
+// A click whose target is not found gets one more turn with the visible names before the visual grounders are tried.
 const MAX_MISSES_IN_A_ROW = 2;
+// A routine step that was refused or whose expected result visibly failed goes back to the model, which sees the screen on
+// its next turn and can correct itself. Only this many in a row, with no step working in between, hands off. A result that
+// merely could not be judged is not a setback. Irreversible steps never get this: they stop at once.
+const MAX_SETBACKS_IN_A_ROW = 6;
+const DOCK_TOP = 740;
+// A model call that failed for a passing reason is worth one more try before a run is given up.
+const TRANSIENT_PROVIDER = new Set(["timeout", "rate_limited", "provider_unavailable", "network_error"]);
+const PROVIDER_RETRY_MS = 3_000;
+// A desktop failure on a routine step is the model's to work around. These end the run instead.
+const FATAL_DESKTOP = new Set(["takeover_active", "aborted", "security", "time_limit", "uncertain_outcome", "stale_generation", "session_not_running"]);
+const OUTSIDE_BROWSER: ReadonlySet<WindowKind> = new Set(["terminal", "file_manager", "other"]);
+// Keys that can press whatever has focus are classified like a click on it, so they cannot skip an approval.
+const ACTIVATING_KEY = /^(?:(?:Control|Meta)\+)?(?:Enter|Space)$/;
+const BUTTON_ROLES = new Set(["button", "link", "menuitem", "menuitemcheckbox", "menuitemradio", "tab", "option"]);
 
 export type RunOutcome =
   | "finished" | "asked_owner" | "needs_owner" | "paused_by_owner" | "invalid_output"
@@ -261,14 +287,16 @@ const HEARING_FAILURE_TEXT: Record<string, string> = {
 };
 const hearingFailure = (code: string) => HEARING_FAILURE_TEXT[code] ?? "I could not hear the page, so I stopped.";
 
+// An action this agent may not use. The model is told and may find another way; a second attempt asks the owner.
+const NOT_ALLOWED_LIMIT = 2;
 const FIXED_TEXT: Record<Exclude<RunOutcome, "finished" | "asked_owner" | "busy" | "handed_off">, string> = {
   needs_owner: "I stopped and need you to take this step.",
   paused_by_owner: "I stopped because you took over the desktop.",
-  invalid_output: "I stopped because the model did not return a usable step three times in a row.",
+  invalid_output: "I stopped because the model kept returning steps I could not use.",
   step_limit: "I stopped because this run reached its step limit.",
   token_limit: "I stopped because this run reached its token limit.",
   time_limit: "I stopped because this run reached its time limit.",
-  repeat_limit: `I stopped because I repeated the same step ${MAX_REPEATS} times.`,
+  repeat_limit: "I stopped because I kept repeating a step that did not change anything on the screen.",
   budget_paused: "I stopped because this agent reached a budget limit. Raise the budget or wait for the next period.",
   price_required: "I stopped before spending because this hosted model has no price configured. Add its rates in Settings -> Models.",
   cost_error: "I stopped because I could not record or check the cost of my last model call.",
@@ -373,6 +401,8 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
     } : {}),
   };
   const allowed = new Set(deps.agent.actions.map((action) => action.toLowerCase()));
+  // ADR-041. Off unless this agent's Actions include click_at.
+  const screenOn = allowed.has("click_at") && typeof deps.desktop.screenClick === "function";
   let startHref: string | null = null;
   let scopeRefusals = 0;
   const baseTurn = deps.resume?.turn ?? 0;
@@ -386,7 +416,11 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
   let invalid = 0;
   let repeats = 0;
   let misses = 0;
-  let focusMisses = 0;
+  let setbacks = 0;
+  let refusedActions = 0;
+  let previousScreen: string | null = null;
+  let warnedRepeat = false;
+  let unverifiedSteps = 0;
   let missedNames: string[] | undefined;
   let previous: Intent | null = null;
   let hardDisabled = false;
@@ -431,6 +465,7 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
     groundingMethod?: string | null; gate?: Evidence[]; verification?: Verification; before?: Screenshot | null; after?: Screenshot | null;
     exit?: number | null; timeout?: boolean; hits?: number | null; lifecycle?: { graphics: string; browser: string };
     audio?: { seconds: number; chars: number; durationMs: number; sha256: string; bytes: number; model: string };
+    landed?: { x: number; y: number } | null;
   }): Promise<boolean> => {
     if (!receipts) return true;
     const action = actionFor(intent);
@@ -441,6 +476,8 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
       action.audio_sha256 = d.audio.sha256; action.audio_bytes = d.audio.bytes; action.transcribe_model = d.audio.model;
     }
     if (action?.kind === "type") action.values = [...typeValueNames];
+    // ADR-042. The action records what the model asked for; `landed` says where the click really went when that differs.
+    if (action?.kind === "click_at" && d.landed && (d.landed.x !== action.x || d.landed.y !== action.y)) action.landed = { x: d.landed.x, y: d.landed.y };
     if (action?.kind === "start_desktop" || action?.kind === "start_browser") {
       action.graphics = d.lifecycle?.graphics ?? "failed"; action.browser = d.lifecycle?.browser ?? "failed";
     }
@@ -475,7 +512,7 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
     if (!deps.checkpoints) return;
     let summaries: StepSummary[] = history;
     if (step && !history.some((item) => item.step === currentTurn && item.action === step.intent.action)) {
-      const failed = step.result === "fail" || step.result === "failed" || step.result === "blocked";
+      const failed = step.result === "fail" || step.result === "failed" || step.result === "blocked" || step.result === "unknown";
       summaries = [...history, summarizeIntent(currentTurn, step.intent, failed ? "failed" : "executed", step.code ?? undefined)];
     }
     await deps.checkpoints.capture(idx, { task: deps.task, turn: currentTurn, receiptIdx: idx, history: [...summaries],
@@ -539,6 +576,16 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
         }
       }
 
+      // ADR-041. Which window has the keyboard. A failed read means "treat it as the browser", the stricter path.
+      let activeWindow: WindowKind | null = null;
+      if (shot && screenOn && deps.desktop.activeWindow) {
+        try { activeWindow = await withinDeadline(deps.desktop.activeWindow()); }
+        catch (error) {
+          if (stopIfStopped()) break;
+          if (errorCode(error) === "takeover_active") { stop("paused_by_owner"); break; }
+        }
+      }
+
       // The first readable page is the run's start page and is part of the task scope (a mock vendor on loopback works
       // without the owner typing its address).
       if (startHref === null && snapshot && hostFromUrl(snapshot.href)) startHref = snapshot.href;
@@ -564,6 +611,7 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
           ...(deps.handoffNote ? { handoffNote: deps.handoffNote } : {}), ...(deps.teammates ? { teammates: deps.teammates } : {}),
           ...(deps.offeredActions ? { offeredActions: deps.offeredActions } : {}),
           offerHandoff: Boolean(deps.handoff && allowed.has("handoff")),
+          offerScreen: screenOn, ...(activeWindow ? { activeWindow } : {}),
           offerSpawn: Boolean(deps.subagents && deps.helperTools?.length && allowed.has("spawn_subagent")),
           ...(deps.subagents ? {
             helperStatus: deps.subagents.status(),
@@ -573,8 +621,17 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
         }),
         signal: runSignal,
       });
+      const askWithRetry = async (model: string) => {
+        try { return await withinDeadline(ask(model)); }
+        catch (error) {
+          if (!TRANSIENT_PROVIDER.has(String(errorCode(error)))) throw error;
+          logModelFailure(model, error);
+          await withinDeadline(sleep(PROVIDER_RETRY_MS));
+          return withinDeadline(ask(model));
+        }
+      };
       let result;
-      try { result = await withinDeadline(ask(route.model)); }
+      try { result = await askWithRetry(route.model); }
       catch (error) {
         logModelFailure(route.model, error);
         if (stopForCost(error) || stopIfStopped()) break;
@@ -601,7 +658,8 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
         logInvalidStep(route.model, result, parsed);
         // The fixed code tells the model what was wrong so its next reply can be corrected; no model text is kept.
         history.push({ step: currentTurn, action: "wait", result: "invalid_output",
-          code: parsed.field ? `${parsed.reason}:${parsed.field}` : result.status === "incomplete" ? `${parsed.reason}:${result.status}` : parsed.reason });
+          code: parsed.field ? `${parsed.reason}:${parsed.field}` : result.status === "incomplete" ? `${parsed.reason}:${result.status}` : parsed.reason,
+          ...(parsed.field && FIELD_HINT[parsed.field] ? { expect: FIELD_HINT[parsed.field] } : {}) });
         if (++invalid >= MAX_INVALID_IN_A_ROW) { stop("invalid_output"); break; }
         continue;
       }
@@ -657,7 +715,9 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
         const evidenceNote = verifiedCount > 0
           ? `\n\n${verifiedCount} desktop step postcondition(s) passed verification. This summary is the agent's own report; external side effects are not independently proven.`
           : steps.some((step) => step.executed) ? "\n\nThis is the agent's own report. Nothing was verified automatically." : "";
-        stop("finished", { type: "message", text: `${intent.summary}${sent}${memoryNote}${helperNote}${evidenceNote}` });
+        const unverifiedNote = verifiedCount > 0 && unverifiedSteps > 0
+          ? ` ${unverifiedSteps} other step${unverifiedSteps === 1 ? "" : "s"} could not be verified and the agent continued.` : "";
+        stop("finished", { type: "message", text: `${intent.summary}${sent}${memoryNote}${helperNote}${evidenceNote}${unverifiedNote}` });
         break;
       }
       if (intent.action === "ask_owner") {
@@ -667,10 +727,16 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
 
       // TASK-085. Hand the owner's request to one teammate. The receiver's task is the stored owner message;
       // a refusal is reported to the model and this run keeps going, so it can do the work itself.
+      // Nothing ever runs without its permission. The model hears "not_allowed" and can do the task another way.
+      const refuseAction = (name: string) => {
+        if (++refusedActions >= NOT_ALLOWED_LIMIT) { stop("needs_owner", { type: "message", text: notAllowedText(name) }); return true; }
+        history.push(summarizeIntent(currentTurn, intent, "failed", "not_allowed"));
+        return false;
+      };
       if (intent.action === "handoff") {
         if (!allowed.has("handoff") || !deps.handoff) {
-          stop("needs_owner", { type: "message", text: notAllowedText("handoff") });
-          break;
+          if (refuseAction("handoff")) break;
+          continue;
         }
         let result;
         try { result = await withinDeadline(deps.handoff({ agent: intent.agent, note: intent.note })); }
@@ -722,7 +788,18 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
 
       repeats = previous && sameIntent(previous, intent) ? repeats + 1 : 1;
       previous = intent;
-      if (repeats >= MAX_REPEATS) { stop("repeat_limit"); break; }
+      // Only an unchanged screen makes a repeated step a stuck one. The first time the model hears about it; then the run stops.
+      // With no screen there is nothing to see change, so the same screenless step counts as stuck.
+      const noEffect = shot === null || previousScreen === shot.base64;
+      previousScreen = shot?.base64 ?? null;
+      if (repeats >= MAX_SCROLL_REPEATS) { stop("repeat_limit"); break; }
+      if (repeats >= MAX_REPEATS && noEffect) {
+        if (warnedRepeat) { stop("repeat_limit"); break; }
+        warnedRepeat = true;
+        history.push(summarizeIntent(currentTurn, intent, "failed", "repeated_no_effect"));
+        continue;
+      }
+      if (repeats === 1) warnedRepeat = false;
 
       // Answered in code from the injected clock: no desktop call, no allowlist entry, not a run step.
       if (intent.action === "get_time") {
@@ -735,8 +812,8 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
       // pause, security stop and budget gates still apply, so this can never resume a stopped agent.
       if (intent.action === "start_desktop" || intent.action === "start_browser") {
         if (!allowed.has(intent.action)) {
-          stop("needs_owner", { type: "message", text: notAllowedText(intent.action) });
-          break;
+          if (refuseAction(intent.action)) break;
+          continue;
         }
         const ensure = intent.action === "start_desktop" ? deps.desktop.ensureVisual : deps.desktop.ensureBrowser;
         if (!ensure) {
@@ -773,8 +850,8 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
           : intent.action === "search_document" ? (readAllowed || allowed.has("search_document")) && Boolean(port.searchDocument)
           : allowed.has("deliver_file") && Boolean(port.deliverFile);
         if (!permitted) {
-          stop("needs_owner", { type: "message", text: notAllowedText(intent.action === "search_document" ? "read_document" : intent.action) });
-          break;
+          if (refuseAction(intent.action === "search_document" ? "read_document" : intent.action)) break;
+          continue;
         }
         let hits: number | undefined;
         try {
@@ -811,8 +888,8 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
       // TASK-086. Chat-history search over this agent's own messages. It never touches the screen.
       if (intent.action === "search_history") {
         if ((!allowed.has("search_history") && !allowed.has("remember")) || !deps.history) {
-          stop("needs_owner", { type: "message", text: notAllowedText("remember") });
-          break;
+          if (refuseAction("remember")) break;
+          continue;
         }
         let hits;
         try { hits = await withinDeadline(deps.history.search(intent.query)); }
@@ -841,8 +918,8 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
       // the screen, so refusals are reported to the model in history and the run continues.
       if (intent.action === "remember") {
         if (!allowed.has("remember")) {
-          stop("needs_owner", { type: "message", text: notAllowedText("remember") });
-          break;
+          if (refuseAction("remember")) break;
+          continue;
         }
         if (!deps.memory) {
           history.push(summarizeIntent(currentTurn, intent, "failed", "memory_unavailable"));
@@ -876,8 +953,8 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
       // Results are untrusted data and never enter a receipt, checkpoint or history summary.
       if (intent.action === "tool_call") {
         if (!allowed.has("tool_call") || !deps.tools) {
-          stop("needs_owner", { type: "message", text: notAllowedText("tool_call") });
-          break;
+          if (refuseAction("tool_call")) break;
+          continue;
         }
         const split = splitToolReference(intent.name);
         const grantedServers = deps.agent.tools ?? [];
@@ -989,7 +1066,10 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
           }
           history.push(summarizeIntent(currentTurn, intent, "failed", code));
           if (!(await emit(intent, modelInfo, { result: "failed", executed: false, code }))) { stop("receipt_error"); break; }
+          if (++setbacks >= MAX_SETBACKS_IN_A_ROW) { stop("needs_owner", { type: "message", text: "I stopped because this tool kept failing. Check the connection in Integrations, then ask me again." }); break; }
+          continue;
         }
+        setbacks = 0;
         continue;
       }
 
@@ -997,8 +1077,8 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
       // stored in a receipt or checkpoint; output is untrusted and only reaches the model.
       if (intent.action === "shell") {
         if (!allowed.has("shell") || !deps.shell) {
-          stop("needs_owner", { type: "message", text: notAllowedText("shell") });
-          break;
+          if (refuseAction("shell")) break;
+          continue;
         }
         if (deps.canary && containsCanary(intent.command, deps.canary)) {
           if (!(await emit(intent, modelInfo, { result: "blocked", executed: false, code: "canary_blocked" }))) { stop("receipt_error"); break; }
@@ -1032,8 +1112,11 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
           const code = typeof raw === "string" && /^[a-z_]{1,64}$/.test(raw) ? raw : "shell_failed";
           history.push(summarizeIntent(currentTurn, intent, "failed", code));
           if (!(await emit(intent, modelInfo, { result: "failed", executed: false, code }))) { stop("receipt_error"); break; }
+          // A command that ran and exited non-zero is output for the model. A shell that cannot run a command at all is not.
+          if (++setbacks >= MAX_SETBACKS_IN_A_ROW) { stop("needs_owner", { type: "message", text: "I stopped because the shell kept failing to run commands. Check the desktop service, then ask me again." }); break; }
           continue;
         }
+        setbacks = 0;
         // TASK-073c. The gateway records a blocked protected ref as pending. Poll after every
         // shell step; a polling failure stops the run rather than guessing.
         let pendingPushes: PushPending[] = [];
@@ -1130,8 +1213,8 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
       // its transcript enters the next request only as a bounded `tool` result.
       if (intent.action === "hear_audio") {
         if (!allowed.has("hear_audio") || !deps.audio) {
-          stop("needs_owner", { type: "message", text: notAllowedText("hear_audio") });
-          break;
+          if (refuseAction("hear_audio")) break;
+          continue;
         }
         const seconds = intent.seconds ?? 10;
         let heard;
@@ -1162,10 +1245,12 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
       const permission = intent.action === "navigate" ? "type" : intent.action === "select" ? "click" : intent.action;
       const permitted = intent.action === "extract"
         ? allowed.has("click") || allowed.has("type")
+        : intent.action === "click_at" || intent.action === "drag_at" || intent.action === "scroll_at" ? screenOn
         : (DESKTOP_ACTIONS as readonly string[]).includes(permission) && allowed.has(permission);
       if (!permitted) {
-        stop("needs_owner", { type: "message", text: notAllowedText(intent.action === "extract" ? (allowed.has("click") ? "type" : "click") : permission) });
-        break;
+        const screenAction = intent.action === "click_at" || intent.action === "drag_at" || intent.action === "scroll_at";
+        if (refuseAction(screenAction ? "click_at" : intent.action === "extract" ? (allowed.has("click") ? "type" : "click") : permission)) break;
+        continue;
       }
 
       // A screen action on a stopped desktop acquires it through the bounded lifecycle, then re-grounds on fresh state.
@@ -1266,6 +1351,21 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
 
       missedNames = undefined;
       let point = null;
+      if (intent.action === "click_at" || intent.action === "drag_at" || intent.action === "scroll_at") point = { x: intent.x, y: intent.y, method: "model_coordinates" };
+      // ADR-042. The planner reads pixels badly (measured on real screens: 1 of 7 targets, 80-110 px off). The provider's native
+      // computer tool was 0-4 px off. A routine click on a named target takes its point; a risky one never does, and if it
+      // finds nothing the plan's point stands.
+      // The dock's positions are given to the model exactly, so a click there keeps them.
+      if (intent.action === "click_at" && intent.y < DOCK_TOP && intent.target !== UNNAMED_POINT && visualGrounders.computer?.proposePoint
+        && classifyAction({ intentKind: "click", controlName: intent.target, expect: intent.expect }) === "none") {
+        let costStopped = false;
+        const proposed = await withinDeadline(visualGrounders.computer.proposePoint(shot, intent.target))
+          .catch((error) => { if (stopForCost(error)) costStopped = true; return null; });
+        if (costStopped || stopIfStopped()) break;
+        if (proposed && validPoint({ x: proposed.x, y: proposed.y, method: "computer_use" }, shot)) {
+          point = { x: proposed.x, y: proposed.y, method: "computer_use", ...(proposed.reviewWaived ? { providerReviewWaived: true } : {}) };
+        }
+      }
       if (intent.action === "click" || intent.action === "select") {
         point = await withinDeadline(grounder.ground(intent, shot, snapshot)).catch(() => null);
         if (!validPoint(point, shot)) {
@@ -1285,6 +1385,12 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
           }
         }
         if (!validPoint(point, shot)) {
+          // Still routine: nothing was sent. The model sees the page and can pick another way before this hands off.
+          if (++setbacks < MAX_SETBACKS_IN_A_ROW) {
+            history.push(summarizeIntent(currentTurn, intent, "target_not_found"));
+            if (snapshot) missedNames = suggestNames(snapshot, intent.target);
+            continue;
+          }
           const hidden = snapshot ? " It may be inside a closed shadow root, which I can't reach." : "";
           stop("needs_owner", { type: "message", text: snapshot
             ? `I can't locate that control on the page, so I am handing this back to you.${hidden}`
@@ -1299,9 +1405,12 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
 
       // TASK-050. A risky click classification is made by code, not by the model. It waits for the owner (or a stored
       // grant), then the page is read again before the gate and execution.
+      const outsideBrowser = screenOn && activeWindow !== null && OUTSIDE_BROWSER.has(activeWindow);
+      const activatingKey = intent.action === "key" && ACTIVATING_KEY.test(intent.keys);
+      const focusedButton = activatingKey ? snapshot?.controls.find((item) => item.focused === true && BUTTON_ROLES.has(item.role)) : undefined;
       const risky: RiskClass = classifyAction({
-        intentKind: intent.action,
-        controlName: record.grounded?.name ?? ("target" in intent ? intent.target : ""),
+        intentKind: activatingKey || intent.action === "click_at" || intent.action === "drag_at" ? "click" : intent.action,
+        controlName: record.grounded?.name ?? focusedButton?.name ?? ("target" in intent ? intent.target : ""),
         expect: "expect" in intent ? intent.expect : "",
       });
       let receiptBase = { target: record.grounded, groundingMethod: record.groundingMethod, before: shot };
@@ -1371,6 +1480,8 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
           : intent.action === "click"
           ? !freshSnapshot || !validPoint(freshPoint, freshShot) || (record.grounded !== null &&
             (freshPoint?.role !== record.grounded.role || freshPoint?.name !== record.grounded.name))
+          // A model-chosen point has nothing to re-ground on: any change on the screen makes it stale.
+          : intent.action === "click_at" || intent.action === "drag_at" ? freshShot.base64 !== shot.base64
           : !freshSnapshot;
         if (moved) {
           if (answer.approvalId) { try { await deps.approvals.markStale?.(answer.approvalId); } catch { /* the refusal stands */ } }
@@ -1393,7 +1504,7 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
       try {
         const gate = await withinDeadline(confidenceGate({
           intent, point, before: shot, snapshot, desktop: deps.desktop, services, signal: runSignal,
-          visual: visualGrounders, irreversible: risky !== "none",
+          visual: visualGrounders, irreversible: isIrreversible(risky), outsideBrowser,
         }));
         record.gate = gate.evidence;
         if (!gate.allowed) {
@@ -1401,10 +1512,10 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
           emitted = true;
           const blockedCode = gate.evidence[gate.evidence.length - 1]?.code ?? "blocked";
           if (!(await emit(intent, modelInfo, { ...receiptBase, gate: gate.evidence, result: "blocked", executed: false, code: astraAllowed ? "astra_allowed" : blockedCode }))) { stop("receipt_error"); break; }
-          // Typing with no single focused field sent nothing: tell the model once so it can click the field first.
-          if ((intent.action === "type" || intent.action === "key") && risky === "none" &&
-              (blockedCode === "ambiguous_target" || blockedCode === "unsupported_focus") && ++focusMisses < MAX_MISSES_IN_A_ROW) {
-            history.push(summarizeIntent(currentTurn, intent, "failed", "no_focused_field"));
+          // Nothing was sent. On a routine step the model is told why and picks another step.
+          if (risky === "none" && ++setbacks < MAX_SETBACKS_IN_A_ROW) {
+            const noFocus = (intent.action === "type" || intent.action === "key") && (blockedCode === "ambiguous_target" || blockedCode === "unsupported_focus");
+            history.push(summarizeIntent(currentTurn, intent, "failed", noFocus ? "no_focused_field" : blockedCode));
             continue;
           }
           stop("needs_owner", { type: "message", text: "I stopped before input because independent target checks did not agree. Please take over this step." });
@@ -1412,7 +1523,7 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
         }
         checkCancelled(runSignal);
         if (stopIfStopped()) break;
-        await executeIntent(intent, deps.desktop, point, sleep);
+        await executeIntent(intent, deps.desktop, point, sleep, outsideBrowser ? { terminal: allowed.has("shell") } : undefined);
         if (intent.action === "type") typedTail = (typedTail + intent.text).slice(-64);
         record.executed = true;
         steps.push(record);
@@ -1424,13 +1535,25 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
         // A page-structure check takes no screenshot; the receipt still needs the "after" picture.
         if (receipts && !afterShot) { try { afterShot = await deps.desktop.screenshot(); } catch { afterShot = null; } }
         emitted = true;
-        if (!(await emit(intent, modelInfo, { ...receiptBase, gate: record.gate, verification: record.verification, after: afterShot, result: record.verification.status, executed: true, code: astraAllowed ? "astra_allowed" : undefined }))) { stop("receipt_error"); break; }
+        if (!(await emit(intent, modelInfo, { ...receiptBase, gate: record.gate, verification: record.verification, after: afterShot, result: record.verification.status, executed: true, code: astraAllowed ? "astra_allowed" : undefined, landed: point }))) { stop("receipt_error"); break; }
         if (stopIfStopped()) break;
         if (weightedTokens(usage) >= tokenLimit) { stop("token_limit"); break; }
         if (!record.verified) {
+          // The receipt above already records the result. A routine step continues: the next turn's screenshot shows what happened.
+          unverifiedSteps += 1;
+          // "unknown" means the checker could not judge, which is no evidence that the step failed. It says so and costs nothing.
+          if (risky === "none" && record.verification.status === "unknown") {
+            history.push(summarizeIntent(currentTurn, intent, "executed", "postcondition_unknown"));
+            continue;
+          }
+          if (risky === "none" && ++setbacks < MAX_SETBACKS_IN_A_ROW) {
+            history.push(summarizeIntent(currentTurn, intent, "failed", "postcondition_failed"));
+            continue;
+          }
           stop("needs_owner", { type: "message", text: "The action was attempted, but its expected result was not verified. I stopped; please inspect the desktop before continuing." });
           break;
         }
+        setbacks = 0;
       } catch (error) {
         if (record.executed && !record.verification) record.verification = { status: "unknown", sam: services.samState, evidence: [] };
         if (receipts && !emitted) {
@@ -1442,11 +1565,18 @@ export async function runTask(deps: RunDeps): Promise<RunResult> {
         }
         if (stopForCost(error) || stopIfStopped()) break;
         if (errorCode(error) === "security") { securityCause = "cancelled"; stop("security_stop"); break; }
-        if (errorCode(error) === "navigation_failed") {
+        // A routine step that failed on the desktop goes back to the model with the fixed code. Input that may have landed
+        // (uncertain_outcome), takeover, cancellation and a lost session still end the run.
+        const failure = String(errorCode(error) ?? (error as Error)?.message ?? "");
+        if (risky === "none" && !FATAL_DESKTOP.has(failure) && ++setbacks < MAX_SETBACKS_IN_A_ROW) {
+          history.push(summarizeIntent(currentTurn, intent, "failed", /^[a-z_]{1,64}$/.test(failure) ? failure : "desktop_error"));
+          continue;
+        }
+        if (failure === "navigation_failed") {
           stop("needs_owner", { type: "message", text: "I couldn't open that page: the site didn't respond in time or the address was blocked. The desktop is still running; please check the address or try again." });
           break;
         }
-        stop(errorCode(error) === "takeover_active" ? "paused_by_owner" : errorCode(error) === "aborted" ? "aborted" : "desktop_error");
+        stop(failure === "takeover_active" ? "paused_by_owner" : failure === "aborted" ? "aborted" : "desktop_error");
         break;
       }
       history.push(summarizeIntent(currentTurn, intent));

@@ -102,7 +102,7 @@ Rejected: Playwright MCP for browser control.
 
 ## ADR-008: Model-agnostic perception layer
 Status: Accepted · 2026-10-28
-Decision: Models emit `{action, target, expect}`, never raw coordinates. Grounding cascade: page structure → set-of-marks → SAM → model computer use → user. Irreversible actions need two agreeing methods.
+Decision: Models emit `{action, target, expect}`, never raw coordinates (one opt-in exception: `click_at`, ADR-041). Grounding cascade: page structure → set-of-marks → SAM → model computer use → user. Irreversible actions need two agreeing methods.
 Reason: Same behaviour, receipts and safety for every model; weaker models ask more instead of misclicking.
 
 ## ADR-009: Any model provider
@@ -285,3 +285,17 @@ Decision: When an agent's Tools list (`agent_policies.tools`) is blank, a run gr
 Reason: Models choose tools automatically; a blank-means-none text field left connected tools silently unusable.
 Rejected: keeping blank-means-none; granting every server connected to any agent.
 Residual risk: an agent may call any tool connected to it without the owner listing it; write and destructive calls still need approval.
+
+## ADR-041: Screen coordinates for actions outside the page list
+Status: Accepted · 2026-11-06 · Owner approved, off by default · Amends ADR-008
+Decision: Models may emit screen coordinates through one action, `click_at {x, y, target, expect}`, only for an agent whose Actions include it. It is off by default. Everything else in ADR-008 stands: on a web page the model uses the control list first. (1) `click_at` works anywhere on the agent's own 1024x768 screen. (2) The worker refuses a point on a password, one-time-code or card field or in a payment frame, and a point it cannot check while the browser is active. The app also refuses `click_at` on a page with a payment frame. (3) Typing and keys outside the browser go only to known windows of the agent's session; a terminal also needs the `shell` action. Canary and scope checks still run on all typed text. (4) `target` and `expect` go through the risk classifier. Risky clicks need approval, and send, delete, purchase and post also need SAM and computer use to agree with the point; the model's own coordinates never count as a method, so without both the agent hands off. (5) Every `click_at` writes a receipt with its coordinates and before and after screenshots, and a run using it cannot be saved as a replay. (6) Per-agent Linux users, mode-700 homes, the egress proxy, takeover, budgets and the no-CAPTCHA rule are unchanged.
+Reason: The page list cannot see anything outside a web page, so agents could not use the real desktop. OS isolation limits a wrong click to the agent's own session.
+Rejected: on by default for new agents; typing into a terminal without the `shell` action.
+Residual risk: a wrong or prompt-injected click on a routine control can land anywhere on the agent's screen, and on a label the classifier does not recognise it runs without approval. The risk check reads the model's own description, which an injected page can influence. A click can also start a program from a menu as the agent's user without the `shell` action; typing into a terminal stays refused, and the OS sandbox and egress proxy still apply.
+
+## ADR-042: Computer use switch, full mouse control and native point reading
+Status: Accepted · 2026-11-06 · Owner approved · Amends ADR-041 and the "must be acknowledged" note in AGENTS.md section 15
+Decision: (1) Computer use is an on/off switch in the agent create form and settings. It stores the existing `click_at` action, so ADR-041's rules still apply. It stays off by default. (2) It also permits `click_at` with a right or double click, `drag_at` and `scroll_at`. (3) For a routine click on a named target, the point comes from the provider's native computer tool when it has one. Meta marks almost every such proposal `safety_review_required`; the owner's switch stands in as standing consent for reading that point. Nothing is acknowledged to the provider, the proposal is never continued, and the receipt records `provider_review_waived_by_owner` and where the click really landed. A click on the dock keeps the exact position the model is given. (4) A click classified as risky never uses this path: it needs approval, and send, delete, purchase and post need SAM and computer use to agree, where a flagged proposal still counts as no answer.
+Reason: Measured on real screens with Muse Spark 1.3: the planner's own pixels hit 1 of 7 targets (80-110 px off), also with a grid drawn on the image; the native tool was 0-4 px off and flagged 6 of 7.
+Rejected: a card per flagged click (the agent could not work unattended); a separate plain "where is it" request (1 of 7); a grid overlay (1 of 7).
+Residual risk: Meta's review gets no per-click human confirmation on routine clicks. The owner should check that this fits Meta's terms for their use. Other providers have no native point and use the planner's pixels, which may be less accurate.

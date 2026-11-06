@@ -6,6 +6,9 @@ import { teachResult, type TeachResult } from "../teach/schema";
 
 const uuid = z.string().uuid();
 const FETCH_TIMEOUT_MS = 5000;
+// Reading a heavy page, or checking focus across its frames, takes real time. Above the desktop's own bounds, so it answers first.
+const PAGE_READ_TIMEOUT_MS = 16_000;
+const FOCUS_INPUT_TIMEOUT_MS = 12_000;
 // Above the desktop's own navigation bounds (20 s load, 25 s channel), so the desktop answers first.
 const NAVIGATE_TIMEOUT_MS = 28_000;
 const verificationPredicate = z.object({ kind: z.enum(["control_present", "control_absent", "url_path"]), value: z.string().min(1).max(200).refine((v) => !/[\x00-\x1f\x7f-\x9f]/.test(v)) }).strict();
@@ -121,12 +124,20 @@ export async function desktopTeach(agentId: string, ownerId: string, sessionRef:
   return desktopPost(`/v1/agents/${uuid.parse(agentId)}/teach`, { ...body, ...metadata(agentId, ownerId), sessionRef: sessionReference(sessionRef) }, teachResult, LIFECYCLE_TIMEOUT_MS);
 }
 const generationField = { generation: uuid };
+const windowResult = z.object({ kind: z.enum(["browser", "terminal", "file_manager", "other", "none"]), source_tag: z.literal("tool"), untrusted: z.literal(true) }).strict();
 const commandParams: Record<string, z.ZodType> = {
   "capture.screenshot": z.object({ crop: z.object({ x: z.number().int().min(0).max(1023), y: z.number().int().min(0).max(767), width: z.number().int().min(1).max(1024), height: z.number().int().min(1).max(768) }).strict().refine((value) => value.x + value.width <= 1024 && value.y + value.height <= 768).optional() }).strict(),
   "input.click": z.object({ button: z.enum(["left", "right", "double"]), x: z.number().int().min(0).max(1023), y: z.number().int().min(0).max(767) }).strict(),
   "input.type": z.object({ text: textSchema }).strict(),
   "input.key": z.object({ key: keySchema }).strict(),
   "input.scroll": z.object({ direction: z.enum(["up", "down", "left", "right"]), count: z.number().int().min(1).max(20) }).strict(),
+  // ADR-041. Agent-only: these are not in the owner takeover input schema.
+  "input.screen_click": z.object({ x: z.number().int().min(0).max(1023), y: z.number().int().min(0).max(767), button: z.enum(["left", "right", "double"]) }).strict(),
+  "input.screen_drag": z.object({ x: z.number().int().min(0).max(1023), y: z.number().int().min(0).max(767), toX: z.number().int().min(0).max(1023), toY: z.number().int().min(0).max(767) }).strict(),
+  "input.screen_scroll": z.object({ x: z.number().int().min(0).max(1023), y: z.number().int().min(0).max(767), direction: z.enum(["up", "down", "left", "right"]), count: z.number().int().min(1).max(20) }).strict(),
+  "input.screen_type": z.object({ text: textSchema, terminal: z.boolean() }).strict(),
+  "input.screen_key": z.object({ key: keySchema, terminal: z.boolean() }).strict(),
+  "window.active": z.object({}).strict(),
   "browser.pages": z.object({}).strict(),
   "page.snapshot": z.object({ pageId: uuid.optional() }).strict(),
   "page.verify": z.object({ predicate: verificationPredicate }).strict(),
@@ -141,16 +152,23 @@ const commandParams: Record<string, z.ZodType> = {
   "browser.locator": z.object({ selector: z.string().min(1).max(512).refine((value) => !/[\x00-\x1f\x7f]/.test(value)), pageId: uuid.optional(), action: z.enum(["inspect", "click", "fill"]), text: textSchema.optional() }).strict().refine((v) => v.action !== "fill" || v.text !== undefined),
   // TASK-079. The agent's private speaker, bounded to 30 seconds.
   "audio.capture": z.object({ seconds: z.number().int().min(1).max(30) }).strict(),
+  // TASK-073. Runs as the agent inside its namespace. The shell port validates the result.
+  "shell.run": z.object({ command: z.string().min(1).max(4000).refine((value) => !value.includes("\0")),
+    cwd: z.string().min(1).max(255).optional(), timeout: z.number().int().min(1).max(600).optional() }).strict(),
 };
 export async function desktopCommand(agentId: string, ownerId: string, generation: string, operation: string, params: Record<string, unknown>): Promise<unknown> {
   if (!Object.hasOwn(commandParams, operation)) throw new Error("invalid_operation");
   const args = commandParams[operation].parse(params) as Record<string, unknown>;
   const result: z.ZodType<unknown> = operation === "capture.screenshot" ? screenshotResult : operation === "browser.pages" ? pagesResult
     : operation === "page.snapshot" ? pageSnapshotResult : operation === "page.verify" ? pageVerificationResult
-    : operation === "page.find_text" ? findTextResult : operation === "audio.capture" ? waveResult
-    : operation === "browser.locator" && args.action === "inspect" ? locatorResult : inputResult;
+    : operation === "page.find_text" ? findTextResult : operation === "audio.capture" ? waveResult : operation === "window.active" ? windowResult
+    : operation === "browser.locator" && args.action === "inspect" ? locatorResult : operation === "shell.run" ? z.unknown() : inputResult;
   return desktopPost(`/v1/agents/${uuid.parse(agentId)}/commands`, { ...args, ...metadata(agentId, ownerId), ...z.object(generationField).parse({ generation }), operation }, result,
-    operation === "audio.capture" ? (Number(args.seconds) + 10) * 1000 : operation === "browser.navigate" ? NAVIGATE_TIMEOUT_MS : FETCH_TIMEOUT_MS);
+    operation === "audio.capture" ? (Number(args.seconds) + 10) * 1000 : operation === "browser.navigate" ? NAVIGATE_TIMEOUT_MS
+      : operation === "shell.run" ? (Number(args.timeout ?? 60) + 12) * 1000
+      : operation === "page.snapshot" || operation === "page.verify" || operation === "page.find_text" ? PAGE_READ_TIMEOUT_MS
+      : operation === "input.type" || operation === "input.key" || operation === "input.screen_type" || operation === "input.screen_key" ? FOCUS_INPUT_TIMEOUT_MS
+      : operation === "input.screen_click" || operation === "input.screen_drag" ? FOCUS_INPUT_TIMEOUT_MS : FETCH_TIMEOUT_MS);
 }
 export async function desktopCreateAgent(agentId: string, ownerId: string) {
   const result = await desktopPost(`/v1/agents/${uuid.parse(agentId)}/commands`,

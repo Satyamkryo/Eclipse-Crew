@@ -242,13 +242,13 @@ test("each executed step writes one chained receipt; the sealed run verifies and
   assert.deepEqual([first.idx, second.idx, first.v, first.run_id, first.agent_id], [1, 2, 1, RUN_ID, AGENT]);
   assert.deepEqual(first.action, { kind: "type", chars: 14, values: [] });
   assert.deepEqual(second.action, { kind: "key", keys: "Enter" });
-  assert.equal(first.result, "pass"); assert.equal(first.confidence, "high");
+  assert.equal(first.result, "pass"); assert.equal(first.confidence, "medium", "a routine type stands on the worker's focus check and the postcondition");
   assert.equal(first.sam, "off"); assert.equal(first.model, "muse-spark-1.3"); assert.equal(first.route, "main");
   assert.equal(first.postcondition, "text in field"); assert.equal(first.cost_micro_usd, null);
   assert.deepEqual(first.target, null);
   assert.equal(first.before_hash, createHash("sha256").update(Buffer.from(PNG, "base64")).digest("hex"));
   assert.ok(/^[0-9a-f]{64}$/.test(first.after_hash) && first.after_hash !== first.before_hash, "after picture hashed");
-  assert.ok(first.methods.some((m) => m.phase === "gate" && m.status === "pass") && first.methods.some((m) => m.phase === "verify"));
+  assert.ok(first.methods.some((m) => m.phase === "gate" && m.code === "worker_checks_focus") && first.methods.some((m) => m.phase === "verify"));
   assert.equal(sink.rows[0].prevHash, buildHeader({ runId: RUN_ID, agentId: AGENT, agentName: "Ada", task: "Open the settings page.", startedAt: OWNER_NOW.toISOString(), keyId: sink.keys.keyId }).hash);
   assert.equal(sink.rows[1].prevHash, sink.rows[0].receiptHash);
   const exported = sink.export();
@@ -287,14 +287,15 @@ test("a step stopped by the target gate still leaves a blocked receipt and a sea
   assert.equal(verifyRunExport(sink.export()).ok, true);
 });
 
-test("an unverified step records its result and the run ends needs_owner", async () => {
+test("unverified steps record their results and the sixth in a row ends the run needs_owner", async () => {
   const sink = memorySink();
   const verification = { samState: "off", visual: {
     observe: async (_s, data) => ({ status: "pass", name: "Message", role: "textbox", data }), verify: async () => "fail" } };
-  const { result } = await loop({ sink, verification, script: [step({ action: "type", text: "x", expect: "something visible" })] });
+  const { result } = await loop({ sink, verification, script: [1, 2, 3, 4, 5, 6].map((n) => step({ action: "type", text: "x", expect: `something visible ${n}` })) });
   assert.equal(result.outcome, "needs_owner");
-  const [receipt] = receiptsOf(sink);
-  assert.deepEqual([receipt.result, receipt.executed, receipt.confidence], ["fail", true, "low"]);
+  const receipts = receiptsOf(sink);
+  assert.equal(receipts.length, 6);
+  for (const receipt of receipts) assert.deepEqual([receipt.result, receipt.executed, receipt.confidence], ["fail", true, "low"]);
 });
 
 test("file actions are receipted by name only, with a failed read recorded as failed", async () => {
@@ -336,7 +337,7 @@ test("extract and {{name}} are receipted by name and length only, never the valu
   const receipts = receiptsOf(sink);
   assert.deepEqual(receipts[0].action, { kind: "extract", name: "headline", chars: 11 });
   assert.deepEqual(receipts[1].action, { kind: "type", chars: 18, values: ["headline"] });
-  assert.deepEqual(receipts.map((receipt) => receipt.confidence), ["none", "high"]);
+  assert.deepEqual(receipts.map((receipt) => receipt.confidence), ["none", "medium"]);
   assert.equal(JSON.stringify(sink.export()).includes("Hello world"), false, "the extracted value never reaches a receipt");
   assert.deepEqual(desktop.calls.filter(([name]) => name === "type"), [["type", "Title: Hello world"]]);
 });
@@ -398,4 +399,10 @@ test("npm run receipt-key creates RECEIPT_SIGNING_KEY once, keeps other settings
     assert.equal(await readFile(envPath, "utf8"), after, "a second run changes nothing and never rotates the key");
     if (process.platform !== "win32") assert.equal((await stat(envPath)).mode & 0o777, 0o600);
   } finally { console.log = log; await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a screen click keeps its point on the receipt and labels clearly in History", async () => {
+  const { actionLabel } = await import("../lib/receipts/history-view.ts");
+  assert.deepEqual(actionFor({ action: "click_at", x: 7, y: 9, target: "Files", expect: "opens" }), { kind: "click_at", x: 7, y: 9, target: "Files" });
+  assert.deepEqual(actionLabel({ kind: "click_at", x: 7, y: 9, target: "Files" }), { text: "Screen click", target: "Files" });
 });

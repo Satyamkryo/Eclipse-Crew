@@ -8,7 +8,7 @@ import { hostname, networkInterfaces } from "node:os";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 import { validateIds, validateRegistry } from "./agent-store.mjs";
-import { OperationSchema, WorkerOperationSchema, resultFor, validatePng } from "./controller-schema.mjs";
+import { OperationSchema, WorkerOperationSchema, resultFor, screenInputRefusal, validatePng, windowClassOf, windowKindOf } from "./controller-schema.mjs";
 import { fingerprint, readSnapshot, sessionCookies, writeSnapshot } from "./cookie-snapshot.mjs";
 import { seedDesktop } from "./desktop-config.mjs";
 import { AgentAudio } from "./agent-audio.mjs";
@@ -326,7 +326,9 @@ export async function startSession(input, { onRuntime = () => {}, onEvent = () =
           // Loopback bypass keeps the mock vendor fixture reachable; shared loopback is a TASK-071 limit.
           // TASK-071: plain loopback proxy; the supervisor relay adds the token outside this namespace.
           proxy: { server: "http://127.0.0.1:3128", bypass: "127.0.0.1,localhost" },
-          args: ["--window-position=0,0", "--window-size=1024,768", "--disable-dev-shm-usage", "--disable-background-networking", "--no-first-run"] });
+          // The dock is 28 px at the bottom of the 1024x768 screen. A full-height window covered it, so neither an agent nor the
+          // owner could reach it.
+          args: ["--window-position=0,0", "--window-size=1024,738", "--disable-dev-shm-usage", "--disable-background-networking", "--no-first-run"] });
       } catch (cause) {
         browser = "failed"; emit({ state: "browser_failed", reason: "browser_start_failed" });
         throw Error("browser_start_failed", { cause });
@@ -403,6 +405,15 @@ function safeHref(urlString) {
 }
 
 const OPERATION_TIMEOUT_MS = 4000;
+// Reads change nothing, so a slow page is reported as busy and the session keeps running. Only input whose outcome is unknown
+// quarantines a session (SECURITY: uncertain execution). Checking focus is also a read: when it runs out of time, nothing was
+// typed, so that is a plain refusal. Worker bound < controller channel < app fetch, as for navigation.
+export const PAGE_READ_TIMEOUT_MS = 12_000;
+export const FOCUS_INPUT_TIMEOUT_MS = 9_000;
+const SAFETY_CHECK_MS = 7_000;
+const READ_OPERATIONS = new Set(["capture.screenshot", "window.active", "browser.pages", "page.snapshot", "page.verify", "page.find_text"]);
+const PAGE_READS = new Set(["page.snapshot", "page.verify", "page.find_text"]);
+const CHECKED_INPUT = new Set(["input.type", "input.key", "input.screen_type", "input.screen_key", "input.screen_click", "input.screen_drag"]);
 // Real sites behind the egress proxy can take many seconds to respond, so navigation has its own, longer bound.
 // Commit budget < load budget < worker bound (NAVIGATION_TIMEOUT_MS + 2 s) < controller channel < app fetch.
 export const NAVIGATION_COMMIT_MS = 15_000;
@@ -413,11 +424,11 @@ function pageId(page) {
   if (!pageIds.has(page)) pageIds.set(page, randomUUID());
   return pageIds.get(page);
 }
-function boundedOperation(run, timeoutMs = OPERATION_TIMEOUT_MS) {
+function boundedOperation(run, timeoutMs = OPERATION_TIMEOUT_MS, timeoutCode = "uncertain_outcome") {
   const controller = new AbortController();
   let timer;
   const deadline = new Promise((_, reject) => {
-    timer = setTimeout(() => { controller.abort(); reject(operationError("uncertain_outcome")); }, timeoutMs);
+    timer = setTimeout(() => { controller.abort(); reject(operationError(timeoutCode)); }, timeoutMs);
   });
   return Promise.race([Promise.resolve().then(() => run(controller.signal)), deadline]).finally(() => clearTimeout(timer));
 }
@@ -448,21 +459,24 @@ function desktopProcess(session, executable, args, { input, maxOutput = 4096, si
 // Evaluated only against actual DOM elements, never against selector text.
 function targetMetadata(element) {
   const focusCheck = element === undefined;
-  if (focusCheck && !document.hasFocus()) return { focused: false, sensitive: false };
+  if (focusCheck && !document.hasFocus()) return { focused: false, sensitive: false, editable: false };
   let target = focusCheck ? document.activeElement : element;
   while (target?.shadowRoot?.activeElement) target = target.shadowRoot.activeElement;
-  if (!target || focusCheck && ["IFRAME", "FRAME"].includes(target.tagName)) return { focused: false, sensitive: false };
+  if (!target || focusCheck && ["IFRAME", "FRAME"].includes(target.tagName)) return { focused: false, sensitive: false, editable: false };
   const get = (name) => (target.getAttribute?.(name) ?? "").toLowerCase();
   const type = String(target.type ?? "").toLowerCase();
+  const editable = target.isContentEditable === true || target.tagName === "TEXTAREA" || target.ownerDocument?.designMode === "on" ||
+    target.tagName === "INPUT" && !["button", "submit", "reset", "image", "checkbox", "radio", "range", "file", "color", "hidden"].includes(type) ||
+    ["textbox", "searchbox", "combobox", "spinbutton"].includes(get("role"));
   const autocomplete = get("autocomplete").split(/\s+/);
   const semantics = [get("name"), get("id"), get("aria-label")].join(" ");
   const numericCode = get("inputmode") === "numeric" && target.maxLength >= 4 && target.maxLength <= 8;
-  return { focused: focusCheck, sensitive: type === "password" || autocomplete.some((value) => ["one-time-code", "current-password", "new-password"].includes(value)) ||
+  return { focused: focusCheck, editable, sensitive: type === "password" || autocomplete.some((value) => ["one-time-code", "current-password", "new-password"].includes(value)) ||
     /password|passwd|passcode|(?:^|[\s_-])(?:otp|totp)(?:$|[\s_-])|one[-_ ]?time|verification[-_ ]?code|security[-_ ]?code/.test(semantics) || numericCode };
 }
 function shadowTargetMetadata() {
-  if (!document.hasFocus()) return { focused: false, sensitive: false };
-  let focused = false;
+  if (!document.hasFocus()) return { focused: false, sensitive: false, editable: false };
+  let focused = false, editable = false;
   for (const root of this) {
     let target = root.activeElement;
     while (target?.shadowRoot?.activeElement) target = target.shadowRoot.activeElement;
@@ -470,14 +484,17 @@ function shadowTargetMetadata() {
     focused = true;
     const get = (name) => (target.getAttribute?.(name) ?? "").toLowerCase();
     const type = String(target.type ?? "").toLowerCase();
+    editable ||= target.isContentEditable === true || target.tagName === "TEXTAREA" ||
+      target.tagName === "INPUT" && !["button", "submit", "reset", "image", "checkbox", "radio", "range", "file", "color", "hidden"].includes(type) ||
+      ["textbox", "searchbox", "combobox", "spinbutton"].includes(get("role"));
     const autocomplete = get("autocomplete").split(/\s+/);
     const semantics = [get("name"), get("id"), get("aria-label")].join(" ");
     const numericCode = get("inputmode") === "numeric" && target.maxLength >= 4 && target.maxLength <= 8;
     const sensitive = type === "password" || autocomplete.some((value) => ["one-time-code", "current-password", "new-password"].includes(value)) ||
       /password|passwd|passcode|(?:^|[\s_-])(?:otp|totp)(?:$|[\s_-])|one[-_ ]?time|verification[-_ ]?code|security[-_ ]?code/.test(semantics) || numericCode;
-    if (sensitive) return { focused: true, sensitive: true };
+    if (sensitive) return { focused: true, sensitive: true, editable: true };
   }
-  return { focused, sensitive: false };
+  return { focused, sensitive: false, editable };
 }
 async function focusedTargetMetadata(page) {
   const session = await page.context().newCDPSession(page);
@@ -494,7 +511,7 @@ async function focusedTargetMetadata(page) {
       if (frames.length > 64) throw operationError("too_many_frames");
       queue.push(...(item.childFrames ?? []));
     }
-    let focused = false;
+    let focused = false, editable = false;
     for (const frame of frames) {
       const contextId = contexts.get(frame.id);
       if (!contextId) return { focused: false, sensitive: false };
@@ -510,6 +527,7 @@ async function focusedTargetMetadata(page) {
       let state = await readMetadata(documentObject.result.objectId, targetMetadata.toString());
       if (state.sensitive) return state;
       focused ||= state.focused;
+      editable ||= state.editable === true;
       const prototype = await session.send("Runtime.evaluate", { expression: "ShadowRoot.prototype", contextId });
       if (!prototype.result.objectId) return { focused: false, sensitive: false };
       try {
@@ -518,26 +536,46 @@ async function focusedTargetMetadata(page) {
         state = await readMetadata(roots.objects.objectId, shadowTargetMetadata.toString());
         if (state.sensitive) return state;
         focused ||= state.focused;
+        editable ||= state.editable === true;
       } finally { await session.send("Runtime.releaseObject", { objectId: prototype.result.objectId }).catch(() => {}); }
     }
-    return { focused, sensitive: false };
+    return { focused, sensitive: false, editable };
   } finally {
     session.off("Runtime.executionContextCreated", onContext);
     await session.detach().catch(() => {});
   }
 }
-async function requireSafeFocus(context, signal) {
-  if (signal.aborted) throw operationError("uncertain_outcome");
-  let focused = false;
-  const pages = context.pages();
-  if (pages.length > 32) throw operationError("too_many_pages");
-  for (const page of pages) {
-    const state = await focusedTargetMetadata(page);
-    if (state.sensitive) throw operationError("sensitive_target");
-    focused ||= state.focused;
-    if (signal.aborted) throw operationError("uncertain_outcome");
+// A safety check that runs out of time or breaks refuses the input. Nothing has been sent at that point.
+async function withinSafetyCheck(work) {
+  let timer;
+  const expired = new Promise((_, reject) => { timer = setTimeout(() => reject(operationError("focused_target_unknown")), SAFETY_CHECK_MS); });
+  try { return await Promise.race([work(), expired]); }
+  catch (error) {
+    if (["sensitive_target", "focused_target_unknown", "too_many_pages", "too_many_frames"].includes(error?.code)) throw error;
+    throw operationError("focused_target_unknown");
   }
-  if (!focused) throw operationError("focused_target_unknown");
+  finally { clearTimeout(timer); }
+}
+// `needsField`: typing into a page with no field selected goes nowhere, and the model cannot tell from a screenshot.
+async function requireSafeFocus(context, signal, { needsField = false } = {}) {
+  if (signal.aborted) throw operationError("uncertain_outcome");
+  await withinSafetyCheck(async () => {
+    let focused = false, editable = false;
+    const pages = context.pages();
+    if (pages.length > 32) throw operationError("too_many_pages");
+    for (const page of pages) {
+      // The keyboard only reaches the page that has focus. Walking every frame's objects in the others cost seconds on big
+      // pages. A page too busy to answer is walked as before.
+      const active = await Promise.race([page.evaluate(() => document.hasFocus()).catch(() => true), delay(1000).then(() => true)]);
+      if (!active) continue;
+      const state = await focusedTargetMetadata(page);
+      if (state.sensitive) throw operationError("sensitive_target");
+      focused ||= state.focused;
+      editable ||= state.editable === true;
+      if (signal.aborted) throw operationError("uncertain_outcome");
+    }
+    if (!focused || (needsField && !editable)) throw operationError("focused_target_unknown");
+  });
 }
 const xKeys = { Control: "ctrl", Alt: "alt", Shift: "shift", Meta: "super", Enter: "Return", Space: "space", Backspace: "BackSpace",
   ArrowUp: "Up", ArrowDown: "Down", ArrowLeft: "Left", ArrowRight: "Right", PageUp: "Prior", PageDown: "Next" };
@@ -606,7 +644,12 @@ async function choosePage(pages, wantedPageId) {
     return found;
   }
   if (pages.length === 1) return pages[0];
-  for (const candidate of pages) if (await candidate.evaluate(() => document.hasFocus())) return candidate;
+  // A page in the middle of a navigation may not answer, and with the address bar focused no page has focus.
+  const ask = (page, question) => Promise.race([page.evaluate(question).catch(() => false), delay(800).then(() => false)]);
+  // The visible tab first: a tab left in the background can still report hasFocus, which sent navigation to the wrong tab.
+  for (const candidate of [...pages].reverse()) if (await ask(candidate, () => document.visibilityState === "visible")) return candidate;
+  for (const candidate of pages) if (await ask(candidate, () => document.hasFocus())) return candidate;
+  if (pages.length) return pages[pages.length - 1];
   throw operationError("page_not_found");
 }
 async function selectAt(session, page, command, signal) {
@@ -640,6 +683,53 @@ async function selectAt(session, page, command, signal) {
     for (const info of infos) await info.element?.dispose().catch(() => {});
   }
 }
+// ADR-041. Which kind of window has the keyboard. A failed read is "none", which takes no screen input.
+// The pinned xdotool (3.20160805) has no getwindowclassname, so the class comes from xprop.
+async function activeWindowKind(session, signal) {
+  try {
+    const id = (await desktopProcess(session, "xdotool", ["getactivewindow"], { signal })).toString("utf8").trim();
+    if (!/^\d{1,12}$/.test(id)) return "none";
+    return windowKindOf(windowClassOf((await desktopProcess(session, "xprop", ["-id", id, "WM_CLASS"], { signal })).toString("utf8")));
+  } catch (error) { if (signal?.aborted) throw error; return "none"; }
+}
+// ADR-041. A model-chosen point inside a web page may not land on a password, one-time-code or card field, or in a payment
+// frame. Points on the browser's own toolbar or tabs are outside every frame. A point that cannot be checked is refused.
+async function requireSafePoint(session, command, signal) {
+  await withinSafetyCheck(() => checkSafePoint(session, command, signal));
+}
+async function checkSafePoint(session, command, signal) {
+  // Known windows outside the browser hold no page. "none" means the read failed, so the page is still checked.
+  if (["terminal", "file_manager", "other"].includes(await activeWindowKind(session, signal))) return;
+  const pages = session.context.pages();
+  if (pages.length > 32) throw operationError("too_many_pages");
+  const page = await choosePage(pages);
+  const move = (x, y) => desktopProcess(session, "xdotool", ["mousemove", String(x), String(y)], { signal });
+  let origin;
+  try { origin = await measureOrigin({ page, move, fail: operationError }); } catch { throw operationError("focused_target_unknown"); }
+  const infos = await collectFrames(page);
+  const local = { x: command.x - origin.x, y: command.y - origin.y };
+  let chosen = null;
+  for (const info of infos) {
+    const area = info.visibleBox;
+    if (area.width < 1 || area.height < 1) continue;
+    if (local.x < area.x || local.x >= area.x + area.width || local.y < area.y || local.y >= area.y + area.height) continue;
+    if (!chosen || info.depth >= chosen.depth) chosen = info;
+  }
+  let handle;
+  try {
+    if (!chosen) return;
+    if (chosen.isPayment) throw operationError("sensitive_target");
+    handle = await chosen.frame.evaluateHandle(deepElementAt, [Math.round(local.x - chosen.offset.x), Math.round(local.y - chosen.offset.y)]);
+    const element = handle.asElement();
+    if (element && (await element.evaluate(targetMetadata)).sensitive) throw operationError("sensitive_target");
+  } catch (error) {
+    if (error?.code === "sensitive_target") throw error;
+    throw operationError("focused_target_unknown");
+  } finally {
+    await handle?.dispose().catch(() => {});
+    for (const info of infos) await info.element?.dispose().catch(() => {});
+  }
+}
 async function performOperation(session, command, signal, trustedOwnerInput) {
   const { operation } = command;
   if (operation === "shell.run") {
@@ -655,7 +745,8 @@ async function performOperation(session, command, signal, trustedOwnerInput) {
   }
   if (operation === "capture.screenshot") {
     const crop = command.crop;
-    const args = ["-nostdin", "-hide_banner", "-loglevel", "error", "-f", "x11grab", "-draw_mouse", "0", "-video_size", "1024x768", "-i", session.env.DISPLAY,
+    // The pointer is in the picture so an agent can see where its last click landed and correct it.
+    const args = ["-nostdin", "-hide_banner", "-loglevel", "error", "-f", "x11grab", "-draw_mouse", "1", "-video_size", "1024x768", "-i", session.env.DISPLAY,
       "-frames:v", "1", "-threads", "1", "-filter_threads", "1"];
     if (crop) args.push("-vf", `crop=${crop.width}:${crop.height}:${crop.x}:${crop.y}`);
     args.push("-f", "image2pipe", "-vcodec", "png", "pipe:1");
@@ -663,13 +754,44 @@ async function performOperation(session, command, signal, trustedOwnerInput) {
     const dimensions = validatePng(png, crop ?? { width: 1024, height: 768 });
     return { ...dimensions, base64: png.toString("base64"), source_tag: "tool", untrusted: true };
   }
+  if (operation === "window.active") return { kind: await activeWindowKind(session, signal), source_tag: "tool", untrusted: true };
+  if (operation === "input.screen_click") {
+    await requireSafePoint(session, command, signal);
+    if (signal.aborted) throw operationError("uncertain_outcome");
+    await desktopProcess(session, "xdotool", ["mousemove", String(command.x), String(command.y), "click", "--clearmodifiers", "--repeat", command.button === "double" ? "2" : "1", "--delay", "100", command.button === "right" ? "3" : "1"], { signal });
+    return { ok: true };
+  }
+  if (operation === "input.screen_drag") {
+    await requireSafePoint(session, command, signal);
+    if (signal.aborted) throw operationError("uncertain_outcome");
+    const midX = String(Math.round((command.x + command.toX) / 2)), midY = String(Math.round((command.y + command.toY) / 2));
+    // Moved in steps: most apps only see a drag once the pointer moves with the button held. Always released.
+    try { await desktopProcess(session, "xdotool", ["mousemove", String(command.x), String(command.y), "mousedown", "1", "mousemove", midX, midY, "mousemove", String(command.toX), String(command.toY)], { signal }); }
+    finally { await desktopProcess(session, "xdotool", ["mouseup", "1"]).catch(() => {}); }
+    return { ok: true };
+  }
+  if (operation === "input.screen_scroll") {
+    if (signal.aborted) throw operationError("uncertain_outcome");
+    await desktopProcess(session, "xdotool", ["mousemove", String(command.x), String(command.y), "click", "--clearmodifiers", "--repeat", String(command.count), "--delay", "10", String({ up: 4, down: 5, left: 6, right: 7 }[command.direction])], { signal });
+    return { ok: true };
+  }
+  if (operation === "input.screen_type" || operation === "input.screen_key") {
+    const kind = await activeWindowKind(session, signal);
+    const refusal = screenInputRefusal(kind, command.terminal);
+    if (refusal) throw operationError(refusal);
+    if (kind === "browser") await requireSafeFocus(session.context, signal, { needsField: operation === "input.screen_type" });
+    if (signal.aborted) throw operationError("uncertain_outcome");
+    if (operation === "input.screen_type") await desktopProcess(session, "xdotool", ["type", "--clearmodifiers", "--delay", "0", "--file", "-"], { input: Buffer.from(command.text, "utf8"), signal });
+    else await desktopProcess(session, "xdotool", ["key", "--clearmodifiers", "--delay", "0", command.key.split("+").map((key) => xKeys[key] ?? key).join("+")], { signal });
+    return { ok: true };
+  }
   if (operation === "input.select") {
     const pages = session.context.pages();
     if (pages.length > 32) throw operationError("too_many_pages");
     return selectAt(session, await choosePage(pages), command, signal);
   }
   if (operation.startsWith("input.")) {
-    if (!trustedOwnerInput && (operation === "input.type" || operation === "input.key")) await requireSafeFocus(session.context, signal);
+    if (!trustedOwnerInput && (operation === "input.type" || operation === "input.key")) await requireSafeFocus(session.context, signal, { needsField: operation === "input.type" });
     if (signal.aborted) throw operationError("uncertain_outcome");
     let args, input;
     // X11 preserves the move/click order. --sync would hang if the pointer is already here.
@@ -753,7 +875,7 @@ export async function dispatchOperation(session, operation, params = {}, trusted
   // is plain X11 (xdotool) on the agent's display, so it works with the browser stopped (desktop folders, terminal).
   // Agent input and input.select still require the browser.
   const ownerX11Input = trustedOwnerInput && operation.startsWith("input.") && operation !== "input.select";
-  if (((operation.startsWith("input.") && !ownerX11Input) ||["capture.screenshot", "browser.pages", "page.snapshot", "page.verify", "page.find_text", "browser.navigate", "browser.locator", "file.open", "audio.capture"].includes(operation)) && !session.context)
+  if (((operation.startsWith("input.") && !ownerX11Input) ||["window.active", "capture.screenshot", "browser.pages", "page.snapshot", "page.verify", "page.find_text", "browser.navigate", "browser.locator", "file.open", "audio.capture"].includes(operation)) && !session.context)
     throw operationError("visual_unavailable");
   if (operation === "shell.run") {
     // A long command must not mark the session uncertain, so it skips the 4 s operation bound and enforces its own timeout.
@@ -769,7 +891,9 @@ export async function dispatchOperation(session, operation, params = {}, trusted
       NAVIGATION_TIMEOUT_MS + 2000);
   }
   const command = parsed.data;
-  const run = () => boundedOperation(async (signal) => resultFor(operation, await performOperation(session, command, signal, trustedOwnerInput), command));
+  const timeoutMs = PAGE_READS.has(operation) ? PAGE_READ_TIMEOUT_MS : CHECKED_INPUT.has(operation) ? FOCUS_INPUT_TIMEOUT_MS : OPERATION_TIMEOUT_MS;
+  const run = () => boundedOperation(async (signal) => resultFor(operation, await performOperation(session, command, signal, trustedOwnerInput), command),
+    timeoutMs, READ_OPERATIONS.has(operation) ? "page_busy" : "uncertain_outcome");
   return trustedOwnerInput && session.teach ? session.teach.around(command, run) : run();
 }
 // TASK-071. Fixtures run inside the agent namespace so Chromium can reach them on its own loopback.
@@ -890,7 +1014,7 @@ async function main() {
           const result = await dispatchOperation(session, operation, params, ownerInput === true);
           await sendMsg({ requestId, result });
         } catch (err) {
-          const safeCodes = new Set(["invalid_operation", "uncertain_outcome", "desktop_command_failed", "desktop_result_too_large", "sensitive_target", "focused_target_unknown", "too_many_pages", "too_many_frames", "page_not_found", "ambiguous_locator", "target_not_found", "navigation_failed", "grounding_unavailable", "visual_unavailable", "audio_unavailable", "audio_capture_failed", "capture_cancelled", "invalid_audio"]);
+          const safeCodes = new Set(["page_busy", "option_not_found", "terminal_requires_shell", "unknown_window", "invalid_operation", "uncertain_outcome", "desktop_command_failed", "desktop_result_too_large", "sensitive_target", "focused_target_unknown", "too_many_pages", "too_many_frames", "page_not_found", "ambiguous_locator", "target_not_found", "navigation_failed", "grounding_unavailable", "visual_unavailable", "audio_unavailable", "audio_capture_failed", "capture_cancelled", "invalid_audio"]);
           const code = safeCodes.has(err?.code) ? err.code : err?.name === "TimeoutError" ? "uncertain_outcome" : "operation_failed";
           await sendMsg({ requestId, error: { code, message: code } });
         }

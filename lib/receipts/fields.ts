@@ -11,6 +11,11 @@ export interface ReceiptMethod { phase: "gate" | "verify"; method: Evidence["met
 
 export type ReceiptAction =
   | { kind: "click"; target: string }
+  // ADR-041. The model-chosen point and its description.
+  | { kind: "click_at"; x: number; y: number; target: string; button?: "right" | "double"; landed?: { x: number; y: number } }
+  // ADR-042. Also model-chosen points; never replayable.
+  | { kind: "drag_at"; x: number; y: number; to_x: number; to_y: number; target: string }
+  | { kind: "scroll_at"; x: number; y: number; direction: "up" | "down" | "left" | "right"; target: string }
   // TASK-084: `values` lists the saved-value names inserted into the text, never the values.
   | { kind: "type"; chars: number; values: string[] }
   | { kind: "key"; keys: string }
@@ -79,6 +84,9 @@ const hostOf = (url: string) => { try { return new URL(url).host; } catch { retu
 export function actionFor(intent: Intent): ReceiptAction | null {
   switch (intent.action) {
     case "click": return { kind: "click", target: cleanText(intent.target, 200) };
+    case "click_at": return { kind: "click_at", x: intent.x, y: intent.y, target: cleanText(intent.target, 200), ...(intent.button && intent.button !== "left" ? { button: intent.button } : {}) };
+    case "drag_at": return { kind: "drag_at", x: intent.x, y: intent.y, to_x: intent.to_x, to_y: intent.to_y, target: cleanText(intent.target, 200) };
+    case "scroll_at": return { kind: "scroll_at", x: intent.x, y: intent.y, direction: intent.direction, target: cleanText(intent.target, 200) };
     case "type": return { kind: "type", chars: [...intent.text].length, values: [] };
     case "key": return { kind: "key", keys: cleanText(intent.keys, 64) };
     case "scroll": return { kind: "scroll", direction: intent.direction };

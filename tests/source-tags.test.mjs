@@ -55,7 +55,9 @@ test("an untrusted string equal to the task is still tagged web, never user", ()
 test("an agent with no optional context still sends one user task part", () => {
   const request = fullRequest({ snapshot: null, files: null, documents: [], skills: [], untrustedContext: "" });
   const parts = request.messages[0].content;
-  assert.deepEqual(parts.map((part) => part.sourceTag), ["user", "agent", "web"]);
+  // The closing part says where the work stands. It is fixed text with counts, tagged as the agent's, never the owner's.
+  assert.deepEqual(parts.map((part) => part.sourceTag), ["user", "agent", "web", "agent"]);
+  assert.match(parts.at(-1).text, /partway through this task/);
   assert.equal(parts.filter((part) => part.sourceTag === "user").length, 1);
 });
 

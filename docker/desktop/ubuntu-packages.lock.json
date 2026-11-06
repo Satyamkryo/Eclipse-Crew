@@ -2076,21 +2076,21 @@
     },
     {
       "name": "libsoup-3.0-0",
-      "version": "3.4.4-5ubuntu0.9",
+      "version": "3.4.4-5ubuntu0.10",
       "architecture": "amd64",
-      "filename": "libsoup-3.0-0_3.4.4-5ubuntu0.9_amd64.deb",
-      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libs/libsoup3/libsoup-3.0-0_3.4.4-5ubuntu0.9_amd64.deb",
-      "bytes": 290828,
-      "sha256": "cd6bab2b426b0c81b0f7856df11f3633df118df33517378049545ff440751fcc"
+      "filename": "libsoup-3.0-0_3.4.4-5ubuntu0.10_amd64.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libs/libsoup3/libsoup-3.0-0_3.4.4-5ubuntu0.10_amd64.deb",
+      "bytes": 292272,
+      "sha256": "c2acdf204d37613bddae570fcf0c579f5422655e74df625bee636a29969fe6c5"
     },
     {
       "name": "libsoup-3.0-common",
-      "version": "3.4.4-5ubuntu0.9",
+      "version": "3.4.4-5ubuntu0.10",
       "architecture": "all",
-      "filename": "libsoup-3.0-common_3.4.4-5ubuntu0.9_all.deb",
-      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libs/libsoup3/libsoup-3.0-common_3.4.4-5ubuntu0.9_all.deb",
-      "bytes": 12284,
-      "sha256": "950de96545c81a4bcf9c67600c6c6b84fcf5fd680f87d4301a1e3dc1238474f0"
+      "filename": "libsoup-3.0-common_3.4.4-5ubuntu0.10_all.deb",
+      "url": "https://archive.ubuntu.com/ubuntu/pool/main/libs/libsoup3/libsoup-3.0-common_3.4.4-5ubuntu0.10_all.deb",
+      "bytes": 12882,
+      "sha256": "89f066fe021cb2991750dc9a65fb64cc24a467ab32b5a1a722e377244b6fda4c"
     },
     {
       "name": "libsoxr0",

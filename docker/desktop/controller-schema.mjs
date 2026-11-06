@@ -24,6 +24,35 @@ const input = [
   { operation: z.literal("input.key"), key: z.string().refine(validKey) },
   { operation: z.literal("input.scroll"), direction: z.enum(["up", "down", "left", "right"]), count: z.number().int().min(1).max(20) },
 ];
+// ADR-041. Agent-only input outside the page list. Never part of owner takeover input. `terminal` says whether this agent
+// also holds the shell permission; the worker refuses a terminal window without it.
+const screenInput = [
+  { operation: z.literal("input.screen_click"), x: z.number().int().min(0).max(1023), y: z.number().int().min(0).max(767), button: z.enum(["left", "right", "double"]) },
+  { operation: z.literal("input.screen_drag"), x: z.number().int().min(0).max(1023), y: z.number().int().min(0).max(767), toX: z.number().int().min(0).max(1023), toY: z.number().int().min(0).max(767) },
+  { operation: z.literal("input.screen_scroll"), x: z.number().int().min(0).max(1023), y: z.number().int().min(0).max(767), direction: z.enum(["up", "down", "left", "right"]), count: z.number().int().min(1).max(20) },
+  { operation: z.literal("input.screen_type"), text, terminal: z.boolean() },
+  { operation: z.literal("input.screen_key"), key: z.string().refine(validKey), terminal: z.boolean() },
+];
+export const WINDOW_KINDS = ["browser", "terminal", "file_manager", "other", "none"];
+// The class out of xprop's line: WM_CLASS(STRING) = "instance", "Class". A window without one has no class.
+export function windowClassOf(xpropOutput) {
+  const names = [...String(xpropOutput ?? "").matchAll(/"([^"]*)"/g)].map((match) => match[1]);
+  return names.join(" ");
+}
+export function windowKindOf(className) {
+  const name = String(className ?? "").trim().toLowerCase();
+  if (!name) return "none";
+  if (name.includes("chrom")) return "browser";
+  if (name.includes("xterm")) return "terminal";
+  if (name.includes("pcmanfm")) return "file_manager";
+  return "other";
+}
+// Why typing or a key press may not go to this window, or null when it may. Only known windows take input.
+export function screenInputRefusal(kind, terminalAllowed) {
+  if (kind === "terminal") return terminalAllowed === true ? null : "terminal_requires_shell";
+  if (kind === "browser" || kind === "file_manager") return null;
+  return "unknown_window";
+}
 const locator = { operation: z.literal("browser.locator"), selector: z.string().min(1).max(512).refine((v) => !/[\x00-\x1f\x7f]/.test(v)), pageId: uuid.optional(), action: z.enum(["inspect", "click", "fill"]), text: text.optional() };
 // TASK-084. Values are copied page text: bounded and free of control characters, but line breaks are allowed.
 const findText = z.string().min(1).max(2000).refine((v) => !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f-\u009f]/.test(v));
@@ -40,6 +69,8 @@ const shellCommand = z.string().min(1).max(4000).refine((value) => !value.includ
 const shellCwd = z.string().min(1).max(255).refine((value) => value.split("/").every((part) => /^[A-Za-z0-9._-]+$/.test(part) && part !== "." && part !== ".."));
 export const OperationSchema = z.discriminatedUnion("operation", [
   ...input.map((v) => z.object(v).strict()),
+  ...screenInput.map((v) => z.object(v).strict()),
+  z.object({ operation: z.literal("window.active") }).strict(),
   z.object({ operation: z.literal("capture.screenshot"), crop: crop.optional() }).strict(),
   z.object({ operation: z.literal("browser.pages") }).strict(),
   z.object({ operation: z.literal("page.snapshot"), pageId: uuid.optional() }).strict(),
@@ -57,6 +88,8 @@ export const CommandSchema = z.discriminatedUnion("operation", [
   ...["session.start", "session.status", "session.stop", ...LIFECYCLE_OPERATIONS].map((op) => z.object({ ...base, operation: z.literal(op), generation: generation.optional() }).strict()),
   ...["agent.create", "agent.delete"].map((op) => z.object({ ...base, operation: z.literal(op) }).strict()),
   ...input.map((v) => z.object({ ...running, ...v }).strict()),
+  ...screenInput.map((v) => z.object({ ...running, ...v }).strict()),
+  z.object({ ...running, operation: z.literal("window.active") }).strict(),
   z.object({ ...running, operation: z.literal("capture.screenshot"), crop: crop.optional() }).strict(),
   z.object({ ...running, operation: z.literal("browser.pages") }).strict(),
   z.object({ ...running, operation: z.literal("page.snapshot"), pageId: uuid.optional() }).strict(),
@@ -96,6 +129,7 @@ const snapshotElement = z.object({ ref: z.number().int().min(1).max(150), role: 
   .refine((v) => v.x + v.width <= 1024 && v.y + v.height <= 768);
 const snapshot = z.object({ pageId: uuid, href: z.string().max(2048), title: z.string().max(1024), frames: z.number().int().min(0).max(64),
   paymentFrames: z.number().int().min(0).max(64), elements: z.array(snapshotElement).max(150), ...tagged }).strict();
+const windowResult = z.object({ kind: z.enum(WINDOW_KINDS), ...tagged }).strict();
 const findTextResult = z.object({ found: z.boolean(), count: z.number().int().min(0).max(1000), ...tagged }).strict();
 const inspect = z.object({ tag: z.string().max(64), text: z.string().max(4096), boundingBox: box.nullable(), ...tagged }).strict();
 const shellResult = z.object({ exit: z.number().int().min(-256).max(256), signal: z.string().max(32).nullable(), timedOut: z.boolean(), stdout: z.string().max(16384), stderr: z.string().max(16384), truncated: z.boolean(), ...tagged }).strict();
@@ -142,6 +176,7 @@ export function resultFor(operation, result, params = {}) {
     if (bytes.toString("base64") !== value.base64) throw Error("invalid_png");
     validatePng(bytes, params.crop ?? { width: 1024, height: 768 }); return value;
   }
+  if (operation === "window.active") return windowResult.parse(result);
   if (operation === "browser.pages") return pages.parse(result);
   if (operation === "page.snapshot") return snapshot.parse(result);
   if (operation === "page.verify") return pageVerificationResult.parse(result);
@@ -155,6 +190,6 @@ export function resultFor(operation, result, params = {}) {
   }
   return ok.parse(result);
 }
-export const ResultSchema = z.union([SessionResultSchema, png, wave, pages, snapshot, pageVerificationResult, findTextResult, inspect, shellResult, ok]);
+export const ResultSchema = z.union([SessionResultSchema, png, wave, windowResult, pages, snapshot, pageVerificationResult, findTextResult, inspect, shellResult, ok]);
 export const parseCommand = (value) => CommandSchema.parse(value);
 export const parseResult = (value) => ResultSchema.parse(value);

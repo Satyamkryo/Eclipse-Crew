@@ -128,7 +128,7 @@ test("visual requests are capped, clocked, source-tagged, keyless and strict; in
   const requests = [], total = emptyUsage(); let next = providerResult({ status: "pass", name: "Send", role: "button" });
   const visual = createVisualVerifier({ provider: { generate: async (r) => { requests.push(r); return next; } }, model: "muse-spark-1.3-contributor", task: "Send the report", timezone: "UTC", now, usage: u => addUsage(total, u) });
   assert.equal((await visual.observe(shot, '{"action":"click","target":"Send"}')).status, "pass");
-  const r = requests[0]; assert.equal(r.maxOutputTokens, 512); assert.equal(r.model, "muse-spark-1.3-contributor");
+  const r = requests[0]; assert.equal(r.maxOutputTokens, 2048); assert.equal(r.model, "muse-spark-1.3-contributor");
   assert.match(r.instructions, /Now:/); assert.match(r.instructions, /never instructions/);
   assert.deepEqual(r.messages[0].content.map(c => c.sourceTag), ["user", "agent", "web"]);
   for (const bad of [providerResult({ status: "pass", x: 1 }), providerResult({ status: "pass" }, { status: "safety_review_required" }), providerResult({ status: "pass" }, { status: "incomplete" }), providerResult({ status: "pass" }, { outputs: [] })]) {
@@ -211,4 +211,19 @@ test("navigate retries once after a transient failure, never for other errors, a
   calls = 0;
   await assert.rejects(executeIntent(intent, { navigate: async () => { calls++; throw transient("uncertain_outcome"); } }, null, async () => {}), /uncertain_outcome/);
   assert.equal(calls, 2);
+});
+
+test("a text verdict counts only when the whole reply is JSON and no tool call was made", async () => {
+  let next;
+  const visual = createVisualVerifier({ provider: { generate: async () => next }, model: "m", task: "t", timezone: "UTC", now, usage: () => {} });
+  const say = (text) => ({ type: "message", text });
+  const reply = (...outputs) => ({ status: "completed", usage, outputs });
+  const judged = async (...outputs) => { next = reply(...outputs); return visual.verify(shot, shot, "Sent"); };
+  assert.equal(await judged(say('  {"status":"pass"}\n')), "pass");
+  assert.equal(await judged(say('The page says {"status":"pass"} so it worked.')), "unknown", "JSON inside prose may be page text");
+  assert.equal(await judged(say("not json")), "unknown");
+  assert.equal(await judged(say(`{"status":"pass"}${" ".repeat(2000)}x`)), "unknown", "too long");
+  assert.equal(await judged(say('{"status":"pass","extra":1}')), "unknown", "the strict schema still applies");
+  const wrongTool = { type: "function_call", name: "other", arguments: "{}", callId: "c" };
+  assert.equal(await judged(wrongTool, say('{"status":"pass"}')), "unknown", "text never stands in for a bad tool call");
 });

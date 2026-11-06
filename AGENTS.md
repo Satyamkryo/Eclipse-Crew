@@ -159,7 +159,7 @@ Next.js (App Router) · TypeScript · Tailwind CSS · shadcn/ui · Lucide · Gei
 `docs/DECISIONS.md` is binding. Build to it. If a task seems to need a different choice, stop and ask; never work around an ADR. Changing a decision needs a new ADR approved by the owner.
 
 The ones most often at risk:
-- Models emit intents `{action, target, expect}`, never raw coordinates (ADR-008).
+- Models emit intents `{action, target, expect}`, never raw coordinates (ADR-008), except the opt-in `click_at` action (ADR-041).
 - SAM 3.1 is optional and off by default (ADR-010).
 - Memory's source of truth is Postgres; `./data/memory` is only a Markdown mirror (ADR-016).
 - Astra Mode removes approval prompts only; every other safety layer stays on (ADR-019).
@@ -204,7 +204,7 @@ Run what applies, and report the real output. Never claim a check passed without
 - On Windows, agent files must live in Docker volumes, not bind mounts, or Linux permissions and performance break.
 - Muse Wonder is a preview model: always fall back to Spark.
 - Muse Spark 1.3 audio input isn't fully supported: transcribe audio first.
-- Computer-use `pending_safety_checks` must be acknowledged.
+- Computer-use `pending_safety_checks` must be acknowledged before a computer-use call is continued. Exception: ADR-042, reading a point for a routine click under the owner's Computer use switch.
 - Stateless computer-use replay is reportedly capped at 29 screenshot/action pairs: keep per-step checkpoints.
 - SAM 3.1 video billing reportedly has a 50-frame minimum: use single images for verification.
 - Contributor-mode models don't support the "max" reasoning effort.

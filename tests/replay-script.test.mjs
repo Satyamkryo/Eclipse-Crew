@@ -115,3 +115,9 @@ test("names and labels", () => {
     { idx: 1, text: "Type your text", needsText: true }, { idx: 2, text: "Press Enter", needsText: false }]);
   assert.ok(Object.keys(REFUSAL_TEXT).length >= 9);
 });
+
+test("a run that used click_at cannot be saved as a replay", () => {
+  const compiled = compileFromReceipts(rows([receipt(1, { action: { kind: "click_at", x: 1, y: 1, target: "Files" } }), clickReceipt(2)]));
+  assert.equal(compiled.ok, false);
+  assert.deepEqual(codes(compiled), ["1:step_not_replayable"]);
+});
