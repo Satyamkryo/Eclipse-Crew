@@ -1,12 +1,12 @@
 # Eclipse Crew
 
-**Teammates you can trust.** Open-source, self-hosted AI agents that learn by watching you, prove every action, can be rewound, and only know what their job needs.
+**Teammates you can trust.** Self-hosted AI agents that prove every action, can be rewound, and only know what their job needs.
 
 Eclipse Crew gives you a crew of named AI agents that share one Linux desktop with a real browser, terminal and files. It runs on your own PC or VPS with your own model API key. You watch every agent live in a web workspace and can take over the mouse and keyboard at any moment.
 
 > **Status:** v1 hackathon build, pre-release. See [Project status](#project-status).
 >
-> **Hackathon judges:** the live URL and login are in the submission form. Start with [Try it live](#try-it-live).
+> **Hackathon judges:** open the [live instance](https://eclipse-crew.140-245-248-61.sslip.io/). The login is in the submission form. Start with [Try it live](#try-it-live).
 
 ---
 
@@ -20,13 +20,12 @@ Eclipse Crew gives you a crew of named AI agents that share one Linux desktop wi
 | **Proof** | Every step is verified and recorded in a signed receipt you can check offline. |
 | **Undo** | Rewind any run to any step, correct it, and continue on a new branch. |
 
-## The five standouts
+## The four standouts
 
-1. **Learn a skill from video.** Record yourself doing a task in the agent's browser; it drafts a `SKILL.md` for you to approve.
-2. **Proof receipts.** Each step is checked (page structure, pixel diff, OCR, optional SAM 3.1), hash-chained and signed. `verify` checks a run offline.
-3. **Rewind and branch.** Roll a run back to step N, add a correction, continue without redoing earlier steps.
-4. **Self-healing routines.** When a site changes, the agent finds the new path and proposes an update for you to approve.
-5. **Isolation and leak tripwire.** Agents can't read each other's files or keys. A planted canary secret stops the agent if it ever tries to leave.
+1. **Proof receipts.** Each step is checked (page structure, pixel diff, OCR, optional SAM 3.1), hash-chained and signed. `verify` checks a run offline.
+2. **Rewind and branch.** Roll a run back to step N, add a correction, continue without redoing earlier steps.
+3. **Self-healing routines.** When a site changes, the agent finds the new path and proposes an update for you to approve.
+4. **Isolation and leak tripwire.** Agents can't read each other's files or keys. A planted canary secret stops the agent if it ever tries to leave.
 
 **Also included:** live desktop with one-click takeover · 20 agent templates and custom crews with handoff · routines with schedules and catch-up · Sundance/Moondance check-ins that only wake the agent when a page changes · model-free replay of verified runs · readable memory with undo · approvals (Allow once / Always allow / Deny) · Astra Mode · budgets and cost receipts · Mission Control · Security Center with kill switches · chat attachments with image, audio and video previews · agents that read, search and hand back files · MCP servers, GitHub and Composio · local models such as Muse Glimmer.
 
@@ -131,6 +130,8 @@ The same compose file runs on any Linux VPS so your crew works while your laptop
 
 ## Try it live
 
+**Live instance:** <https://eclipse-crew.140-245-248-61.sslip.io/>
+
 The judges' instance is a throwaway install. **Don't enter real credentials or personal data.**
 
 1. **Log in** with the details from the submission form.
@@ -155,7 +156,6 @@ The left navigation has **Agents** (the workspace), **Crew**, **Mission Control*
 | **Take over** | Desktop tab → **Take over** (one click) → **Hand back**. **Full screen** opens a larger view without disconnecting. Touch-only devices are view-only and show "Use a mouse to take over". Nothing is recorded while you're in control. |
 | **Crews** | **Crew** page: the starter crew and your own crews. Agents in a crew can hand work to each other (switch it on per crew); `@Name` works for every agent. Live status and spend are on **Mission Control**. |
 | **Tools** | Workspace → **Tools**: connect GitHub or a plugin app to this agent and see everything it can use. An agent may use every tool connected to it; to limit that, list tools under **Advanced** in its settings. |
-| **Teach a skill** | Take over → **Record** → do the task → **Stop** → **Generate skill** → **Approve**. Passwords and OTP fields are masked; capture pauses on login/CAPTCHA pages. |
 | **Routines** | Ask in chat ("every weekday at 9am…"), confirm the card. **Schedules** shows upcoming runs; missed runs follow your catch-up choice. |
 | **Check-ins** | Routines tab → **New check-in**: a page to watch, hours and an optional task. **Sundance** (day) alerts you in chat right away; **Moondance** (night) works quietly and sends one morning summary. The check itself uses no AI; the agent wakes only when the page changed. If the page needs a login, you take over once and sign in; later checks use the agent’s browser. |
 | **Replay** | In History, **Save as replay** on a fully verified run. Replays make no model calls; if the site changed, the agent proposes a fix as a diff. |
@@ -269,7 +269,7 @@ Step screenshots and checkpoints auto-delete after 32 days; receipts and the aud
 | Shipped in v1 | Next |
 |---|---|
 | Docker setup, owner login, host-created extra accounts, agents and templates, crews, chat with media previews, live desktop + one-click takeover | Files tab, phone app (PWA), one-command installer |
-| Teach from video, receipts + verifier, rewind, self-healing, isolation + tripwire | Native desktop capture, video-model skill drafting |
+| Receipts + verifier, rewind, self-healing, isolation + tripwire | Teach a skill by recording a task, native desktop capture, video-model skill drafting |
 | Routines, replay, Sundance/Moondance check-ins, Mission Control, Schedules | Webhooks, push notifications |
 | Meta models, SAM 3.1 (Meta API or your own server), OpenAI-compatible and local models (Ollama, LM Studio, llama.cpp, vLLM, SGLang), price table | Anthropic connector, voice, bundled local SAM server |
 | Approvals, Astra Mode, budgets, egress allowlist, audit log, kill switches | 2FA, backups, booking assistant |
@@ -281,6 +281,6 @@ Step screenshots and checkpoints auto-delete after 32 days; receipts and the aud
 
 Built from scratch for the **Meta Global AI Developer Hackathon** (Oct 27 – Nov 4, 2026), track **Push the Frontier**, using Muse Spark and Muse Wonder for reasoning and computer use and SAM 3.1 for screen grounding and verification.
 
-## License
+## Third-party software
 
-Apache-2.0 (planned). The desktop image downloads Chrome for Testing from Google at build time under Google's terms; it is never redistributed, and the desktop image must not be published. SAM weights are never shipped.
+The desktop image downloads Chrome for Testing from Google at build time under Google's terms; it is never redistributed, and the desktop image must not be published. SAM weights are never shipped.
